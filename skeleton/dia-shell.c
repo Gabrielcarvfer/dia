@@ -72,6 +72,11 @@ typedef struct {
   Handle     *drag_handle;       /* handle being dragged, or NULL for a move */
   int         drag_handle_idx;   /* its index in selected->handles (for undo) */
   Point       drag_handle_start; /* the handle's position at drag start */
+  /* Multi-select: a rubber-band on empty canvas, and a snapshot of the moving
+   * objects' start positions so a drag moves the whole selection together. */
+  gboolean    rubber_band;
+  Point       rubber_start, rubber_cur;
+  GArray     *drag_moves;        /* of MoveItem {DiaObject*, Point start} */
 
   GPtrArray  *undo;       /* UndoOp* — the undo/redo history */
   int         undo_pos;   /* number of ops currently applied (undo[0..pos-1]) */
@@ -102,6 +107,9 @@ typedef struct {
 /* Pixels per cm at 100% zoom. Chosen so a typical canvas shows ~80 cm across,
  * matching upstream Dia's zoomed-out default (the page is small within it). */
 #define PX_PER_CM 10.0
+
+/* A moving object + its position at drag start (for multi-object move). */
+typedef struct { DiaObject *obj; Point start; } MoveItem;
 
 
 /* Object types are registered from objects-port (register-objects.c) so the
@@ -688,6 +696,24 @@ draw_canvas (GtkDrawingArea *area,
     draw_connection_points (cr, self->diagram, ox, oy, pxcm);
     draw_selection_handles (cr, self->diagram, ox, oy, pxcm);
   }
+
+  /* The rubber-band selection rectangle (device space, dashed). */
+  if (self->rubber_band) {
+    double rx0 = ox + MIN (self->rubber_start.x, self->rubber_cur.x) * pxcm;
+    double ry0 = oy + MIN (self->rubber_start.y, self->rubber_cur.y) * pxcm;
+    double rx1 = ox + MAX (self->rubber_start.x, self->rubber_cur.x) * pxcm;
+    double ry1 = oy + MAX (self->rubber_start.y, self->rubber_cur.y) * pxcm;
+    double dashes[] = { 4.0, 3.0 };
+
+    cairo_rectangle (cr, rx0, ry0, rx1 - rx0, ry1 - ry0);
+    cairo_set_source_rgba (cr, 0.10, 0.45, 0.90, 0.12);
+    cairo_fill_preserve (cr);
+    cairo_set_source_rgb (cr, 0.10, 0.45, 0.90);
+    cairo_set_line_width (cr, 1.0);
+    cairo_set_dash (cr, dashes, 2, 0);
+    cairo_stroke (cr);
+    cairo_set_dash (cr, NULL, 0, 0);
+  }
 }
 
 
@@ -1017,19 +1043,29 @@ apply_tool_at (DiaShell *self, Point p)
 }
 
 
-/* Modify tool: hit-test the object under @p and make it the selection. */
+/* Modify tool: hit-test the object under @p and make it the selection. With
+ * @add (Shift) the object is added to the current selection instead of
+ * replacing it. self->selected tracks the "primary" (last-clicked) object. */
 static void
-select_at (DiaShell *self, Point p)
+select_at (DiaShell *self, Point p, gboolean add)
 {
   DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
   DiaObject *obj = layer ? dia_layer_find_closest_object (layer, &p, 0.5) : NULL;
   char buf[96];
 
-  data_remove_all_selected (self->diagram);
-  self->selected = obj;
+  if (!add) {
+    data_remove_all_selected (self->diagram);
+    self->selected = NULL;
+  }
   if (obj) {
     data_select (self->diagram, obj);
-    g_snprintf (buf, sizeof (buf), _("Selected %s"), obj->type->name);
+    self->selected = obj;
+  }
+
+  if (self->selected) {
+    g_snprintf (buf, sizeof (buf), _("Selected %s (%u)"),
+                self->selected->type->name,
+                g_list_length (self->diagram->selected));
   } else {
     g_snprintf (buf, sizeof (buf), _("Nothing selected"));
   }
@@ -1044,22 +1080,28 @@ static void
 delete_selected (DiaShell *self)
 {
   DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
-  DiaObject *obj = self->selected;
-  char buf[96];
+  GList *sel = g_list_copy (self->diagram->selected);   /* snapshot: we mutate it */
+  guint count = 0;
+  char buf[64];
 
-  if (!obj) {
+  if (!sel) {
     gtk_label_set_text (GTK_LABEL (self->status_msg), _("Nothing to delete"));
     return;
   }
+  for (GList *l = sel; l; l = l->next) {
+    DiaObject *obj = l->data;
 
-  /* Record before unlinking (the op is considered already applied). */
-  push_op (self, OP_DELETE, obj, obj->position, obj->position);
-  data_unselect (self->diagram, obj);
+    /* Record before unlinking (the op is considered already applied). */
+    push_op (self, OP_DELETE, obj, obj->position, obj->position);
+    data_unselect (self->diagram, obj);
+    dia_layer_remove_object (layer, obj);
+    count++;
+  }
+  g_list_free (sel);
   self->selected = NULL;
-  dia_layer_remove_object (layer, obj);
 
-  g_snprintf (buf, sizeof (buf), _("Deleted %s — %u object(s)"),
-              obj->type->name, diagram_object_count (self));
+  g_snprintf (buf, sizeof (buf), _("Deleted %u — %u object(s) left"),
+              count, diagram_object_count (self));
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
   gtk_widget_queue_draw (self->canvas);
 }
@@ -1162,7 +1204,9 @@ on_canvas_pressed (GtkGestureClick *gesture,
         open_text_editor (self, self->selected);
       }
     } else {
-      select_at (self, p);
+      GdkModifierType m = gtk_event_controller_get_current_event_state (
+                            GTK_EVENT_CONTROLLER (gesture));
+      select_at (self, p, (m & GDK_SHIFT_MASK) != 0);
     }
   } else {
     apply_tool_at (self, p);
@@ -1186,29 +1230,55 @@ on_canvas_drag_begin (GtkGestureDrag *gesture,
 {
   Point p;
   int hi;
+  DiaLayer *layer;
+  DiaObject *obj_under;
 
   self->drag_handle = NULL;
   self->drag_handle_idx = -1;
+  self->rubber_band = FALSE;
+  if (self->drag_moves) {
+    g_array_set_size (self->drag_moves, 0);
+  } else {
+    self->drag_moves = g_array_new (FALSE, FALSE, sizeof (MoveItem));
+  }
 
-  if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected ||
-      self->page_scale <= 0.0) {
+  if (g_strcmp0 (self->tool, "Modify") != 0 || self->page_scale <= 0.0) {
     return;
   }
 
   p.x = (start_x - self->page_x) / self->page_scale;
   p.y = (start_y - self->page_y) / self->page_scale;
 
-  hi = handle_at (self->selected, p, 0.4);
+  /* 1. A handle of the primary selection -> resize/reshape that object. */
+  hi = self->selected ? handle_at (self->selected, p, 0.4) : -1;
   if (hi >= 0) {
     self->drag_handle = self->selected->handles[hi];
     self->drag_handle_idx = hi;
     self->drag_handle_start = self->drag_handle->pos;
-    /* A connected endpoint must be freed before it can be dragged elsewhere. */
     if (self->drag_handle->connected_to != NULL) {
       object_unconnect (self->selected, self->drag_handle);
     }
+    return;
+  }
+
+  /* 2. On an object -> move the whole selection. On empty -> rubber-band. */
+  layer = dia_diagram_data_get_active_layer (self->diagram);
+  obj_under = layer ? dia_layer_find_closest_object (layer, &p, 0.5) : NULL;
+  if (obj_under) {
+    if (self->diagram->selected
+        && g_list_find (self->diagram->selected, obj_under)) {
+      for (GList *l = self->diagram->selected; l; l = l->next) {
+        MoveItem it = { l->data, ((DiaObject *) l->data)->position };
+        g_array_append_val (self->drag_moves, it);
+      }
+    } else {
+      MoveItem it = { obj_under, obj_under->position };
+      g_array_append_val (self->drag_moves, it);
+    }
   } else {
-    self->drag_origin = self->selected->position;
+    self->rubber_band = TRUE;
+    self->rubber_start = p;
+    self->rubber_cur = p;
   }
 }
 
@@ -1221,12 +1291,11 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
   DiaObjectChange *change;
   Point to;
 
-  if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected ||
-      self->page_scale <= 0.0) {
+  if (g_strcmp0 (self->tool, "Modify") != 0 || self->page_scale <= 0.0) {
     return;
   }
 
-  if (self->drag_handle) {
+  if (self->drag_handle && self->selected) {
     /* Absolute target relative to the handle's start, so repeated updates are
      * not cumulative. */
     to.x = self->drag_handle_start.x + offset_x / self->page_scale;
@@ -1234,16 +1303,52 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
     snap_to_grid (self, &to);
     change = dia_object_move_handle (self->selected, self->drag_handle, &to,
                                      NULL, HANDLE_MOVE_USER, 0);
+    g_clear_pointer (&change, dia_object_change_unref);
+    update_connections_for (self->selected);
+  } else if (self->rubber_band) {
+    self->rubber_cur.x = self->rubber_start.x + offset_x / self->page_scale;
+    self->rubber_cur.y = self->rubber_start.y + offset_y / self->page_scale;
   } else {
-    to.x = self->drag_origin.x + offset_x / self->page_scale;
-    to.y = self->drag_origin.y + offset_y / self->page_scale;
-    snap_to_grid (self, &to);
-    change = dia_object_move (self->selected, &to);
+    for (guint i = 0; i < self->drag_moves->len; i++) {
+      MoveItem *it = &g_array_index (self->drag_moves, MoveItem, i);
+
+      to.x = it->start.x + offset_x / self->page_scale;
+      to.y = it->start.y + offset_y / self->page_scale;
+      snap_to_grid (self, &to);
+      change = dia_object_move (it->obj, &to);
+      g_clear_pointer (&change, dia_object_change_unref);
+      update_connections_for (it->obj);
+    }
   }
-  g_clear_pointer (&change, dia_object_change_unref);
-  /* Lines connected to the moved/resized object follow it live. */
-  update_connections_for (self->selected);
   gtk_widget_queue_draw (self->canvas);
+}
+
+/* Select every object whose bounding box intersects the rubber-band rect. */
+static void
+rubber_band_select (DiaShell *self)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  int n = layer ? dia_layer_object_count (layer) : 0;
+  double x0 = MIN (self->rubber_start.x, self->rubber_cur.x);
+  double y0 = MIN (self->rubber_start.y, self->rubber_cur.y);
+  double x1 = MAX (self->rubber_start.x, self->rubber_cur.x);
+  double y1 = MAX (self->rubber_start.y, self->rubber_cur.y);
+  char buf[64];
+
+  data_remove_all_selected (self->diagram);
+  self->selected = NULL;
+  for (int i = 0; i < n; i++) {
+    DiaObject *o = dia_layer_object_get_nth (layer, i);
+    DiaRectangle *bb = &o->bounding_box;
+
+    if (!(bb->right < x0 || bb->left > x1 || bb->bottom < y0 || bb->top > y1)) {
+      data_select (self->diagram, o);
+      self->selected = o;
+    }
+  }
+  g_snprintf (buf, sizeof (buf), _("Selected %u object(s)"),
+              g_list_length (self->diagram->selected));
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
 static void
@@ -1255,12 +1360,35 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
   DiaObjectChange *change;
   Point to;
 
-  if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected ||
-      self->page_scale <= 0.0) {
+  if (g_strcmp0 (self->tool, "Modify") != 0 || self->page_scale <= 0.0) {
     return;
   }
 
-  if (self->drag_handle) {
+  if (self->rubber_band) {
+    self->rubber_band = FALSE;
+    rubber_band_select (self);
+    gtk_widget_queue_draw (self->canvas);
+    return;
+  }
+
+  if (!self->drag_handle && self->drag_moves->len > 0) {
+    for (guint i = 0; i < self->drag_moves->len; i++) {
+      MoveItem *it = &g_array_index (self->drag_moves, MoveItem, i);
+
+      to.x = it->start.x + offset_x / self->page_scale;
+      to.y = it->start.y + offset_y / self->page_scale;
+      snap_to_grid (self, &to);
+      update_connections_for (it->obj);
+      if (to.x != it->start.x || to.y != it->start.y) {
+        push_op (self, OP_MOVE, it->obj, it->start, to);
+      }
+    }
+    g_array_set_size (self->drag_moves, 0);
+    gtk_widget_queue_draw (self->canvas);
+    return;
+  }
+
+  if (self->drag_handle && self->selected) {
     to.x = self->drag_handle_start.x + offset_x / self->page_scale;
     to.y = self->drag_handle_start.y + offset_y / self->page_scale;
     snap_to_grid (self, &to);
@@ -1292,15 +1420,6 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
     self->drag_handle_idx = -1;
     gtk_widget_queue_draw (self->canvas);
     return;
-  }
-
-  /* Record the whole drag as a single undoable move; connected lines follow. */
-  to.x = self->drag_origin.x + offset_x / self->page_scale;
-  to.y = self->drag_origin.y + offset_y / self->page_scale;
-  snap_to_grid (self, &to);
-  update_connections_for (self->selected);
-  if (to.x != self->drag_origin.x || to.y != self->drag_origin.y) {
-    push_op (self, OP_MOVE, self->selected, self->drag_origin, to);
   }
 }
 
@@ -2328,6 +2447,45 @@ on_uitest_text (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): rubber-band-select two of three boxes (placed
+ * away from the seeded objects) and delete them, verifying multi-select and
+ * multi-delete. */
+static void
+on_uitest_multiselect (GtkButton *button, DiaShell *self)
+{
+  guint c0 = diagram_object_count (self);
+  DiaObject *objs[3];
+  const Point pts[3] = { { 50, 50 }, { 53, 50 }, { 80, 80 } };
+  guint nsel, after;
+  char buf[96];
+
+  for (int i = 0; i < 3; i++) {
+    objs[i] = diagram_create_object (self, "Standard - Box", pts[i]);
+    if (objs[i]) {
+      push_op (self, OP_CREATE, objs[i], pts[i], pts[i]);
+    }
+  }
+  /* a rect covering the first two boxes but not the third (nor the seeded set) */
+  self->rubber_start = (Point) { 48, 48 };
+  self->rubber_cur = (Point) { 56, 54 };
+  rubber_band_select (self);
+  nsel = g_list_length (self->diagram->selected);
+
+  delete_selected (self);
+  after = diagram_object_count (self);
+
+  if (nsel == 2 && after == c0 + 1) {
+    g_snprintf (buf, sizeof (buf), _("multiselect OK (sel=%u left=%u)"),
+                nsel, after);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("multiselect FAIL (sel=%u left=%u)"),
+                nsel, after);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -2790,6 +2948,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *sh = gtk_button_new_with_label ("uitest-sheet");
     GtkWidget *cn = gtk_button_new_with_label ("uitest-connect");
     GtkWidget *tx = gtk_button_new_with_label ("uitest-text");
+    GtkWidget *ms = gtk_button_new_with_label ("uitest-multiselect");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -2806,6 +2965,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (sh), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (cn), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (tx), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (ms), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -2822,6 +2982,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (sh, "clicked", G_CALLBACK (on_uitest_sheet), self);
     g_signal_connect (cn, "clicked", G_CALLBACK (on_uitest_connect), self);
     g_signal_connect (tx, "clicked", G_CALLBACK (on_uitest_text), self);
+    g_signal_connect (ms, "clicked", G_CALLBACK (on_uitest_multiselect), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -2838,6 +2999,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), sh);
     gtk_box_append (GTK_BOX (bar), cn);
     gtk_box_append (GTK_BOX (bar), tx);
+    gtk_box_append (GTK_BOX (bar), ms);
   }
 
   return bar;
@@ -3559,6 +3721,7 @@ dia_shell_free (gpointer data)
 {
   DiaShell *self = data;
   g_clear_pointer (&self->undo, g_ptr_array_unref);
+  g_clear_pointer (&self->drag_moves, g_array_unref);
   dia_clear_object (&self->clipboard);
   g_clear_object (&self->diagram);
   g_free (self);

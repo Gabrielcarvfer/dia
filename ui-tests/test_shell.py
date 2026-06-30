@@ -381,6 +381,16 @@ def main():
         ok = any('text OK' in (lab.name or '') for lab in labels)
         check("Text object content can be set and read", ok)
 
+    # 3s. Multi-select: rubber-band selects two boxes, delete removes both.
+    ms = find(app, name='uitest-multiselect', roleName='push button')
+    check("DIA_UITEST multiselect trigger present", ms)
+    if ms:
+        do_click(ms)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('multiselect OK' in (lab.name or '') for lab in labels)
+        check("Rubber-band selects and deletes multiple objects", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
