@@ -2183,6 +2183,105 @@ on_end_arrow_changed (GtkDropDown *dd, GParamSpec *ps, DiaShell *self)
   on_line_attrs_changed (self);
 }
 
+/* Preview drawer: a line in the given DiaLineStyle (item position == style). */
+static void
+draw_linestyle_item (GtkDrawingArea *area, cairo_t *cr, int w, int h,
+                     gpointer data)
+{
+  int style = GPOINTER_TO_INT (data);
+  double y = h / 2.0;
+  static const struct { int n; double d[6]; } pats[] = {
+    { 0, { 0 } },                      /* solid        */
+    { 2, { 6, 4 } },                   /* dashed       */
+    { 4, { 6, 3, 1.5, 3 } },           /* dash-dot     */
+    { 6, { 6, 3, 1.5, 3, 1.5, 3 } },   /* dash-dot-dot */
+    { 2, { 1.5, 3 } },                 /* dotted       */
+  };
+
+  cairo_set_source_rgb (cr, 0.1, 0.1, 0.1);
+  cairo_set_line_width (cr, 1.5);
+  if (style >= 0 && style < (int) G_N_ELEMENTS (pats)) {
+    cairo_set_dash (cr, pats[style].d, pats[style].n, 0);
+  }
+  cairo_move_to (cr, 4, y);
+  cairo_line_to (cr, w - 4, y);
+  cairo_stroke (cr);
+}
+
+/* Preview drawer: a line ending in the chosen arrow (item position indexes
+ * arrow_choices). */
+static void
+draw_arrow_item (GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data)
+{
+  int idx = GPOINTER_TO_INT (data);
+  ArrowType t = (idx >= 0 && idx < (int) G_N_ELEMENTS (arrow_choices))
+                  ? arrow_choices[idx] : ARROW_NONE;
+  double y = h / 2.0, tip = w - 4, base = w - 12, hh = 4.0;
+
+  cairo_set_source_rgb (cr, 0.1, 0.1, 0.1);
+  cairo_set_line_width (cr, 1.5);
+  cairo_move_to (cr, 4, y);
+  cairo_line_to (cr, tip, y);
+  cairo_stroke (cr);
+
+  if (t == ARROW_LINES) {
+    cairo_move_to (cr, tip, y);  cairo_line_to (cr, base, y - hh);
+    cairo_move_to (cr, tip, y);  cairo_line_to (cr, base, y + hh);
+    cairo_stroke (cr);
+  } else if (t == ARROW_FILLED_TRIANGLE) {
+    cairo_move_to (cr, tip, y);
+    cairo_line_to (cr, base, y - hh);
+    cairo_line_to (cr, base, y + hh);
+    cairo_close_path (cr);
+    cairo_fill (cr);
+  }
+}
+
+static void
+preview_setup (GtkSignalListItemFactory *f, GtkListItem *item, gpointer draw_func)
+{
+  GtkWidget *area = gtk_drawing_area_new ();
+
+  gtk_widget_set_size_request (area, 56, 16);
+  gtk_list_item_set_child (item, area);
+}
+
+static void
+preview_bind (GtkSignalListItemFactory *f, GtkListItem *item, gpointer draw_func)
+{
+  GtkWidget *area = gtk_list_item_get_child (item);
+  guint pos = gtk_list_item_get_position (item);
+
+  gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (area),
+                                  (GtkDrawingAreaDrawFunc) draw_func,
+                                  GUINT_TO_POINTER (pos), NULL);
+  gtk_widget_queue_draw (area);
+}
+
+/* A GtkDropDown that shows a drawn preview per item (no text), single column.
+ * @labels (NULL-terminated) populate the model for accessibility/size. */
+static GtkWidget *
+make_preview_dropdown (const char * const *labels, gpointer draw_func,
+                       guint selected, const char *a11y,
+                       GCallback notify_cb, DiaShell *self)
+{
+  GtkStringList *model = gtk_string_list_new (labels);
+  GtkListItemFactory *factory = gtk_signal_list_item_factory_new ();
+  GtkWidget *dd;
+
+  g_signal_connect (factory, "setup", G_CALLBACK (preview_setup), draw_func);
+  g_signal_connect (factory, "bind", G_CALLBACK (preview_bind), draw_func);
+
+  dd = gtk_drop_down_new (G_LIST_MODEL (model), NULL);   /* takes model ref */
+  gtk_drop_down_set_factory (GTK_DROP_DOWN (dd), factory);
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (dd), selected);
+  g_object_unref (factory);
+
+  set_a11y_label (dd, a11y);
+  g_signal_connect (dd, "notify::selected", notify_cb, self);
+  return dd;
+}
+
 /* A "label: widget" row in the line-attributes grid. */
 static void
 attr_row (GtkGrid *grid, int row, const char *text, GtkWidget *w)
@@ -2207,9 +2306,12 @@ build_toolbox (DiaShell *self)
   gtk_widget_set_margin_start (box, 4);
   gtk_widget_set_margin_end (box, 4);
   gtk_widget_set_margin_top (box, 4);
+  /* Keep the toolbox slim: don't let the attribute widgets' hexpand propagate
+   * up and make the sidebar steal half the window from the canvas. */
+  gtk_widget_set_hexpand (box, FALSE);
 
   gtk_grid_set_row_homogeneous (GTK_GRID (grid), TRUE);
-  gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
+  gtk_widget_set_halign (grid, GTK_ALIGN_CENTER);   /* centre the icon column */
 
   for (gsize i = 0; i < G_N_ELEMENTS (tool_entries); i++) {
     GtkWidget *btn = gtk_toggle_button_new ();
@@ -2261,33 +2363,34 @@ build_toolbox (DiaShell *self)
   gtk_box_append (GTK_BOX (box),
                   gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
   {
-    const char *styles[] = { N_("Solid"), N_("Dashed"), N_("Dash-dot"),
-                             N_("Dash-dot-dot"), N_("Dotted"), NULL };
-    const char *arrows[] = { N_("None"), N_("Lines"), N_("Filled"), NULL };
+    /* Labels back the models for accessibility; the items render as drawn
+     * previews (no text) via a custom factory. */
+    static const char * const styles[] = { "Solid", "Dashed", "Dash-dot",
+                                            "Dash-dot-dot", "Dotted", NULL };
+    static const char * const arrows[] = { "None", "Lines", "Filled", NULL };
     GtkWidget *attrs = gtk_grid_new ();
     GtkWidget *lw = gtk_spin_button_new_with_range (0.0, 5.0, 0.05);
-    GtkWidget *ls = gtk_drop_down_new_from_strings (styles);
-    GtkWidget *sa = gtk_drop_down_new_from_strings (arrows);
-    GtkWidget *ea = gtk_drop_down_new_from_strings (arrows);
+    GtkWidget *ls = make_preview_dropdown (styles, draw_linestyle_item,
+                                           self->line_style, "line-style",
+                                           G_CALLBACK (on_lstyle_changed), self);
+    GtkWidget *sa = make_preview_dropdown (arrows, draw_arrow_item, 0,
+                                           "start-arrow",
+                                           G_CALLBACK (on_start_arrow_changed),
+                                           self);
+    GtkWidget *ea = make_preview_dropdown (arrows, draw_arrow_item, 0,
+                                           "end-arrow",
+                                           G_CALLBACK (on_end_arrow_changed),
+                                           self);
 
     gtk_grid_set_row_spacing (GTK_GRID (attrs), 3);
     gtk_grid_set_column_spacing (GTK_GRID (attrs), 4);
 
     gtk_spin_button_set_digits (GTK_SPIN_BUTTON (lw), 2);
     gtk_spin_button_set_value (GTK_SPIN_BUTTON (lw), self->line_width);
-    gtk_drop_down_set_selected (GTK_DROP_DOWN (ls), self->line_style);
+    gtk_editable_set_width_chars (GTK_EDITABLE (lw), 4);
+    gtk_editable_set_max_width_chars (GTK_EDITABLE (lw), 5);
     set_a11y_label (lw, "line-width");
-    set_a11y_label (ls, "line-style");
-    set_a11y_label (sa, "start-arrow");
-    set_a11y_label (ea, "end-arrow");
-
     g_signal_connect (lw, "value-changed", G_CALLBACK (on_lw_changed), self);
-    g_signal_connect (ls, "notify::selected",
-                      G_CALLBACK (on_lstyle_changed), self);
-    g_signal_connect (sa, "notify::selected",
-                      G_CALLBACK (on_start_arrow_changed), self);
-    g_signal_connect (ea, "notify::selected",
-                      G_CALLBACK (on_end_arrow_changed), self);
 
     attr_row (GTK_GRID (attrs), 0, _("Width"), lw);
     attr_row (GTK_GRID (attrs), 1, _("Style"), ls);
