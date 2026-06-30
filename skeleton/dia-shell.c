@@ -567,6 +567,22 @@ clamp_origin_to_page (DiaShell *self)
   }
 }
 
+/* Pan the view by a pixel offset from where a Scroll-tool drag began
+ * (self->pan_x0/pan_y0 captured at drag-begin). Drag right -> see further
+ * left, so the origin moves opposite the cursor. */
+static void
+pan_view (DiaShell *self, double off_x_px, double off_y_px)
+{
+  double pxcm = shell_pxcm (self);
+
+  self->origin_x = self->pan_x0 - off_x_px / pxcm;
+  self->origin_y = self->pan_y0 - off_y_px / pxcm;
+  clamp_origin_to_page (self);
+  update_transform (self);
+  update_scrollbars (self);
+  redraw_canvas_and_rulers (self);
+}
+
 static void update_zoom (DiaShell *self, double factor);
 static void zoom_about (DiaShell *self, double factor, double cx, double cy);
 static void refresh_layers_list (DiaShell *self);
@@ -1421,6 +1437,76 @@ ctx_add_action (GtkWidget *box, DiaShell *self, const char *label,
   gtk_box_append (GTK_BOX (box), b);
 }
 
+/* Rotate one object by @degrees about its own bounding-box centre, using
+ * libdia's generic transform op (objects rotate their geometry; groups recurse
+ * into their children). Returns FALSE if the object can't be transformed. */
+static gboolean
+rotate_object (DiaObject *obj, double degrees)
+{
+  double rad = degrees * G_PI / 180.0;
+  double c = cos (rad), s = sin (rad);
+  double cx = (obj->bounding_box.left + obj->bounding_box.right) / 2.0;
+  double cy = (obj->bounding_box.top + obj->bounding_box.bottom) / 2.0;
+  /* x' = c*x - s*y + x0 ; y' = s*x + c*y + y0, chosen so the centre is fixed */
+  DiaMatrix m = {
+    .xx = c, .xy = -s,
+    .yx = s, .yy = c,
+    .x0 = cx * (1.0 - c) + s * cy,
+    .y0 = cy * (1.0 - c) - s * cx,
+  };
+
+  if (!obj->ops || !obj->ops->transform) {
+    return FALSE;
+  }
+  return dia_object_transform (obj, &m);
+}
+
+/* Rotate every selected object by @degrees (each about its own centre). */
+static void
+rotate_selected (DiaShell *self, double degrees)
+{
+  guint done = 0, total = 0;
+  char buf[64];
+
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    total++;
+    if (rotate_object (l->data, degrees)) {
+      update_connections_for (l->data);
+      done++;
+    }
+  }
+  if (total == 0) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Nothing to rotate"));
+    return;
+  }
+  g_snprintf (buf, sizeof (buf), _("Rotated %u/%u by %.0f°"), done, total,
+              degrees);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+}
+
+/* Context-menu rotate button: angle (deg) stored as "rotate-deg". */
+static void
+on_ctx_rotate (GtkButton *btn, gpointer data)
+{
+  DiaShell *self = data;
+  int deg = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (btn), "rotate-deg"));
+
+  rotate_selected (self, deg);
+  popover_popdown (GTK_WIDGET (btn));
+}
+
+static void
+ctx_add_rotate (GtkWidget *box, DiaShell *self, const char *label, int deg)
+{
+  GtkWidget *b = ctx_button (label);
+
+  g_object_set_data (G_OBJECT (b), "rotate-deg", GINT_TO_POINTER (deg));
+  g_signal_connect (b, "clicked", G_CALLBACK (on_ctx_rotate), self);
+  gtk_box_append (GTK_BOX (box), b);
+}
+
 /* Secondary (right) button: select what's under the cursor, then pop up a
  * context menu there. The menu leads with the object's OWN DiaMenu (so e.g. a
  * polygon offers "Add Corner" at the click point), followed by the generic
@@ -1495,6 +1581,13 @@ on_canvas_secondary (GtkGestureClick *gesture,
       gtk_box_append (GTK_BOX (box),
                       gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
     }
+
+    /* rotate the object/group (libdia transform; groups rotate recursively) */
+    ctx_add_rotate (box, self, _("Rotate 90°"), 90);
+    ctx_add_rotate (box, self, _("Rotate 180°"), 180);
+    ctx_add_rotate (box, self, _("Rotate 270°"), 270);
+    gtk_box_append (GTK_BOX (box),
+                    gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
   }
 
   /* 2. generic edit / arrange actions (map to the "dia" action group) */
@@ -1612,14 +1705,7 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
 
   if (self->panning) {
     /* Pan: move the view with the cursor (drag right -> see further left). */
-    double pxcm = shell_pxcm (self);
-
-    self->origin_x = self->pan_x0 - offset_x / pxcm;
-    self->origin_y = self->pan_y0 - offset_y / pxcm;
-    clamp_origin_to_page (self);
-    update_transform (self);
-    update_scrollbars (self);
-    redraw_canvas_and_rulers (self);
+    pan_view (self, offset_x, offset_y);
     return;
   }
 
@@ -3444,6 +3530,193 @@ on_uitest_properties (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): create a polygon, move one of its corners, then
+ * add a corner via the object menu — exercising create + move-vertex +
+ * add-vertex in one go. */
+static void
+on_uitest_polygon (GtkButton *button, DiaShell *self)
+{
+  DiaObject *poly = diagram_create_object (self, "Standard - Polygon",
+                                           (Point) { 9, 9 });
+  int h0, h1;
+  gboolean move_ok = FALSE, add_ok;
+  DiaMenu *m;
+  char buf[128];
+
+  if (!poly) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("polygon FAIL (no object)"));
+    return;
+  }
+  push_op (self, OP_CREATE, poly, (Point) { 9, 9 }, (Point) { 9, 9 });
+  h0 = poly->num_handles;
+
+  /* move-vertex: drag corner handle 0 and confirm it lands where asked */
+  if (poly->num_handles > 0) {
+    Point to = { poly->handles[0]->pos.x + 1.5, poly->handles[0]->pos.y + 1.0 };
+    DiaObjectChange *ch = dia_object_move_handle (poly, poly->handles[0], &to,
+                                                  NULL, HANDLE_MOVE_USER_FINAL,
+                                                  0);
+    g_clear_pointer (&ch, dia_object_change_unref);
+    move_ok = (fabs (poly->handles[0]->pos.x - to.x) < 0.01 &&
+               fabs (poly->handles[0]->pos.y - to.y) < 0.01);
+  }
+
+  /* add-vertex: invoke the object's own "Add Corner" menu item */
+  m = dia_object_get_menu (poly, &(Point) { 9, 9 });
+  for (int i = 0; m && i < m->num_items; i++) {
+    DiaMenuItem *it = &m->items[i];
+
+    if (it->text && it->callback && strstr (it->text, "Add Corner")) {
+      DiaObjectChange *ch = it->callback (poly, &(Point) { 9, 9 },
+                                          it->callback_data);
+      g_clear_pointer (&ch, dia_object_change_unref);
+      break;
+    }
+  }
+  h1 = poly->num_handles;
+  add_ok = (h1 == h0 + 1);
+
+  g_snprintf (buf, sizeof (buf),
+              (move_ok && add_ok) ? _("polygon OK (moved + corner %d->%d)")
+                                  : _("polygon FAIL (move=%d corner %d->%d)"),
+              (move_ok && add_ok) ? h0 : (int) move_ok, h0, h1);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+}
+
+/* UI-test hook (DIA_UITEST): pan the view and confirm the origin moves opposite
+ * the drag (the Scroll tool's pan_view). */
+static void
+on_uitest_pan (GtkButton *button, DiaShell *self)
+{
+  double x0 = self->origin_x, y0 = self->origin_y;
+  char buf[96];
+
+  self->pan_x0 = self->origin_x;
+  self->pan_y0 = self->origin_y;
+  pan_view (self, 120.0, 80.0);   /* drag 120px right, 80px down */
+
+  if (self->origin_x < x0 - 0.01 && self->origin_y < y0 - 0.01) {
+    g_snprintf (buf, sizeof (buf), _("pan OK (%.1f,%.1f->%.1f,%.1f)"),
+                x0, y0, self->origin_x, self->origin_y);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("pan FAIL (%.1f,%.1f->%.1f,%.1f)"),
+                x0, y0, self->origin_x, self->origin_y);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+/* UI-test hook (DIA_UITEST): build a group inside a group and confirm the
+ * nested structure (recursive grouping). */
+static void
+on_uitest_nestedgroup (GtkButton *button, DiaShell *self)
+{
+  DiaObject *a = diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  DiaObject *b = diagram_create_object (self, "Standard - Box", (Point) { 3, 3 });
+  DiaObject *c, *grp_a, *grp_b;
+  int kids_b = 0, kids_a = -1;
+  char buf[128];
+
+  if (!a || !b) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("nestedgroup FAIL (no objects)"));
+    return;
+  }
+  /* inner group: a + b */
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, a);
+  data_select (self->diagram, b);
+  self->selected = b;
+  group_selected (self);
+  grp_a = self->selected;
+
+  /* outer group: grp_a + c */
+  c = diagram_create_object (self, "Standard - Box", (Point) { 4, 4 });
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, grp_a);
+  data_select (self->diagram, c);
+  self->selected = c;
+  group_selected (self);
+  grp_b = self->selected;
+
+  if (grp_b && grp_b->type == &group_type) {
+    GList *bch = group_objects (grp_b);
+
+    kids_b = g_list_length (bch);
+    for (GList *l = bch; l; l = l->next) {
+      DiaObject *o = l->data;
+
+      if (o->type == &group_type) {
+        kids_a = g_list_length (group_objects (o));
+      }
+    }
+  }
+
+  if (grp_b && grp_b->type == &group_type && kids_b == 2 && kids_a == 2) {
+    g_snprintf (buf, sizeof (buf), _("nestedgroup OK (outer=%d inner=%d)"),
+                kids_b, kids_a);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("nestedgroup FAIL (outer=%d inner=%d)"),
+                kids_b, kids_a);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+}
+
+/* UI-test hook (DIA_UITEST): make a horizontal line, rotate it 90° about its
+ * centre, and confirm its geometry actually turned vertical (the libdia
+ * transform rotates the line's points, so its bounding box swaps shape). */
+static void
+on_uitest_rotate (GtkButton *button, DiaShell *self)
+{
+  DiaObject *line = diagram_create_object (self, "Standard - Line",
+                                           (Point) { 14, 5 });
+  Point a = { 14, 5 }, b = { 18, 5 };   /* horizontal, 4 cm long */
+  double w0, h0, w1, h1;
+  char buf[112];
+
+  if (!line || line->num_handles < 2) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("rotate FAIL (no line)"));
+    return;
+  }
+  push_op (self, OP_CREATE, line, (Point) { 14, 5 }, (Point) { 14, 5 });
+
+  /* lay it out horizontally */
+  for (int i = 0; i < 2; i++) {
+    Point *to = i == 0 ? &a : &b;
+    DiaObjectChange *ch = dia_object_move_handle (line, line->handles[i], to,
+                                                  NULL, HANDLE_MOVE_USER_FINAL,
+                                                  0);
+    g_clear_pointer (&ch, dia_object_change_unref);
+  }
+  w0 = line->bounding_box.right - line->bounding_box.left;
+  h0 = line->bounding_box.bottom - line->bounding_box.top;
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, line);
+  self->selected = line;
+  rotate_selected (self, 90);
+
+  w1 = line->bounding_box.right - line->bounding_box.left;
+  h1 = line->bounding_box.bottom - line->bounding_box.top;
+
+  /* horizontal (w≈4,h≈0) -> vertical (w≈0,h≈4) */
+  if (w0 > 3.0 && h0 < 1.0 && w1 < 1.0 && h1 > 3.0) {
+    g_snprintf (buf, sizeof (buf), _("rotate OK (%.1fx%.1f->%.1fx%.1f)"),
+                w0, h0, w1, h1);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("rotate FAIL (%.1fx%.1f->%.1fx%.1f)"),
+                w0, h0, w1, h1);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -3997,6 +4270,10 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *co = gtk_button_new_with_label ("uitest-colour");
     GtkWidget *di = gtk_button_new_with_label ("uitest-distribute");
     GtkWidget *pr = gtk_button_new_with_label ("uitest-properties");
+    GtkWidget *pg = gtk_button_new_with_label ("uitest-polygon");
+    GtkWidget *pn = gtk_button_new_with_label ("uitest-pan");
+    GtkWidget *ng = gtk_button_new_with_label ("uitest-nestedgroup");
+    GtkWidget *ro = gtk_button_new_with_label ("uitest-rotate");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -4020,6 +4297,10 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (co), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (di), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (pr), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (pg), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (pn), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (ng), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (ro), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -4043,6 +4324,10 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (co, "clicked", G_CALLBACK (on_uitest_colour), self);
     g_signal_connect (di, "clicked", G_CALLBACK (on_uitest_distribute), self);
     g_signal_connect (pr, "clicked", G_CALLBACK (on_uitest_properties), self);
+    g_signal_connect (pg, "clicked", G_CALLBACK (on_uitest_polygon), self);
+    g_signal_connect (pn, "clicked", G_CALLBACK (on_uitest_pan), self);
+    g_signal_connect (ng, "clicked", G_CALLBACK (on_uitest_nestedgroup), self);
+    g_signal_connect (ro, "clicked", G_CALLBACK (on_uitest_rotate), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -4066,6 +4351,10 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), co);
     gtk_box_append (GTK_BOX (bar), di);
     gtk_box_append (GTK_BOX (bar), pr);
+    gtk_box_append (GTK_BOX (bar), pg);
+    gtk_box_append (GTK_BOX (bar), pn);
+    gtk_box_append (GTK_BOX (bar), ng);
+    gtk_box_append (GTK_BOX (bar), ro);
   }
 
   return bar;
@@ -4596,6 +4885,30 @@ on_layer_label_editing (GObject *labelobj, GParamSpec *ps, DiaShell *self)
   }
 }
 
+/* Append one "• type" row per object in @objects to @vbox, recursing into
+ * groups (indented one step deeper) so the nested group hierarchy is visible. */
+static void
+append_object_rows (GtkWidget *vbox, GList *objects, int depth)
+{
+  for (GList *l = objects; l; l = l->next) {
+    DiaObject *obj = l->data;
+    const char *tn = obj && obj->type ? obj->type->name : "?";
+    char *txt = g_strdup_printf ("\xe2\x80\xa2 %s", tn);   /* "• type" */
+    GtkWidget *ol = gtk_label_new (txt);
+
+    gtk_widget_set_halign (ol, GTK_ALIGN_START);
+    gtk_widget_set_margin_start (ol, 12 + depth * 12);
+    gtk_widget_add_css_class (ol, "dim-label");
+    gtk_widget_add_css_class (ol, "caption");
+    gtk_box_append (GTK_BOX (vbox), ol);
+    g_free (txt);
+
+    if (obj && obj->type == &group_type) {
+      append_object_rows (vbox, group_objects (obj), depth + 1);
+    }
+  }
+}
+
 /* Rebuild the layers list (topmost first, the way Dia shows them). The single
  * selection highlight tracks the active layer; rows are GtkEditableLabels so a
  * double-click renames them. */
@@ -4636,19 +4949,7 @@ refresh_layers_list (DiaShell *self)
                       G_CALLBACK (on_layer_label_editing), self);
     gtk_box_append (GTK_BOX (vbox), name);
 
-    for (int j = 0; j < oc; j++) {
-      DiaObject *obj = dia_layer_object_get_nth (l, j);
-      const char *tn = obj && obj->type ? obj->type->name : "?";
-      char *txt = g_strdup_printf ("\xe2\x80\xa2 %s", tn);   /* "• type" */
-      GtkWidget *ol = gtk_label_new (txt);
-
-      gtk_widget_set_halign (ol, GTK_ALIGN_START);
-      gtk_widget_set_margin_start (ol, 12);
-      gtk_widget_add_css_class (ol, "dim-label");
-      gtk_widget_add_css_class (ol, "caption");
-      gtk_box_append (GTK_BOX (vbox), ol);
-      g_free (txt);
-    }
+    append_object_rows (vbox, dia_layer_get_object_list (l), 0);
     if (oc == 0) {
       GtkWidget *empty = gtk_label_new (_("(empty)"));
 

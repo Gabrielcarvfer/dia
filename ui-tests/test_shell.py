@@ -451,6 +451,46 @@ def main():
         ok = any('properties OK' in (lab.name or '') for lab in labels)
         check("Object property editor builds and applies", ok)
 
+    # 3z. Polygon: create, move a vertex, add a vertex via the object menu.
+    pg = find(app, name='uitest-polygon', roleName='push button')
+    check("DIA_UITEST polygon trigger present", pg)
+    if pg:
+        do_click(pg)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('polygon OK' in (lab.name or '') for lab in labels)
+        check("Polygon create + move-vertex + add-vertex", ok)
+
+    # 3aa. Pan: the Scroll tool's pan moves the origin opposite the drag.
+    pn = find(app, name='uitest-pan', roleName='push button')
+    check("DIA_UITEST pan trigger present", pn)
+    if pn:
+        do_click(pn)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('pan OK' in (lab.name or '') for lab in labels)
+        check("Pan moves the viewport origin", ok)
+
+    # 3ab. Nested groups: a group inside a group (recursive grouping).
+    ng = find(app, name='uitest-nestedgroup', roleName='push button')
+    check("DIA_UITEST nestedgroup trigger present", ng)
+    if ng:
+        do_click(ng)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('nestedgroup OK' in (lab.name or '') for lab in labels)
+        check("Recursive grouping (group inside a group)", ok)
+
+    # 3ac. Rotate: rotating a horizontal line 90° turns it vertical.
+    ro = find(app, name='uitest-rotate', roleName='push button')
+    check("DIA_UITEST rotate trigger present", ro)
+    if ro:
+        do_click(ro)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('rotate OK' in (lab.name or '') for lab in labels)
+        check("Rotate 90° turns a horizontal line vertical", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
