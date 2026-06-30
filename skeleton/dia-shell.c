@@ -11,6 +11,7 @@
 
 #include <glib/gi18n.h>
 #include <gdk/gdkkeysyms.h>
+#include <math.h>
 
 #include "dia-shell.h"
 
@@ -378,6 +379,23 @@ draw_selection_handles (cairo_t *cr, DiagramData *diagram)
 }
 
 
+/* The page rectangle (px,py = top-left in widget px; pw,ph = size in px) for a
+ * canvas allocation of @width x @height at the current zoom. Single source of
+ * truth so the rulers can reproduce the canvas transform without depending on
+ * the canvas having drawn first. */
+static void
+page_geometry (DiaShell *self, int width, int height,
+               double *px, double *py, double *pw, double *ph)
+{
+  double zoom = self ? self->zoom : 1.0;
+
+  *pw = CLAMP (width * 0.7 * zoom, 20, width * 4);
+  *ph = CLAMP (height * 0.82 * zoom, 20, height * 4);
+  *px = (width - *pw) / 2.0;
+  *py = (height - *ph) / 2.0;
+}
+
+
 static void
 draw_canvas (GtkDrawingArea *area,
              cairo_t        *cr,
@@ -386,16 +404,12 @@ draw_canvas (GtkDrawingArea *area,
              gpointer        user_data)
 {
   DiaShell *self = user_data;
-  double zoom = self ? self->zoom : 1.0;
   double page_w, page_h, px, py;
 
   cairo_set_source_rgb (cr, 0.6, 0.6, 0.62);
   cairo_paint (cr);
 
-  page_w = CLAMP (width * 0.7 * zoom, 20, width * 4);
-  page_h = CLAMP (height * 0.82 * zoom, 20, height * 4);
-  px = (width - page_w) / 2.0;
-  py = (height - page_h) / 2.0;
+  page_geometry (self, width, height, &px, &py, &page_w, &page_h);
 
   cairo_rectangle (cr, px + 3, py + 3, page_w, page_h);
   cairo_set_source_rgba (cr, 0, 0, 0, 0.25);
@@ -421,6 +435,35 @@ draw_canvas (GtkDrawingArea *area,
   cairo_clip (cr);
   cairo_translate (cr, px, py);
   cairo_scale (cr, page_w / 20.0, page_w / 20.0);
+
+  /* Engineering-paper grid: 1 cm squares (heavier every 5 cm), aligned to the
+   * cm rulers and drawn under the diagram shapes. */
+  {
+    double page_h_cm = page_h / (page_w / 20.0);
+    int gy_max = (int) ceil (page_h_cm);
+
+    for (int gx = 0; gx <= 20; gx++) {
+      gboolean major = (gx % 5 == 0);
+      cairo_set_line_width (cr, major ? 0.06 : 0.03);
+      cairo_set_source_rgb (cr, major ? 0.60 : 0.82,
+                                major ? 0.70 : 0.88,
+                                major ? 0.85 : 0.94);
+      cairo_move_to (cr, gx, 0);
+      cairo_line_to (cr, gx, page_h_cm);
+      cairo_stroke (cr);
+    }
+    for (int gy = 0; gy <= gy_max; gy++) {
+      gboolean major = (gy % 5 == 0);
+      cairo_set_line_width (cr, major ? 0.06 : 0.03);
+      cairo_set_source_rgb (cr, major ? 0.60 : 0.82,
+                                major ? 0.70 : 0.88,
+                                major ? 0.85 : 0.94);
+      cairo_move_to (cr, 0, gy);
+      cairo_line_to (cr, 20, gy);
+      cairo_stroke (cr);
+    }
+  }
+
   if (self && self->diagram) {
     draw_diagram (cr, self->diagram);
     draw_selection_handles (cr, self->diagram);
@@ -439,41 +482,89 @@ draw_ruler (GtkDrawingArea *area,
   DiaShell *self = user_data;
   gboolean horizontal = (GTK_WIDGET (area) == self->hruler);
   int extent = horizontal ? width : height;
-  int i;
+  int thick = horizontal ? height : width;
+  /* Reproduce the canvas transform from the canvas allocation, so the ruler is
+   * correct on the very first frame regardless of draw order (the canvas and
+   * rulers share a grid row/column, hence the same px axis). */
+  double px, py, pw, ph, scale, origin;
+
+  page_geometry (self, gtk_widget_get_width (self->canvas),
+                 gtk_widget_get_height (self->canvas), &px, &py, &pw, &ph);
+  scale = pw / 20.0;
+  origin = horizontal ? px : py;
 
   cairo_set_source_rgb (cr, 0.93, 0.93, 0.93);
   cairo_paint (cr);
-
-  cairo_set_source_rgb (cr, 0.5, 0.5, 0.5);
+  cairo_set_font_size (cr, 11.0);
   cairo_set_line_width (cr, 1.0);
 
-  for (i = 0; i < extent; i += 10) {
-    double t = (i % 50 == 0) ? 0.0 : (height / 2.0);
-    if (horizontal) {
-      cairo_move_to (cr, i + 0.5, t);
-      cairo_line_to (cr, i + 0.5, height);
-    } else {
-      cairo_move_to (cr, t, i + 0.5);
-      cairo_line_to (cr, width, i + 0.5);
-    }
-  }
-  cairo_stroke (cr);
+  if (scale > 0.0) {
+    /* One tick per cm; a longer tick + a numeric label every 5 cm. */
+    int cm0 = (int) floor ((0 - origin) / scale);
+    int cm1 = (int) ceil ((extent - origin) / scale);
 
-  /* Cursor-tracking marker: a small black triangle at the pointer's position
-   * along the ruler (the canvas and rulers share a grid column/row, so the
-   * canvas-relative pointer coordinate maps straight onto the ruler). */
+    for (int cm = cm0; cm <= cm1; cm++) {
+      double pos = origin + cm * scale;
+      gboolean major = (cm % 5 == 0);
+      double len = thick * (major ? 0.6 : 0.3);
+
+      cairo_set_source_rgb (cr, 0.45, 0.45, 0.45);
+      if (horizontal) {
+        cairo_move_to (cr, pos + 0.5, thick - len);
+        cairo_line_to (cr, pos + 0.5, thick);
+      } else {
+        cairo_move_to (cr, thick - len, pos + 0.5);
+        cairo_line_to (cr, thick, pos + 0.5);
+      }
+      cairo_stroke (cr);
+
+      if (major) {
+        char lbl[16];
+        g_snprintf (lbl, sizeof (lbl), "%d", cm);
+        cairo_set_source_rgb (cr, 0.2, 0.2, 0.2);
+        if (horizontal) {
+          cairo_move_to (cr, pos + 2.0, thick - len - 1.0);
+        } else {
+          cairo_move_to (cr, 1.0, pos - 1.0);
+        }
+        cairo_show_text (cr, lbl);
+      }
+    }
+  } else {
+    /* Page transform not known yet (first frame): plain pixel ticks. */
+    cairo_set_source_rgb (cr, 0.5, 0.5, 0.5);
+    for (int i = 0; i < extent; i += 10) {
+      double t = (i % 50 == 0) ? 0.0 : (thick / 2.0);
+      if (horizontal) {
+        cairo_move_to (cr, i + 0.5, t);
+        cairo_line_to (cr, i + 0.5, thick);
+      } else {
+        cairo_move_to (cr, t, i + 0.5);
+        cairo_line_to (cr, thick, i + 0.5);
+      }
+    }
+    cairo_stroke (cr);
+  }
+
+  /* Cursor-tracking marker: a black triangle at the pointer's position along
+   * the ruler (the canvas and rulers share a grid column/row, so the
+   * canvas-relative pointer coordinate maps straight onto the ruler). Sized to
+   * most of the ruler thickness so it is easy to see. */
   if (self->cursor_valid) {
+    double hw = 6.0;            /* half-width of the triangle base */
+    double depth = thick - 2.0; /* how far it reaches across the ruler */
+
     cairo_set_source_rgb (cr, 0, 0, 0);
     if (horizontal) {
       double x = self->cursor_x;
-      cairo_move_to (cr, x, height);
-      cairo_line_to (cr, x - 4, height - 7);
-      cairo_line_to (cr, x + 4, height - 7);
+      cairo_move_to (cr, x, thick);                 /* apex at inner edge */
+      cairo_line_to (cr, x - hw, thick - depth);
+      cairo_line_to (cr, x + hw, thick - depth);
     } else {
       double y = self->cursor_y;
-      cairo_move_to (cr, width, y);
-      cairo_line_to (cr, width - 7, y - 4);
-      cairo_line_to (cr, width - 7, y + 4);
+      cairo_move_to (cr, thick, y);
+      cairo_line_to (cr, thick - depth, y - hw);
+      cairo_line_to (cr, thick - depth, y + hw);
     }
     cairo_close_path (cr);
     cairo_fill (cr);
@@ -1628,11 +1719,11 @@ build_canvas_area (DiaShell *self)
   self->hruler = hruler;
   self->vruler = vruler;
 
-  gtk_widget_set_size_request (hruler, -1, 20);
+  gtk_widget_set_size_request (hruler, -1, 26);
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (hruler),
                                   draw_ruler, self, NULL);
 
-  gtk_widget_set_size_request (vruler, 20, -1);
+  gtk_widget_set_size_request (vruler, 26, -1);
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (vruler),
                                   draw_ruler, self, NULL);
 
