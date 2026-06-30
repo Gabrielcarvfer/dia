@@ -258,6 +258,17 @@ def main():
         ok = any('undo/redo OK' in (lab.name or '') for lab in labels)
         check("Undo/redo restores object count", ok)
 
+    # 3g. Extra object sets (flowchart, network, ER) create on the canvas via
+    #     the DIA_UITEST trigger -> proves those types are registered.
+    ex = find(app, name='uitest-extra-objects', roleName='push button')
+    check("DIA_UITEST extra-objects trigger present", ex)
+    if ex:
+        do_click(ex)
+        time.sleep(0.5)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('extra-objects OK' in (lab.name or '') for lab in labels)
+        check("Flowchart/network/ER object types create on the canvas", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

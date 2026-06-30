@@ -2,22 +2,42 @@
 # the skeleton so the canvas can create real DiaObjects (Standard - Box, etc.).
 # Sources stay in objects/standard (untouched for the legacy build).
 
-obj_dir = meson.project_source_root() / 'objects' / 'standard'
+objs = meson.project_source_root() / 'objects'
 
+# Each set's own *.c registration file defines dia_plugin_init (they would
+# collide if linked together), so we compile only the object files and register
+# the types directly in the skeleton (register_object_types in dia-shell.c).
+# GTK-clean sets only; UML etc. (heavy property dialogs) come later.
 libdia_objects_sources = files(
-  obj_dir / 'arc.c',
-  obj_dir / 'box.c',
-  obj_dir / 'ellipse.c',
-  obj_dir / 'textobj.c',
-  obj_dir / 'line.c',
-  obj_dir / 'zigzagline.c',
-  obj_dir / 'polyline.c',
-  obj_dir / 'bezier.c',
-  obj_dir / 'standard.c',
-  obj_dir / 'image.c',
-  obj_dir / 'outline.c',
-  obj_dir / 'polygon.c',
-  obj_dir / 'beziergon.c',
+  # standard
+  objs / 'standard' / 'arc.c',
+  objs / 'standard' / 'box.c',
+  objs / 'standard' / 'ellipse.c',
+  objs / 'standard' / 'textobj.c',
+  objs / 'standard' / 'line.c',
+  objs / 'standard' / 'zigzagline.c',
+  objs / 'standard' / 'polyline.c',
+  objs / 'standard' / 'bezier.c',
+  objs / 'standard' / 'standard.c',   # keeps the only dia_plugin_init we link
+  objs / 'standard' / 'image.c',
+  objs / 'standard' / 'outline.c',
+  objs / 'standard' / 'polygon.c',
+  objs / 'standard' / 'beziergon.c',
+  # flowchart (object files only; flowchart.c excluded)
+  objs / 'flowchart' / 'box.c',
+  objs / 'flowchart' / 'diamond.c',
+  objs / 'flowchart' / 'ellipse.c',
+  objs / 'flowchart' / 'parallelogram.c',
+  # network (network.c excluded)
+  objs / 'network' / 'basestation.c',
+  objs / 'network' / 'bus.c',
+  objs / 'network' / 'radiocell.c',
+  objs / 'network' / 'wanlink.c',
+  # ER (er.c excluded)
+  objs / 'ER' / 'attribute.c',
+  objs / 'ER' / 'entity.c',
+  objs / 'ER' / 'participation.c',
+  objs / 'ER' / 'relationship.c',
 )
 
 libdia_objects = static_library(

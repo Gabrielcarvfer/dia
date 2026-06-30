@@ -77,6 +77,13 @@ extern DiaObjectType *_arc_type;
 extern DiaObjectType *_image_type;
 extern DiaObjectType *_outline_type;
 
+/* Extra object sets (flowchart, network, ER). Their per-set registration file
+ * (flowchart.c/network.c/er.c, each a dia_plugin_init) is NOT linked to avoid a
+ * symbol clash, so we reference each type struct directly and register it. */
+extern DiaObjectType fc_box_type, diamond_type, fc_ellipse_type, pgram_type;
+extern DiaObjectType basestation_type, bus_type, radiocell_type, wanlink_type;
+extern DiaObjectType attribute_type, entity_type, participation_type, relationship_type;
+
 static void
 register_standard_object_types (void)
 {
@@ -92,6 +99,22 @@ register_standard_object_types (void)
   object_register_type (_arc_type);
   object_register_type (_image_type);
   object_register_type (_outline_type);
+
+  /* flowchart */
+  object_register_type (&fc_box_type);
+  object_register_type (&diamond_type);
+  object_register_type (&fc_ellipse_type);
+  object_register_type (&pgram_type);
+  /* network */
+  object_register_type (&basestation_type);
+  object_register_type (&bus_type);
+  object_register_type (&radiocell_type);
+  object_register_type (&wanlink_type);
+  /* ER */
+  object_register_type (&attribute_type);
+  object_register_type (&entity_type);
+  object_register_type (&participation_type);
+  object_register_type (&relationship_type);
 }
 
 
@@ -931,6 +954,42 @@ on_uitest_undo_redo (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): create one object from each extra set (flowchart,
+ * network, ER) and verify every type resolves and lands on the canvas. Proves
+ * the extra object sets are registered and instantiable. */
+static void
+on_uitest_extra_objects (GtkButton *button, DiaShell *self)
+{
+  static const char *types[] = {
+    "Flowchart - Box", "Flowchart - Diamond",
+    "Network - Bus", "Network - Base Station",
+    "ER - Entity", "ER - Relationship",
+  };
+  guint c0 = diagram_object_count (self);
+  guint made = 0;
+  char buf[128];
+
+  for (gsize i = 0; i < G_N_ELEMENTS (types); i++) {
+    Point p = { 3.0 + i * 2.0, 3.0 };
+    DiaObject *obj = diagram_create_object (self, types[i], p);
+    if (obj) {
+      push_op (self, OP_CREATE, obj, p, p);
+      made++;
+    }
+  }
+
+  if (made == G_N_ELEMENTS (types)
+      && diagram_object_count (self) == c0 + made) {
+    g_snprintf (buf, sizeof (buf), _("extra-objects OK (%u types)"), made);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("extra-objects FAIL (%u/%u)"),
+                made, (guint) G_N_ELEMENTS (types));
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -1161,18 +1220,22 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *r = gtk_button_new_with_label ("uitest-roundtrip");
     GtkWidget *m = gtk_button_new_with_label ("uitest-select-move");
     GtkWidget *u = gtk_button_new_with_label ("uitest-undo-redo");
+    GtkWidget *x = gtk_button_new_with_label ("uitest-extra-objects");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (u), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (x), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
     g_signal_connect (u, "clicked", G_CALLBACK (on_uitest_undo_redo), self);
+    g_signal_connect (x, "clicked", G_CALLBACK (on_uitest_extra_objects), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
     gtk_box_append (GTK_BOX (bar), u);
+    gtk_box_append (GTK_BOX (bar), x);
   }
 
   return bar;
