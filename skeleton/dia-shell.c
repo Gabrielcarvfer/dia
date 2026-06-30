@@ -26,6 +26,7 @@
 #include "font.h"
 #include "dia-enums.h"
 #include "object.h"
+#include "connectionpoint.h"
 #include "diagramdata.h"
 #include "dia-layer.h"
 #include "dia-object-change.h"
@@ -365,6 +366,56 @@ draw_selection_handles (cairo_t *cr, DiagramData *diagram)
 }
 
 
+/* Draw every object's connection points as small crosses, so the user can see
+ * where a line endpoint will connect. cr is in cm. */
+static void
+draw_connection_points (cairo_t *cr, DiagramData *diagram)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (diagram);
+  int n = layer ? dia_layer_object_count (layer) : 0;
+  const double s = 0.1;   /* half cross size, cm */
+
+  cairo_set_source_rgba (cr, 0.0, 0.45, 0.30, 0.55);
+  cairo_set_line_width (cr, 0.02);
+  for (int i = 0; i < n; i++) {
+    DiaObject *obj = dia_layer_object_get_nth (layer, i);
+
+    for (int c = 0; c < dia_object_get_num_connections (obj); c++) {
+      Point p = obj->connections[c]->pos;
+      cairo_move_to (cr, p.x - s, p.y);
+      cairo_line_to (cr, p.x + s, p.y);
+      cairo_move_to (cr, p.x, p.y - s);
+      cairo_line_to (cr, p.x, p.y + s);
+    }
+  }
+  cairo_stroke (cr);
+}
+
+
+/* After @obj moves/resizes, make any line endpoints connected to its connection
+ * points follow (move_handle with HANDLE_MOVE_CONNECTED). */
+static void
+update_connections_for (DiaObject *obj)
+{
+  for (int i = 0; i < dia_object_get_num_connections (obj); i++) {
+    ConnectionPoint *cp = obj->connections[i];
+
+    for (GList *l = cp->connected; l; l = l->next) {
+      DiaObject *conn = l->data;
+
+      for (int j = 0; j < conn->num_handles; j++) {
+        if (conn->handles[j]->connected_to == cp) {
+          DiaObjectChange *ch = conn->ops->move_handle (conn, conn->handles[j],
+                                                        &cp->pos, cp,
+                                                        HANDLE_MOVE_CONNECTED, 0);
+          g_clear_pointer (&ch, dia_object_change_unref);
+        }
+      }
+    }
+  }
+}
+
+
 /* Pixels-per-cm at the current zoom. */
 static double
 shell_pxcm (DiaShell *self)
@@ -619,6 +670,7 @@ draw_canvas (GtkDrawingArea *area,
   cairo_translate (cr, -self->origin_x, -self->origin_y);
   if (self->diagram) {
     draw_diagram (cr, self->diagram);
+    draw_connection_points (cr, self->diagram);
     draw_selection_handles (cr, self->diagram);
   }
   cairo_restore (cr);
@@ -1052,6 +1104,10 @@ on_canvas_drag_begin (GtkGestureDrag *gesture,
     self->drag_handle = self->selected->handles[hi];
     self->drag_handle_idx = hi;
     self->drag_handle_start = self->drag_handle->pos;
+    /* A connected endpoint must be freed before it can be dragged elsewhere. */
+    if (self->drag_handle->connected_to != NULL) {
+      object_unconnect (self->selected, self->drag_handle);
+    }
   } else {
     self->drag_origin = self->selected->position;
   }
@@ -1086,6 +1142,8 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
     change = dia_object_move (self->selected, &to);
   }
   g_clear_pointer (&change, dia_object_change_unref);
+  /* Lines connected to the moved/resized object follow it live. */
+  update_connections_for (self->selected);
   gtk_widget_queue_draw (self->canvas);
 }
 
@@ -1115,16 +1173,33 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
       push_op_handle (self, self->selected, self->drag_handle_idx,
                       self->drag_handle_start, to);
     }
+    /* If a connectable endpoint was dropped near another object's connection
+     * point, connect it and snap onto the point. */
+    if (self->drag_handle->connect_type == HANDLE_CONNECTABLE) {
+      DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+      ConnectionPoint *cp = NULL;
+      real dist = layer ? dia_layer_find_closest_connectionpoint (
+                            layer, &cp, &to, self->selected) : 1e9;
+
+      if (cp && dist < 0.5) {
+        object_connect (self->selected, self->drag_handle, cp);
+        change = dia_object_move_handle (self->selected, self->drag_handle,
+                                         &cp->pos, cp, HANDLE_MOVE_CONNECTED, 0);
+        g_clear_pointer (&change, dia_object_change_unref);
+        gtk_label_set_text (GTK_LABEL (self->status_msg), _("Connected"));
+      }
+    }
     self->drag_handle = NULL;
     self->drag_handle_idx = -1;
     gtk_widget_queue_draw (self->canvas);
     return;
   }
 
-  /* Record the whole drag as a single undoable move. */
+  /* Record the whole drag as a single undoable move; connected lines follow. */
   to.x = self->drag_origin.x + offset_x / self->page_scale;
   to.y = self->drag_origin.y + offset_y / self->page_scale;
   snap_to_grid (self, &to);
+  update_connections_for (self->selected);
   if (to.x != self->drag_origin.x || to.y != self->drag_origin.y) {
     push_op (self, OP_MOVE, self->selected, self->drag_origin, to);
   }
@@ -2060,6 +2135,73 @@ on_uitest_sheet (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): connect a line endpoint to a box's connection
+ * point, move the box, and confirm the endpoint tracked the connection. */
+static void
+on_uitest_connect (GtkButton *button, DiaShell *self)
+{
+  DiaObject *box, *line;
+  Handle *lh;
+  ConnectionPoint *cp = NULL;
+  DiaLayer *layer;
+  DiaObjectChange *ch;
+  Point old_cp;
+  char buf[128];
+
+  box = diagram_create_object (self, "Standard - Box", (Point) { 5, 5 });
+  line = diagram_create_object (self, "Standard - Line", (Point) { 12, 10 });
+  if (!box || !line || line->num_handles < 1) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("connect FAIL (no objects)"));
+    return;
+  }
+  push_op (self, OP_CREATE, box, (Point) { 5, 5 }, (Point) { 5, 5 });
+  push_op (self, OP_CREATE, line, (Point) { 12, 10 }, (Point) { 12, 10 });
+
+  layer = dia_diagram_data_get_active_layer (self->diagram);
+  lh = line->handles[0];
+  dia_layer_find_closest_connectionpoint (layer, &cp, &lh->pos, line);
+  if (!cp) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("connect FAIL (no connection point)"));
+    return;
+  }
+
+  /* connect + snap the endpoint onto the connection point */
+  object_connect (line, lh, cp);
+  ch = dia_object_move_handle (line, lh, &cp->pos, cp, HANDLE_MOVE_CONNECTED, 0);
+  g_clear_pointer (&ch, dia_object_change_unref);
+  old_cp = cp->pos;
+
+  /* move the object that owns the CP; the connected endpoint should follow it */
+  {
+    DiaObject *target = cp->object;
+    Point np = { target->position.x + 3.0, target->position.y + 3.0 };
+
+    ch = dia_object_move (target, &np);
+    g_clear_pointer (&ch, dia_object_change_unref);
+    update_connections_for (target);
+  }
+  (void) box;
+
+  if (lh->connected_to == cp
+      && (cp->pos.x != old_cp.x || cp->pos.y != old_cp.y)
+      && fabs (lh->pos.x - cp->pos.x) < 0.01
+      && fabs (lh->pos.y - cp->pos.y) < 0.01) {
+    g_snprintf (buf, sizeof (buf), _("connect OK (endpoint at %.1f, %.1f)"),
+                lh->pos.x, lh->pos.y);
+  } else {
+    g_snprintf (buf, sizeof (buf),
+                _("connect FAIL conn=%d cpmoved=%d lh=(%.2f,%.2f) cp=(%.2f,%.2f)"),
+                lh->connected_to == cp,
+                (cp->pos.x != old_cp.x || cp->pos.y != old_cp.y),
+                lh->pos.x, lh->pos.y, cp->pos.x, cp->pos.y);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -2520,6 +2662,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *ex = gtk_button_new_with_label ("uitest-export");
     GtkWidget *cb = gtk_button_new_with_label ("uitest-clipboard");
     GtkWidget *sh = gtk_button_new_with_label ("uitest-sheet");
+    GtkWidget *cn = gtk_button_new_with_label ("uitest-connect");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -2534,6 +2677,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (ex), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (cb), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (sh), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (cn), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -2548,6 +2692,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (ex, "clicked", G_CALLBACK (on_uitest_export), self);
     g_signal_connect (cb, "clicked", G_CALLBACK (on_uitest_clipboard), self);
     g_signal_connect (sh, "clicked", G_CALLBACK (on_uitest_sheet), self);
+    g_signal_connect (cn, "clicked", G_CALLBACK (on_uitest_connect), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -2562,6 +2707,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), ex);
     gtk_box_append (GTK_BOX (bar), cb);
     gtk_box_append (GTK_BOX (bar), sh);
+    gtk_box_append (GTK_BOX (bar), cn);
   }
 
   return bar;

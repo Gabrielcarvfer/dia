@@ -359,6 +359,17 @@ def main():
         ok = any('sheet OK' in (lab.name or '') for lab in labels)
         check("Sheet shape creates its object type", ok)
 
+    # 3q. Connection points: connect a line endpoint to a box CP, move the box,
+    #     the endpoint tracks it.
+    cn = find(app, name='uitest-connect', roleName='push button')
+    check("DIA_UITEST connect trigger present", cn)
+    if cn:
+        do_click(cn)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('connect OK' in (lab.name or '') for lab in labels)
+        check("Connected line endpoint tracks the object", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
