@@ -318,6 +318,16 @@ def main():
         ok = any('layers OK' in (lab.name or '') for lab in labels)
         check("Add/remove layer updates the layer list", ok)
 
+    # 3m. Line attributes round-trip through StdProp (width set + read back).
+    la = find(app, name='uitest-lineattr', roleName='push button')
+    check("DIA_UITEST line-attr trigger present", la)
+    if la:
+        do_click(la)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('lineattr OK' in (lab.name or '') for lab in labels)
+        check("Line width applies to an object (StdProp)", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

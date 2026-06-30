@@ -30,6 +30,11 @@
 #include "dia-io.h"
 #include "dia_xml.h"
 #include "diacontext.h"
+#include "properties.h"
+#include "prop_geomtypes.h"
+#include "prop_attr.h"
+#include "arrows.h"
+#include "attributes.h"
 #include <libxml/tree.h>
 
 /* Shared shell state so the event handlers can reach the widgets they update.
@@ -78,6 +83,10 @@ typedef struct {
   gboolean   snap_grid, snap_object, snap_guide;
   GtkWidget *layers_panel;          /* right sidebar, hideable to free space */
   GtkWidget *layers_list;           /* GtkListBox of the diagram's layers */
+  /* Line attributes applied to new objects (and the current selection). */
+  double       line_width;          /* cm */
+  DiaLineStyle line_style;
+  ArrowType    start_arrow, end_arrow;
 } DiaShell;
 
 /* Pixels per cm at 100% zoom. Chosen so a typical canvas shows ~80 cm across,
@@ -804,6 +813,65 @@ tool_to_type_name (const char *tool)
 }
 
 
+/* Dropdown index -> ArrowType for the start/end arrow choosers. */
+static const ArrowType arrow_choices[] = {
+  ARROW_NONE, ARROW_LINES, ARROW_FILLED_TRIANGLE
+};
+
+static Arrow
+shell_arrow (DiaShell *self, gboolean start)
+{
+  Arrow a;
+
+  a.type = start ? self->start_arrow : self->end_arrow;
+  a.length = 0.5;
+  a.width = 0.5;
+  return a;
+}
+
+/* Apply the shell's current line attributes (width / style / arrows) to @obj
+ * via the StdProp system. Objects lacking a given property ignore it. */
+static void
+apply_line_props (DiaShell *self, DiaObject *obj)
+{
+  static PropDescription descs[] = {
+    PROP_STD_LINE_WIDTH,
+    PROP_STD_LINE_STYLE,
+    PROP_STD_START_ARROW,
+    PROP_STD_END_ARROW,
+    PROP_DESC_END
+  };
+  GPtrArray *props;
+
+  if (!obj) {
+    return;
+  }
+  props = prop_list_from_descs (descs, pdtpp_true);
+  ((RealProperty *) g_ptr_array_index (props, 0))->real_data = self->line_width;
+  ((LinestyleProperty *) g_ptr_array_index (props, 1))->style = self->line_style;
+  ((LinestyleProperty *) g_ptr_array_index (props, 1))->dash = 0.5;
+  ((ArrowProperty *) g_ptr_array_index (props, 2))->arrow_data = shell_arrow (self, TRUE);
+  ((ArrowProperty *) g_ptr_array_index (props, 3))->arrow_data = shell_arrow (self, FALSE);
+  dia_object_set_properties (obj, props);
+  prop_list_free (props);
+}
+
+/* Push the current attributes as the libdia defaults (so freshly created
+ * objects inherit them) and, if something is selected, restyle it now. */
+static void
+on_line_attrs_changed (DiaShell *self)
+{
+  attributes_set_default_linewidth (self->line_width);
+  attributes_set_default_line_style (self->line_style, 0.5);
+  attributes_set_default_start_arrow (shell_arrow (self, TRUE));
+  attributes_set_default_end_arrow (shell_arrow (self, FALSE));
+  if (self->selected) {
+    apply_line_props (self, self->selected);
+    gtk_widget_queue_draw (self->canvas);
+  }
+}
+
+
 /* If snap-to-grid is on, round @p to the nearest half-centimetre. */
 static void
 snap_to_grid (DiaShell *self, Point *p)
@@ -833,6 +901,7 @@ apply_tool_at (DiaShell *self, Point p)
   obj = type_name ? diagram_create_object (self, type_name, p) : NULL;
 
   if (obj) {
+    apply_line_props (self, obj);   /* honour the toolbox line attributes */
     push_op (self, OP_CREATE, obj, p, p);
     gtk_widget_queue_draw (self->canvas);
     g_snprintf (buf, sizeof (buf),
@@ -1613,6 +1682,40 @@ on_uitest_layers (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): set a line width, create a box with it, then read
+ * the property back to confirm the attribute round-trips through StdProp. */
+static void
+on_uitest_lineattr (GtkButton *button, DiaShell *self)
+{
+  static PropDescription d[] = { PROP_STD_LINE_WIDTH, PROP_DESC_END };
+  double saved = self->line_width;
+  DiaObject *obj;
+  GPtrArray *props;
+  double got = -1.0;
+  char buf[96];
+
+  self->line_width = 0.42;
+  obj = diagram_create_object (self, "Standard - Box", (Point) { 4, 4 });
+  if (obj) {
+    apply_line_props (self, obj);
+    push_op (self, OP_CREATE, obj, (Point) { 4, 4 }, (Point) { 4, 4 });
+    props = prop_list_from_descs (d, pdtpp_true);
+    dia_object_get_properties (obj, props);
+    got = ((RealProperty *) g_ptr_array_index (props, 0))->real_data;
+    prop_list_free (props);
+  }
+  self->line_width = saved;
+
+  if (obj && fabs (got - 0.42) < 0.001) {
+    g_snprintf (buf, sizeof (buf), _("lineattr OK (w=%.2f)"), got);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("lineattr FAIL (w=%.2f)"), got);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -1967,6 +2070,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *zm = gtk_button_new_with_label ("uitest-zoom");
     GtkWidget *sn = gtk_button_new_with_label ("uitest-snap");
     GtkWidget *ly = gtk_button_new_with_label ("uitest-layers");
+    GtkWidget *la = gtk_button_new_with_label ("uitest-lineattr");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -1977,6 +2081,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (zm), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (sn), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ly), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (la), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -1987,6 +2092,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (zm, "clicked", G_CALLBACK (on_uitest_zoom), self);
     g_signal_connect (sn, "clicked", G_CALLBACK (on_uitest_snap), self);
     g_signal_connect (ly, "clicked", G_CALLBACK (on_uitest_layers), self);
+    g_signal_connect (la, "clicked", G_CALLBACK (on_uitest_lineattr), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -1997,11 +2103,60 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), zm);
     gtk_box_append (GTK_BOX (bar), sn);
     gtk_box_append (GTK_BOX (bar), ly);
+    gtk_box_append (GTK_BOX (bar), la);
   }
 
   return bar;
 }
 
+
+static void
+on_lw_changed (GtkSpinButton *sb, DiaShell *self)
+{
+  self->line_width = gtk_spin_button_get_value (sb);
+  on_line_attrs_changed (self);
+}
+
+static void
+on_lstyle_changed (GtkDropDown *dd, GParamSpec *ps, DiaShell *self)
+{
+  self->line_style = (DiaLineStyle) gtk_drop_down_get_selected (dd);
+  on_line_attrs_changed (self);
+}
+
+static void
+on_start_arrow_changed (GtkDropDown *dd, GParamSpec *ps, DiaShell *self)
+{
+  guint i = gtk_drop_down_get_selected (dd);
+
+  if (i < G_N_ELEMENTS (arrow_choices)) {
+    self->start_arrow = arrow_choices[i];
+  }
+  on_line_attrs_changed (self);
+}
+
+static void
+on_end_arrow_changed (GtkDropDown *dd, GParamSpec *ps, DiaShell *self)
+{
+  guint i = gtk_drop_down_get_selected (dd);
+
+  if (i < G_N_ELEMENTS (arrow_choices)) {
+    self->end_arrow = arrow_choices[i];
+  }
+  on_line_attrs_changed (self);
+}
+
+/* A "label: widget" row in the line-attributes grid. */
+static void
+attr_row (GtkGrid *grid, int row, const char *text, GtkWidget *w)
+{
+  GtkWidget *l = gtk_label_new (text);
+
+  gtk_widget_set_halign (l, GTK_ALIGN_START);
+  gtk_widget_set_hexpand (w, TRUE);
+  gtk_grid_attach (grid, l, 0, row, 1, 1);
+  gtk_grid_attach (grid, w, 1, row, 1, 1);
+}
 
 static GtkWidget *
 build_toolbox (DiaShell *self)
@@ -2063,6 +2218,46 @@ build_toolbox (DiaShell *self)
   gtk_widget_set_tooltip_text (colour_btn, _("Click to pick the foreground colour"));
   g_signal_connect (colour_btn, "clicked", G_CALLBACK (on_colour_clicked), self);
   gtk_box_append (GTK_BOX (box), colour_btn);
+
+  /* Line attributes: width, style and start/end arrows. Changing these restyles
+   * the current selection and becomes the default for newly created objects. */
+  gtk_box_append (GTK_BOX (box),
+                  gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
+  {
+    const char *styles[] = { N_("Solid"), N_("Dashed"), N_("Dash-dot"),
+                             N_("Dash-dot-dot"), N_("Dotted"), NULL };
+    const char *arrows[] = { N_("None"), N_("Lines"), N_("Filled"), NULL };
+    GtkWidget *attrs = gtk_grid_new ();
+    GtkWidget *lw = gtk_spin_button_new_with_range (0.0, 5.0, 0.05);
+    GtkWidget *ls = gtk_drop_down_new_from_strings (styles);
+    GtkWidget *sa = gtk_drop_down_new_from_strings (arrows);
+    GtkWidget *ea = gtk_drop_down_new_from_strings (arrows);
+
+    gtk_grid_set_row_spacing (GTK_GRID (attrs), 3);
+    gtk_grid_set_column_spacing (GTK_GRID (attrs), 4);
+
+    gtk_spin_button_set_digits (GTK_SPIN_BUTTON (lw), 2);
+    gtk_spin_button_set_value (GTK_SPIN_BUTTON (lw), self->line_width);
+    gtk_drop_down_set_selected (GTK_DROP_DOWN (ls), self->line_style);
+    set_a11y_label (lw, "line-width");
+    set_a11y_label (ls, "line-style");
+    set_a11y_label (sa, "start-arrow");
+    set_a11y_label (ea, "end-arrow");
+
+    g_signal_connect (lw, "value-changed", G_CALLBACK (on_lw_changed), self);
+    g_signal_connect (ls, "notify::selected",
+                      G_CALLBACK (on_lstyle_changed), self);
+    g_signal_connect (sa, "notify::selected",
+                      G_CALLBACK (on_start_arrow_changed), self);
+    g_signal_connect (ea, "notify::selected",
+                      G_CALLBACK (on_end_arrow_changed), self);
+
+    attr_row (GTK_GRID (attrs), 0, _("Width"), lw);
+    attr_row (GTK_GRID (attrs), 1, _("Style"), ls);
+    attr_row (GTK_GRID (attrs), 2, _("Start"), sa);
+    attr_row (GTK_GRID (attrs), 3, _("End"),   ea);
+    gtk_box_append (GTK_BOX (box), attrs);
+  }
 
   return box;
 }
@@ -2451,6 +2646,10 @@ dia_shell_new (void)
   self->origin_x = -2.0;
   self->origin_y = -2.0;
   self->snap_grid = TRUE;     /* on by default, like upstream Dia */
+  self->line_width = 0.10;
+  self->line_style = DIA_LINE_STYLE_SOLID;
+  self->start_arrow = ARROW_NONE;
+  self->end_arrow = ARROW_NONE;
   update_transform (self);
 
   /* Initialise libdia (property system, object registry, fonts) before any
