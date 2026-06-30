@@ -21,6 +21,8 @@
 #include <adwaita.h>
 #include <glib/gi18n.h>
 
+#include "dia-shell.h"
+
 #define DIA_APP_ID "org.gnome.Dia"
 
 static void
@@ -61,33 +63,11 @@ static const GActionEntry app_actions[] = {
   { "quit",  on_quit_action,  NULL, NULL, NULL },
 };
 
-static GtkWidget *
-build_primary_menu_button (void)
-{
-  GtkWidget *button = gtk_menu_button_new ();
-  GMenu *menu = g_menu_new ();
-
-  g_menu_append (menu, _("_About Dia"), "app.about");
-  g_menu_append (menu, _("_Quit"), "app.quit");
-
-  gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (button), "open-menu-symbolic");
-  gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (button),
-                                  G_MENU_MODEL (menu));
-  gtk_widget_set_tooltip_text (button, _("Main Menu"));
-
-  g_object_unref (menu);
-
-  return button;
-}
-
 static void
 on_activate (GApplication *app,
              gpointer      user_data)
 {
   GtkWidget *window;
-  GtkWidget *toolbar_view;
-  GtkWidget *header_bar;
-  GtkWidget *status_page;
 
   /* If we are activated again, just present the existing window. */
   window = GTK_WIDGET (gtk_application_get_active_window (GTK_APPLICATION (app)));
@@ -98,25 +78,10 @@ on_activate (GApplication *app,
 
   window = adw_application_window_new (GTK_APPLICATION (app));
   gtk_window_set_title (GTK_WINDOW (window), "Dia");
-  gtk_window_set_default_size (GTK_WINDOW (window), 1024, 768);
-
-  header_bar = adw_header_bar_new ();
-  adw_header_bar_pack_end (ADW_HEADER_BAR (header_bar),
-                           build_primary_menu_button ());
-
-  status_page = adw_status_page_new ();
-  adw_status_page_set_icon_name (ADW_STATUS_PAGE (status_page), DIA_APP_ID);
-  adw_status_page_set_title (ADW_STATUS_PAGE (status_page), "Dia");
-  adw_status_page_set_description (ADW_STATUS_PAGE (status_page),
-      _("GTK4 / libadwaita port — foundation skeleton.\n"
-        "The diagram canvas and tools are being migrated incrementally."));
-
-  toolbar_view = adw_toolbar_view_new ();
-  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (toolbar_view), header_bar);
-  adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (toolbar_view), status_page);
+  gtk_window_set_default_size (GTK_WINDOW (window), 1100, 720);
 
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (window),
-                                      toolbar_view);
+                                      dia_shell_new ());
 
   gtk_window_present (GTK_WINDOW (window));
 }

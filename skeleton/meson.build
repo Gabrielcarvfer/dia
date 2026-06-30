@@ -8,6 +8,7 @@
 executable(
   'dia',
   'main.c',
+  'dia-shell.c',
   c_args: [
     '-DPACKAGE_VERSION="@0@"'.format(meson.project_version()),
   ],
