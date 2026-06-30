@@ -441,6 +441,16 @@ def main():
         ok = any('distribute OK' in (lab.name or '') for lab in labels)
         check("Distribute evenly spaces objects", ok)
 
+    # 3y. Properties: libdia builds + applies an object's StdProp editor widget.
+    pr = find(app, name='uitest-properties', roleName='push button')
+    check("DIA_UITEST properties trigger present", pr)
+    if pr:
+        do_click(pr)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('properties OK' in (lab.name or '') for lab in labels)
+        check("Object property editor builds and applies", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

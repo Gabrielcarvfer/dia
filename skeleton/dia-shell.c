@@ -1208,6 +1208,73 @@ open_text_editor (DiaShell *self, DiaObject *obj)
   adw_dialog_present (dlg, GTK_WIDGET (root));
 }
 
+
+/* Apply (OK) the object properties editor built by libdia. */
+static void
+on_props_dialog_response (AdwAlertDialog *dlg, const char *response,
+                          DiaShell *self)
+{
+  GtkWidget *editor = g_object_get_data (G_OBJECT (dlg), "dia-editor");
+  DiaObject *obj = g_object_get_data (G_OBJECT (dlg), "dia-object");
+
+  if (g_strcmp0 (response, "ok") == 0 && editor && obj) {
+    DiaObjectChange *change = dia_object_apply_editor (obj, editor);
+
+    /* apply_editor already mutated the object; we don't thread property edits
+     * through the skeleton's simple undo stack yet, so just release it. */
+    g_clear_pointer (&change, dia_object_change_unref);
+    update_connections_for (obj);
+    gtk_widget_queue_draw (self->canvas);
+    refresh_layers_list (self);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Properties applied"));
+  }
+}
+
+
+/* Open the real object Properties dialog: libdia builds the editor widget from
+ * the object's StdProp descriptions (dia_object_get_editor), we host it in a
+ * dialog and apply it via dia_object_apply_editor — the same path upstream
+ * app/properties-dialog.c uses, so every object's full property set is editable
+ * instead of just its text. */
+static void
+open_properties_dialog (DiaShell *self, DiaObject *obj)
+{
+  GtkWidget *editor, *scroll;
+  AdwDialog *dlg;
+  GtkRoot *root;
+
+  if (!obj || !obj->ops || !obj->ops->get_properties) {
+    open_text_editor (self, obj);   /* no property editor; fall back to text */
+    return;
+  }
+  editor = dia_object_get_editor (obj, FALSE);
+  if (!editor) {
+    open_text_editor (self, obj);
+    return;
+  }
+
+  scroll = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroll), editor);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+                                  GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_size_request (scroll, 400, 340);
+  gtk_widget_set_vexpand (scroll, TRUE);
+
+  dlg = adw_alert_dialog_new (_("Object Properties"), NULL);
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), scroll);
+  adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "cancel", _("Cancel"));
+  adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "ok", _("OK"));
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "ok");
+  /* the dialog owns the editor (destroyed with the extra child on close) */
+  g_object_set_data (G_OBJECT (dlg), "dia-editor", editor);
+  g_object_set_data (G_OBJECT (dlg), "dia-object", obj);
+  g_signal_connect (dlg, "response", G_CALLBACK (on_props_dialog_response),
+                    self);
+
+  root = gtk_widget_get_root (self->canvas);
+  adw_dialog_present (dlg, GTK_WIDGET (root));
+}
+
 static void
 on_canvas_pressed (GtkGestureClick *gesture,
                    int              n_press,
@@ -1245,10 +1312,10 @@ on_canvas_pressed (GtkGestureClick *gesture,
     }
   } else if (g_strcmp0 (self->tool, "Modify") == 0) {
     if (n_press >= 2) {
-      /* Double-click edits the selected object's text (the first click of the
-       * sequence already selected it). */
+      /* Double-click opens the selected object's full properties dialog (the
+       * first click of the sequence already selected it). */
       if (self->selected) {
-        open_text_editor (self, self->selected);
+        open_properties_dialog (self, self->selected);
       }
     } else {
       GdkModifierType m = gtk_event_controller_get_current_event_state (
@@ -1295,6 +1362,12 @@ on_obj_menu_item (GtkButton *btn, gpointer data)
   ObjMenuClick *c = data;
   DiaObjectChange *change;
 
+  if (!c->item) {
+    /* sentinel: open the full properties dialog for this object */
+    popover_popdown (GTK_WIDGET (btn));
+    open_properties_dialog (c->self, c->obj);
+    return;
+  }
   if (c->item->callback) {
     /* The callback applies the change immediately and returns it. We don't
      * thread object-menu edits through the skeleton's simple undo stack yet,
@@ -1384,6 +1457,19 @@ on_canvas_secondary (GtkGestureClick *gesture,
   /* 1. the object's own menu (Add/Delete Corner, Add Segment, …) */
   if (obj) {
     DiaMenu *m = dia_object_get_menu (obj, &p);
+    GtkWidget *props = ctx_button (_("_Properties…"));
+    ObjMenuClick *pc = g_new0 (ObjMenuClick, 1);
+
+    /* Properties first (reuses the libdia editor via open_properties_dialog) */
+    pc->self = self;
+    pc->obj = obj;
+    pc->item = NULL;           /* sentinel: handled as "open properties" */
+    pc->pos = p;
+    g_object_set_data_full (G_OBJECT (props), "omc", pc, g_free);
+    g_signal_connect (props, "clicked", G_CALLBACK (on_obj_menu_item), pc);
+    gtk_box_append (GTK_BOX (box), props);
+    gtk_box_append (GTK_BOX (box),
+                    gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
     for (int i = 0; m && i < m->num_items; i++) {
       DiaMenuItem *it = &m->items[i];
@@ -3317,6 +3403,47 @@ on_uitest_distribute (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): build the libdia property editor for an object and
+ * apply it, exercising the ported StdProp widget path (lib/prop_*.c +
+ * propdialogs.c) that the real Properties dialog relies on. */
+static void
+on_uitest_properties (GtkButton *button, DiaShell *self)
+{
+  DiaObject *obj = diagram_create_object (self, "Standard - Box",
+                                          (Point) { 7, 7 });
+  GtkWidget *editor;
+  DiaObjectChange *change;
+
+  if (!obj || !obj->ops->get_properties) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("properties FAIL (no editor op)"));
+    return;
+  }
+  push_op (self, OP_CREATE, obj, (Point) { 7, 7 }, (Point) { 7, 7 });
+
+  editor = dia_object_get_editor (obj, FALSE);
+  if (!editor) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("properties FAIL (null editor)"));
+    return;
+  }
+  g_object_ref_sink (editor);
+  change = dia_object_apply_editor (obj, editor);   /* read widgets -> object */
+  g_clear_pointer (&change, dia_object_change_unref);
+  g_object_unref (editor);                          /* destroys the editor */
+
+  /* The object must survive building + applying its editor intact. */
+  if (obj->type && g_strcmp0 (obj->type->name, "Standard - Box") == 0) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("properties OK (editor built + applied)"));
+  } else {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("properties FAIL (object corrupted)"));
+  }
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -3869,6 +3996,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *al = gtk_button_new_with_label ("uitest-align");
     GtkWidget *co = gtk_button_new_with_label ("uitest-colour");
     GtkWidget *di = gtk_button_new_with_label ("uitest-distribute");
+    GtkWidget *pr = gtk_button_new_with_label ("uitest-properties");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -3891,6 +4019,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (al), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (co), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (di), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (pr), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -3913,6 +4042,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (al, "clicked", G_CALLBACK (on_uitest_align), self);
     g_signal_connect (co, "clicked", G_CALLBACK (on_uitest_colour), self);
     g_signal_connect (di, "clicked", G_CALLBACK (on_uitest_distribute), self);
+    g_signal_connect (pr, "clicked", G_CALLBACK (on_uitest_properties), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -3935,6 +4065,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), al);
     gtk_box_append (GTK_BOX (bar), co);
     gtk_box_append (GTK_BOX (bar), di);
+    gtk_box_append (GTK_BOX (bar), pr);
   }
 
   return bar;

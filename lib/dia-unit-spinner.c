@@ -39,6 +39,12 @@ struct _DiaUnitSpinner {
 
 G_DEFINE_FINAL_TYPE (DiaUnitSpinner, dia_unit_spinner, GTK_TYPE_WIDGET)
 
+enum {
+  VALUE_CHANGED,
+  LAST_SIGNAL
+};
+static guint signals[LAST_SIGNAL];
+
 
 static void
 dia_unit_spinner_dispose (GObject *object)
@@ -59,8 +65,25 @@ dia_unit_spinner_class_init (DiaUnitSpinnerClass *klass)
 
   object_class->dispose = dia_unit_spinner_dispose;
 
+  /* Re-export the embedded spin button's "value-changed" as our own, so users
+   * (e.g. the property dialogs via prophandler_connect) can observe changes on
+   * the DiaUnitSpinner itself even though it is no longer a GtkSpinButton. */
+  signals[VALUE_CHANGED] = g_signal_new ("value-changed",
+                                         G_TYPE_FROM_CLASS (klass),
+                                         G_SIGNAL_RUN_FIRST,
+                                         0, NULL, NULL, NULL,
+                                         G_TYPE_NONE, 0);
+
   /* Single child filling the whole widget. */
   gtk_widget_class_set_layout_manager_type (widget_class, GTK_TYPE_BIN_LAYOUT);
+}
+
+
+static void
+dia_unit_spinner_value_changed (GtkSpinButton  *spin,
+                                DiaUnitSpinner *self)
+{
+  g_signal_emit (self, signals[VALUE_CHANGED], 0);
 }
 
 
@@ -140,6 +163,9 @@ dia_unit_spinner_init (DiaUnitSpinner *self)
                     self);
   g_signal_connect (self->spin, "input",
                     G_CALLBACK (dia_unit_spinner_input),
+                    self);
+  g_signal_connect (self->spin, "value-changed",
+                    G_CALLBACK (dia_unit_spinner_value_changed),
                     self);
 }
 
