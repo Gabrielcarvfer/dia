@@ -343,49 +343,55 @@ draw_diagram (cairo_t *cr, DiagramData *diagram)
 }
 
 
-/* Draw small squares at each selected object's handles (the interactive
- * renderer normally does this; we draw them directly here). cr is in cm. */
+/* Draw small squares at each selected object's handles, at a fixed pixel size
+ * in DEVICE space: (ox,oy) is the device px of cm 0, scale is px/cm. */
 static void
-draw_selection_handles (cairo_t *cr, DiagramData *diagram)
+draw_selection_handles (cairo_t *cr, DiagramData *diagram,
+                        double ox, double oy, double scale)
 {
-  const double s = 0.12;   /* half handle size, cm */
+  const double s = 3.5;   /* half handle size, px */
 
   for (GList *l = diagram->selected; l; l = l->next) {
     DiaObject *obj = l->data;
 
     for (int i = 0; i < obj->num_handles; i++) {
       Handle *h = obj->handles[i];
-      cairo_rectangle (cr, h->pos.x - s, h->pos.y - s, 2 * s, 2 * s);
+      double dx = ox + h->pos.x * scale;
+      double dy = oy + h->pos.y * scale;
+      cairo_rectangle (cr, dx - s, dy - s, 2 * s, 2 * s);
     }
     cairo_set_source_rgb (cr, 0.10, 0.45, 0.90);
     cairo_fill_preserve (cr);
     cairo_set_source_rgb (cr, 1, 1, 1);
-    cairo_set_line_width (cr, 0.03);
+    cairo_set_line_width (cr, 1.0);
     cairo_stroke (cr);
   }
 }
 
 
-/* Draw every object's connection points as small crosses, so the user can see
- * where a line endpoint will connect. cr is in cm. */
+/* Draw every object's connection points as small crosses (fixed pixel size,
+ * device space) so the user can see where a line endpoint will connect. */
 static void
-draw_connection_points (cairo_t *cr, DiagramData *diagram)
+draw_connection_points (cairo_t *cr, DiagramData *diagram,
+                        double ox, double oy, double scale)
 {
   DiaLayer *layer = dia_diagram_data_get_active_layer (diagram);
   int n = layer ? dia_layer_object_count (layer) : 0;
-  const double s = 0.1;   /* half cross size, cm */
+  const double s = 4.0;   /* half cross size, px */
 
-  cairo_set_source_rgba (cr, 0.0, 0.45, 0.30, 0.55);
-  cairo_set_line_width (cr, 0.02);
+  cairo_set_source_rgba (cr, 0.0, 0.45, 0.30, 0.6);
+  cairo_set_line_width (cr, 1.0);
   for (int i = 0; i < n; i++) {
     DiaObject *obj = dia_layer_object_get_nth (layer, i);
 
     for (int c = 0; c < dia_object_get_num_connections (obj); c++) {
       Point p = obj->connections[c]->pos;
-      cairo_move_to (cr, p.x - s, p.y);
-      cairo_line_to (cr, p.x + s, p.y);
-      cairo_move_to (cr, p.x, p.y - s);
-      cairo_line_to (cr, p.x, p.y + s);
+      double dx = ox + p.x * scale;
+      double dy = oy + p.y * scale;
+      cairo_move_to (cr, dx - s, dy);
+      cairo_line_to (cr, dx + s, dy);
+      cairo_move_to (cr, dx, dy - s);
+      cairo_line_to (cr, dx, dy + s);
     }
   }
   cairo_stroke (cr);
@@ -670,10 +676,17 @@ draw_canvas (GtkDrawingArea *area,
   cairo_translate (cr, -self->origin_x, -self->origin_y);
   if (self->diagram) {
     draw_diagram (cr, self->diagram);
-    draw_connection_points (cr, self->diagram);
-    draw_selection_handles (cr, self->diagram);
   }
   cairo_restore (cr);
+
+  /* Connection points and selection handles are drawn in DEVICE space at a
+   * fixed pixel size (ox/oy = device px of cm 0), so they stay grabbable
+   * whatever the zoom — drawing them in cm space made them ~1 px when zoomed
+   * out. */
+  if (self->diagram) {
+    draw_connection_points (cr, self->diagram, ox, oy, pxcm);
+    draw_selection_handles (cr, self->diagram, ox, oy, pxcm);
+  }
 }
 
 
