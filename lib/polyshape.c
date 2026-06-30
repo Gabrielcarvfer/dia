@@ -569,13 +569,38 @@ polyshape_load(PolyShape *poly, ObjectNode obj_node, DiaContext *ctx) /* NOTE: D
   else
     poly->numpoints = 0;
 
+  /* Defend against broken files (#319, bug 302781): unlike the other loaders
+   * polyshape's object_init does not underflow (NUM_CONNECTIONS keeps the
+   * count >= 1), but a 0-point shape leaves poly->points NULL and
+   * polyshape_update_data then dereferences points[0]/points[numpoints-1] ->
+   * crash. A polygon needs at least three points to enclose an area; clamp a
+   * missing or too-short poly_points up to a default triangle placeholder and
+   * warn. */
+  if (poly->numpoints < 3) {
+    dia_context_add_message(ctx,
+        _("Broken polygon: missing or too few poly_points; "
+          "substituting a default placeholder."));
+    attr = NULL;
+    poly->numpoints = 3;
+  }
+
   object_init(obj, poly->numpoints, NUM_CONNECTIONS(poly));
 
-  data = attribute_first_data(attr);
+  data = attr ? attribute_first_data(attr) : NULL;
   poly->points = g_new(Point, poly->numpoints);
   for (i=0;i<poly->numpoints;i++) {
-    data_point(data, &poly->points[i], ctx);
-    data = data_next(data);
+    if (data) {
+      data_point(data, &poly->points[i], ctx);
+      data = data_next(data);
+    } else {
+      poly->points[i].x = 0.0;
+      poly->points[i].y = 0.0;
+    }
+  }
+  if (attr == NULL) {
+    /* a unit right triangle: (0,0), (1,0), (0,1) */
+    poly->points[1].x = 1.0;
+    poly->points[2].y = 1.0;
   }
 
   for (i=0;i<poly->numpoints;i++) {
