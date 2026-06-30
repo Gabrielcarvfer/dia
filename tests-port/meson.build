@@ -68,3 +68,17 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Regression test for #374 (text cut off on export): the flowchart shapes must
+# include their (possibly overflowing, "Text fitting = Never") label in the
+# object bounding box, else the cairo export surface clips it at the edge.
+test(
+  'lib-flowchart-text-bbox',
+  executable(
+    'test-flowchart-text-bbox-port',
+    ['test-flowchart-text-bbox-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)

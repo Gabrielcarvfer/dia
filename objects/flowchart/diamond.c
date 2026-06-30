@@ -530,6 +530,15 @@ diamond_update_data(Diamond *diamond, AnchorShape horiz, AnchorShape vert)
   extra->border_trans = diamond->border_width / 2.0;
   element_update_boundingbox(elem);
 
+  /* With "Text fitting = Never" the label may be wider/taller than the shape
+   * and is drawn overflowing it; union its bounding box so the text is not
+   * clipped at the diagram extents on export (#374). */
+  {
+    DiaRectangle tbox;
+    dia_text_calc_boundingbox (diamond->text, &tbox);
+    rectangle_union (&obj->bounding_box, &tbox);
+  }
+
   obj->position = elem->corner;
 
   element_update_handles(elem);
