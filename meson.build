@@ -229,6 +229,7 @@ else
   ], language: ['c', 'cpp'])
 
   subdir('lib-port')
+  subdir('objects-port')
   subdir('skeleton')
 
   summary(
