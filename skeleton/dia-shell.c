@@ -1,6 +1,10 @@
 /* Dia -- GTK4 + libadwaita port
  *
- * dia-shell: the integrated-UI layout rebuilt with GTK4 widgets.
+ * dia-shell: the integrated-UI layout rebuilt with GTK4 widgets, plus the
+ * GTK4 event model (event controllers, async dialogs) wired to interactive
+ * placeholder behaviour. The real tools/canvas/menus replace these handlers
+ * as the app/ port proceeds, but the plumbing (controllers, shared state,
+ * queue_draw, async pickers) is the same.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -8,6 +12,22 @@
 #include <glib/gi18n.h>
 
 #include "dia-shell.h"
+
+/* Shared shell state so the event handlers can reach the widgets they update.
+ * Owns nothing but itself (widget pointers are borrowed); freed with the
+ * window via g_object_set_data_full(). */
+typedef struct {
+  GtkWidget *canvas;
+  GtkWidget *colour_area;
+  GtkWidget *status_msg;
+  GtkWidget *pos_label;
+  GtkWidget *zoom_label;
+  double     zoom;        /* 1.0 == 100% */
+  GdkRGBA    fg;
+  GdkRGBA    bg;
+  char       tool[64];
+} DiaShell;
+
 
 /* The standard tool palette (mirrors app/toolbox.c tool_data). */
 typedef struct {
@@ -35,7 +55,7 @@ static const ToolEntry tool_entries[] = {
 };
 
 
-/* --- drawing callbacks (placeholder visuals) ----------------------------- */
+/* --- drawing callbacks --------------------------------------------------- */
 
 static void
 draw_canvas (GtkDrawingArea *area,
@@ -44,24 +64,24 @@ draw_canvas (GtkDrawingArea *area,
              int             height,
              gpointer        user_data)
 {
+  DiaShell *self = user_data;
+  double zoom = self ? self->zoom : 1.0;
   double page_w, page_h, px, py;
 
-  /* desk background */
   cairo_set_source_rgb (cr, 0.6, 0.6, 0.62);
   cairo_paint (cr);
 
-  /* a centred "page" */
-  page_w = width * 0.7;
-  page_h = height * 0.82;
+  page_w = CLAMP (width * 0.7 * zoom, 20, width * 4);
+  page_h = CLAMP (height * 0.82 * zoom, 20, height * 4);
   px = (width - page_w) / 2.0;
   py = (height - page_h) / 2.0;
 
   cairo_rectangle (cr, px + 3, py + 3, page_w, page_h);
-  cairo_set_source_rgba (cr, 0, 0, 0, 0.25);   /* drop shadow */
+  cairo_set_source_rgba (cr, 0, 0, 0, 0.25);
   cairo_fill (cr);
 
   cairo_rectangle (cr, px, py, page_w, page_h);
-  cairo_set_source_rgb (cr, 1, 1, 1);          /* paper */
+  cairo_set_source_rgb (cr, 1, 1, 1);
   cairo_fill_preserve (cr);
   cairo_set_source_rgb (cr, 0.4, 0.4, 0.4);
   cairo_set_line_width (cr, 1.0);
@@ -107,22 +127,126 @@ draw_color_area (GtkDrawingArea *area,
                  int             height,
                  gpointer        user_data)
 {
+  DiaShell *self = user_data;
   double s = MIN (width, height) * 0.62;
 
-  /* background colour swatch (bottom-right) */
   cairo_rectangle (cr, width - s, height - s, s, s);
-  cairo_set_source_rgb (cr, 1, 1, 1);
+  gdk_cairo_set_source_rgba (cr, &self->bg);
   cairo_fill_preserve (cr);
   cairo_set_source_rgb (cr, 0.3, 0.3, 0.3);
   cairo_set_line_width (cr, 1.0);
   cairo_stroke (cr);
 
-  /* foreground colour swatch (top-left) */
   cairo_rectangle (cr, 0, 0, s, s);
-  cairo_set_source_rgb (cr, 0, 0, 0);
+  gdk_cairo_set_source_rgba (cr, &self->fg);
   cairo_fill_preserve (cr);
   cairo_set_source_rgb (cr, 0.3, 0.3, 0.3);
   cairo_stroke (cr);
+}
+
+
+/* --- event handlers ------------------------------------------------------ */
+
+static void
+on_tool_toggled (GtkToggleButton *button, DiaShell *self)
+{
+  const char *name;
+
+  if (!gtk_toggle_button_get_active (button))
+    return;
+
+  name = gtk_button_get_label (GTK_BUTTON (button));
+  g_strlcpy (self->tool, name ? name : "", sizeof (self->tool));
+  gtk_label_set_text (GTK_LABEL (self->status_msg), self->tool);
+}
+
+
+static void
+on_canvas_motion (GtkEventControllerMotion *controller,
+                  double                    x,
+                  double                    y,
+                  DiaShell                 *self)
+{
+  char buf[64];
+
+  /* report "diagram" coordinates: pixels divided by the zoom factor */
+  g_snprintf (buf, sizeof (buf), "%.0f, %.0f", x / self->zoom, y / self->zoom);
+  gtk_label_set_text (GTK_LABEL (self->pos_label), buf);
+}
+
+
+static void
+on_canvas_pressed (GtkGestureClick *gesture,
+                   int              n_press,
+                   double           x,
+                   double           y,
+                   DiaShell        *self)
+{
+  char buf[128];
+
+  g_snprintf (buf, sizeof (buf), _("%s at (%.0f, %.0f)"),
+              self->tool[0] ? self->tool : _("Click"),
+              x / self->zoom, y / self->zoom);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
+static void
+update_zoom (DiaShell *self, double factor)
+{
+  char buf[32];
+
+  self->zoom = CLAMP (self->zoom * factor, 0.1, 20.0);
+  g_snprintf (buf, sizeof (buf), "%.0f%%", self->zoom * 100.0);
+  gtk_label_set_text (GTK_LABEL (self->zoom_label), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+static void on_zoom_in  (GtkButton *b, DiaShell *s) { update_zoom (s, 1.5); }
+static void on_zoom_out (GtkButton *b, DiaShell *s) { update_zoom (s, 1.0 / 1.5); }
+
+static void
+on_zoom_reset (GtkButton *b, DiaShell *self)
+{
+  self->zoom = 1.0;
+  update_zoom (self, 1.0);
+}
+
+
+static void
+on_colour_chosen (GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  DiaShell *self = user_data;
+  GdkRGBA *rgba;
+
+  rgba = gtk_color_dialog_choose_rgba_finish (GTK_COLOR_DIALOG (source),
+                                              result, NULL);
+  if (rgba) {
+    self->fg = *rgba;
+    gdk_rgba_free (rgba);
+    gtk_widget_queue_draw (self->colour_area);
+  }
+}
+
+
+static void
+on_colour_pressed (GtkGestureClick *gesture,
+                   int              n_press,
+                   double           x,
+                   double           y,
+                   DiaShell        *self)
+{
+  GtkColorDialog *dialog = gtk_color_dialog_new ();
+  GtkRoot *root = gtk_widget_get_root (self->colour_area);
+
+  gtk_color_dialog_set_title (dialog, _("Foreground Colour"));
+  gtk_color_dialog_choose_rgba (dialog,
+                                GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                                &self->fg,
+                                NULL,
+                                on_colour_chosen,
+                                self);
+  g_object_unref (dialog);
 }
 
 
@@ -145,22 +269,21 @@ build_primary_menu_button (void)
 }
 
 
-/* The action toolbar (New/Open/Save/Undo/Redo/Zoom). */
 static GtkWidget *
-build_action_toolbar (void)
+build_action_toolbar (DiaShell *self)
 {
   GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-  struct { const char *icon; const char *tip; } items[] = {
-    { "document-new-symbolic",   N_("New diagram") },
-    { "document-open-symbolic",  N_("Open") },
-    { "document-save-symbolic",  N_("Save") },
-    { NULL, NULL },
-    { "edit-undo-symbolic",      N_("Undo") },
-    { "edit-redo-symbolic",      N_("Redo") },
-    { NULL, NULL },
-    { "zoom-in-symbolic",        N_("Zoom in") },
-    { "zoom-out-symbolic",       N_("Zoom out") },
-    { "zoom-original-symbolic",  N_("Zoom 1:1") },
+  struct { const char *icon; const char *tip; GCallback cb; } items[] = {
+    { "document-new-symbolic",   N_("New diagram"), NULL },
+    { "document-open-symbolic",  N_("Open"),        NULL },
+    { "document-save-symbolic",  N_("Save"),        NULL },
+    { NULL, NULL, NULL },
+    { "edit-undo-symbolic",      N_("Undo"),        NULL },
+    { "edit-redo-symbolic",      N_("Redo"),        NULL },
+    { NULL, NULL, NULL },
+    { "zoom-in-symbolic",        N_("Zoom in"),     G_CALLBACK (on_zoom_in) },
+    { "zoom-out-symbolic",       N_("Zoom out"),    G_CALLBACK (on_zoom_out) },
+    { "zoom-original-symbolic",  N_("Zoom 1:1"),    G_CALLBACK (on_zoom_reset) },
   };
 
   gtk_widget_add_css_class (bar, "toolbar");
@@ -177,6 +300,8 @@ build_action_toolbar (void)
     b = gtk_button_new_from_icon_name (items[i].icon);
     gtk_button_set_has_frame (GTK_BUTTON (b), FALSE);
     gtk_widget_set_tooltip_text (b, gettext (items[i].tip));
+    if (items[i].cb)
+      g_signal_connect (b, "clicked", items[i].cb, self);
     gtk_box_append (GTK_BOX (bar), b);
   }
 
@@ -184,13 +309,13 @@ build_action_toolbar (void)
 }
 
 
-/* The left toolbox: tool grid + colour area. */
 static GtkWidget *
-build_toolbox (void)
+build_toolbox (DiaShell *self)
 {
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
   GtkWidget *grid = gtk_grid_new ();
   GtkWidget *colour;
+  GtkGesture *click;
   GtkToggleButton *first = NULL;
 
   gtk_widget_set_margin_start (box, 4);
@@ -208,9 +333,11 @@ build_toolbox (void)
     if (first == NULL) {
       first = GTK_TOGGLE_BUTTON (btn);
       gtk_toggle_button_set_active (first, TRUE);
+      g_strlcpy (self->tool, gettext (tool_entries[i].name), sizeof (self->tool));
     } else {
       gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (btn), first);
     }
+    g_signal_connect (btn, "toggled", G_CALLBACK (on_tool_toggled), self);
     gtk_grid_attach (GTK_GRID (grid), btn, i % 2, i / 2, 1, 1);
   }
   gtk_box_append (GTK_BOX (box), grid);
@@ -218,22 +345,24 @@ build_toolbox (void)
   gtk_box_append (GTK_BOX (box),
                   gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
-  /* foreground/background colour area */
   colour = gtk_drawing_area_new ();
+  self->colour_area = colour;
   gtk_widget_set_size_request (colour, 56, 56);
   gtk_widget_set_halign (colour, GTK_ALIGN_CENTER);
-  gtk_widget_set_tooltip_text (colour, _("Foreground & background colour"));
+  gtk_widget_set_tooltip_text (colour, _("Click to pick the foreground colour"));
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (colour),
-                                  draw_color_area, NULL, NULL);
+                                  draw_color_area, self, NULL);
+  click = gtk_gesture_click_new ();
+  g_signal_connect (click, "pressed", G_CALLBACK (on_colour_pressed), self);
+  gtk_widget_add_controller (colour, GTK_EVENT_CONTROLLER (click));
   gtk_box_append (GTK_BOX (box), colour);
 
   return box;
 }
 
 
-/* The diagram display: rulers, canvas, scrollbars, in a notebook tab. */
 static GtkWidget *
-build_canvas_area (void)
+build_canvas_area (DiaShell *self)
 {
   GtkWidget *notebook = gtk_notebook_new ();
   GtkWidget *grid = gtk_grid_new ();
@@ -243,6 +372,10 @@ build_canvas_area (void)
   GtkWidget *canvas = gtk_drawing_area_new ();
   GtkWidget *vscroll = gtk_scrollbar_new (GTK_ORIENTATION_VERTICAL, NULL);
   GtkWidget *hscroll = gtk_scrollbar_new (GTK_ORIENTATION_HORIZONTAL, NULL);
+  GtkEventController *motion;
+  GtkGesture *click;
+
+  self->canvas = canvas;
 
   gtk_button_set_has_frame (GTK_BUTTON (origin), FALSE);
 
@@ -257,11 +390,17 @@ build_canvas_area (void)
   gtk_widget_set_hexpand (canvas, TRUE);
   gtk_widget_set_vexpand (canvas, TRUE);
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (canvas),
-                                  draw_canvas, NULL, NULL);
+                                  draw_canvas, self, NULL);
 
-  /*   (0,0) origin   (1,0) hruler
-   *   (0,1) vruler   (1,1) canvas    (2,1) vscroll
-   *                  (1,2) hscroll                    */
+  /* GTK4 input model: event controllers instead of button/motion signals. */
+  motion = gtk_event_controller_motion_new ();
+  g_signal_connect (motion, "motion", G_CALLBACK (on_canvas_motion), self);
+  gtk_widget_add_controller (canvas, motion);
+
+  click = gtk_gesture_click_new ();
+  g_signal_connect (click, "pressed", G_CALLBACK (on_canvas_pressed), self);
+  gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (click));
+
   gtk_grid_attach (GTK_GRID (grid), origin, 0, 0, 1, 1);
   gtk_grid_attach (GTK_GRID (grid), hruler, 1, 0, 1, 1);
   gtk_grid_attach (GTK_GRID (grid), vruler, 0, 1, 1, 1);
@@ -277,7 +416,6 @@ build_canvas_area (void)
 }
 
 
-/* The right-hand layer list. */
 static GtkWidget *
 build_layers (void)
 {
@@ -314,25 +452,25 @@ build_layers (void)
 }
 
 
-/* The bottom statusbar: message + zoom + position. */
 static GtkWidget *
-build_statusbar (void)
+build_statusbar (DiaShell *self)
 {
   GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
-  GtkWidget *msg = gtk_label_new ("");
-  GtkWidget *zoom = gtk_label_new (_("100%"));
-  GtkWidget *pos = gtk_label_new ("0, 0");
+
+  self->status_msg = gtk_label_new ("");
+  self->pos_label = gtk_label_new ("0, 0");
+  self->zoom_label = gtk_label_new (_("100%"));
 
   gtk_widget_add_css_class (bar, "toolbar");
   gtk_widget_set_margin_start (bar, 6);
   gtk_widget_set_margin_end (bar, 6);
 
-  gtk_widget_set_hexpand (msg, TRUE);
-  gtk_widget_set_halign (msg, GTK_ALIGN_START);
-  gtk_box_append (GTK_BOX (bar), msg);
-  gtk_box_append (GTK_BOX (bar), pos);
+  gtk_widget_set_hexpand (self->status_msg, TRUE);
+  gtk_widget_set_halign (self->status_msg, GTK_ALIGN_START);
+  gtk_box_append (GTK_BOX (bar), self->status_msg);
+  gtk_box_append (GTK_BOX (bar), self->pos_label);
   gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
-  gtk_box_append (GTK_BOX (bar), zoom);
+  gtk_box_append (GTK_BOX (bar), self->zoom_label);
 
   return bar;
 }
@@ -341,30 +479,40 @@ build_statusbar (void)
 GtkWidget *
 dia_shell_new (void)
 {
+  DiaShell *self = g_new0 (DiaShell, 1);
   GtkWidget *view = adw_toolbar_view_new ();
   GtkWidget *header = adw_header_bar_new ();
   GtkWidget *main_area = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
   GtkWidget *title = adw_window_title_new ("Dia", _("Diagram1"));
+  GtkWidget *statusbar;
+
+  self->zoom = 1.0;
+  self->fg = (GdkRGBA) { 0, 0, 0, 1 };
+  self->bg = (GdkRGBA) { 1, 1, 1, 1 };
+
+  /* Build the statusbar first: its labels are updated by handlers that can
+   * fire during construction (e.g. activating the first tool button). */
+  statusbar = build_statusbar (self);
 
   adw_header_bar_set_title_widget (ADW_HEADER_BAR (header), title);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), build_primary_menu_button ());
 
-  /* top bars: header + action toolbar */
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (view), header);
-  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (view), build_action_toolbar ());
+  adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (view), build_action_toolbar (self));
 
-  /* main area: [toolbox | canvas | layers] */
-  gtk_box_append (GTK_BOX (main_area), build_toolbox ());
+  gtk_box_append (GTK_BOX (main_area), build_toolbox (self));
   gtk_box_append (GTK_BOX (main_area),
                   gtk_separator_new (GTK_ORIENTATION_VERTICAL));
-  gtk_box_append (GTK_BOX (main_area), build_canvas_area ());
+  gtk_box_append (GTK_BOX (main_area), build_canvas_area (self));
   gtk_box_append (GTK_BOX (main_area),
                   gtk_separator_new (GTK_ORIENTATION_VERTICAL));
   gtk_box_append (GTK_BOX (main_area), build_layers ());
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (view), main_area);
 
-  /* bottom bar: statusbar */
-  adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (view), build_statusbar ());
+  adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (view), statusbar);
+
+  /* tie the shared state lifetime to the view */
+  g_object_set_data_full (G_OBJECT (view), "dia-shell", self, g_free);
 
   return view;
 }
