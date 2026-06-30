@@ -495,6 +495,41 @@ on_vadj_changed (GtkAdjustment *adj, DiaShell *self)
   redraw_canvas_and_rulers (self);
 }
 
+/* Keep the page in view: after a zoom/scroll, never let the white sheet leave
+ * the viewport entirely. At least ~1 cm of the page stays visible (so an edge
+ * shows), unless the viewport is wholly inside the page — then it's all white
+ * with no edge to show, which is fine. No-op for the infinite workspace. */
+static void
+clamp_origin_to_page (DiaShell *self)
+{
+  double pxcm = shell_pxcm (self);
+  double vis_w, vis_h, m = 1.0;
+  int cw, ch;
+
+  if (self->page_infinite || !self->canvas) {
+    return;
+  }
+  cw = gtk_widget_get_width (self->canvas);
+  ch = gtk_widget_get_height (self->canvas);
+  if (cw <= 1) cw = 600;
+  if (ch <= 1) ch = 400;
+  vis_w = cw / pxcm;
+  vis_h = ch / pxcm;
+
+  if (vis_w >= self->page_w_cm) {
+    /* Page narrower than the view: keep the whole page on screen. */
+    self->origin_x = CLAMP (self->origin_x, self->page_w_cm - vis_w, 0.0);
+  } else {
+    /* Page wider: allow the view inside the page, but keep >= m cm overlapping. */
+    self->origin_x = CLAMP (self->origin_x, m - vis_w, self->page_w_cm - m);
+  }
+  if (vis_h >= self->page_h_cm) {
+    self->origin_y = CLAMP (self->origin_y, self->page_h_cm - vis_h, 0.0);
+  } else {
+    self->origin_y = CLAMP (self->origin_y, m - vis_h, self->page_h_cm - m);
+  }
+}
+
 static void update_zoom (DiaShell *self, double factor);
 
 /* Mouse wheel: Ctrl = zoom, Shift = horizontal scroll, otherwise vertical. */
@@ -519,6 +554,7 @@ on_canvas_scroll (GtkEventControllerScroll *ctrl,
     self->origin_y += dy * step;
     self->origin_x += dx * step;
   }
+  clamp_origin_to_page (self);
   update_transform (self);
   update_scrollbars (self);
   redraw_canvas_and_rulers (self);
@@ -1188,6 +1224,7 @@ update_zoom (DiaShell *self, double factor)
   self->origin_x = cx - (cw / new_pxcm) / 2.0;
   self->origin_y = cy - (ch / new_pxcm) / 2.0;
 
+  clamp_origin_to_page (self);   /* keep the page edge in view */
   update_transform (self);
   update_scrollbars (self);
 
