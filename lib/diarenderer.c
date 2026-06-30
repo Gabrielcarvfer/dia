@@ -1213,8 +1213,11 @@ draw_rounded_polyline (DiaRenderer *renderer,
     p3.x = p[i+1].x; p3.y = p[i+1].y;
     p4.x = p[i+2].x; p4.y = p[i+2].y;
 
-    /* adjust the radius if it would cause odd rendering */
-    min_radius = MIN(radius, calculate_min_radius(&p1,&p2,&p4));
+    /* adjust the radius if it would cause odd rendering; measure against the
+     * original incoming vertex points[i], not p1 -- a previous corner's fillet
+     * trims p1 to its tangent point, which would shorten the segment seen here
+     * and under-round this corner (#482). */
+    min_radius = MIN(radius, calculate_min_radius(&points[i],&p2,&p4));
     arc_it = fillet(&p1,&p2,&p3,&p4, min_radius, &c, &start_angle, &stop_angle);
     /* start with the line drawing to allow joining in backend */
     dia_renderer_draw_line (renderer, &p1, &p2, color);

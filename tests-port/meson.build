@@ -55,3 +55,16 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Regression test for #482: the per-corner radius of a rounded polyline must be
+# computed from the original vertices, not from a start point an earlier
+# corner's fillet already trimmed (which under-rounded later corners).
+test(
+  'lib-rounded-polyline',
+  executable(
+    'test-rounded-polyline-port',
+    ['test-rounded-polyline-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
