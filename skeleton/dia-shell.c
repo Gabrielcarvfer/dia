@@ -1490,8 +1490,13 @@ static DiagramData *
 diagram_load_standalone (const char *path)
 {
   DiaContext *ctx = dia_context_new ("Load Diagram");
-  xmlDocPtr doc = dia_io_load_document (path, ctx, NULL);
+  xmlDocPtr doc;
   DiagramData *data = NULL;
+
+  /* So objects can resolve relative paths (e.g. images) against the diagram's
+   * directory rather than the current working directory (GNOME/dia#524). */
+  dia_context_set_filename (ctx, path);
+  doc = dia_io_load_document (path, ctx, NULL);
 
   if (doc) {
     xmlNodePtr root = xmlDocGetRootElement (doc);
@@ -1626,7 +1631,11 @@ diagram_from_file (DiaShell *self, GFile *file)
 {
   DiaContext *ctx = dia_context_new ("Load Diagram");
   char *path = g_file_get_path (file);
-  xmlDocPtr doc = dia_io_load_document (path, ctx, NULL);
+  xmlDocPtr doc;
+
+  /* Resolve relative paths (images) against the diagram's folder (#524). */
+  dia_context_set_filename (ctx, path);
+  doc = dia_io_load_document (path, ctx, NULL);
 
   if (doc) {
     xmlNodePtr root = xmlDocGetRootElement (doc);

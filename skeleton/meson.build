@@ -52,7 +52,7 @@ if get_option('tests') and xvfb_run.found() and bash_prog.found()
   )
 endif
 
-# Headless CLI export test (no display needed): dia --export to PNG/PDF.
+# Headless CLI tests (no display needed).
 python3_prog = find_program('python3', required: false)
 if get_option('tests') and python3_prog.found()
   test(
@@ -62,6 +62,13 @@ if get_option('tests') and python3_prog.found()
       meson.project_source_root() / 'ui-tests' / 'test_cli_export.py',
       meson.project_source_root() / 'samples' / 'Circuit.dia',
     ],
+    env: {'DIA_BIN': dia_skeleton_exe.full_path()},
+  )
+  # Regression test for GNOME/dia#524 (relative image paths on export).
+  test(
+    'image-relpath',
+    python3_prog,
+    args: [meson.project_source_root() / 'ui-tests' / 'test_image_relpath.py'],
     env: {'DIA_BIN': dia_skeleton_exe.full_path()},
   )
 endif
