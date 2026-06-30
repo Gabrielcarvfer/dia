@@ -51,3 +51,16 @@ if get_option('tests') and xvfb_run.found() and bash_prog.found()
     timeout: 200,
   )
 endif
+
+# Headless CLI export test (no display needed): dia --export to PNG/PDF.
+if get_option('tests') and bash_prog.found()
+  test(
+    'cli-export',
+    bash_prog,
+    args: [
+      meson.project_source_root() / 'ui-tests' / 'test_cli_export.sh',
+      meson.project_source_root() / 'samples' / 'Circuit.dia',
+    ],
+    env: {'DIA_BIN': dia_skeleton_exe.full_path()},
+  )
+endif

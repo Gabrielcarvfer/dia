@@ -110,7 +110,39 @@ int
 main (int argc, char *argv[])
 {
   g_autoptr (AdwApplication) app = NULL;
+  g_autoptr (GOptionContext) ctx = NULL;
+  g_autoptr (GError) error = NULL;
+  g_autofree char *export_to = NULL;
+  gboolean show_version = FALSE;
   int status;
+
+  /* Command-line options (upstream-compatible subset). --export renders the
+   * input .dia to PNG/PDF/SVG headlessly and exits — no display required. */
+  const GOptionEntry entries[] = {
+    { "export", 'e', 0, G_OPTION_ARG_FILENAME, &export_to,
+      "Export the input diagram to FILE (.png/.pdf/.svg) and exit", "FILE" },
+    { "version", 'v', 0, G_OPTION_ARG_NONE, &show_version,
+      "Show the version and exit", NULL },
+    { NULL }
+  };
+
+  ctx = g_option_context_new ("[INPUT.dia] — GTK4 Dia");
+  g_option_context_add_main_entries (ctx, entries, NULL);
+  if (!g_option_context_parse (ctx, &argc, &argv, &error)) {
+    g_printerr ("dia: %s\n", error->message);
+    return 2;
+  }
+  if (show_version) {
+    g_print ("Dia (GTK4 port) %s\n", PACKAGE_VERSION);
+    return 0;
+  }
+  if (export_to) {
+    if (argc < 2) {
+      g_printerr ("dia: --export needs an input .dia file\n");
+      return 2;
+    }
+    return dia_shell_export_cli (argv[1], export_to);
+  }
 
   /* WSLg's native-Wayland popovers are unreliable (the menu/popover surfaces
    * never show), so prefer the X11 (Xwayland) backend on WSL, where they work.

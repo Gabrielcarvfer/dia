@@ -26,4 +26,8 @@ GtkWidget *dia_shell_new (void);
  * else PNG). Shared by the GUI Export action and the --export CLI option. */
 gboolean diagram_export_file (DiagramData *data, const char *path);
 
+/* Headless: load @infile (.dia) and export to @outfile (format by extension).
+ * Returns a process exit code. Used by `dia --export`. */
+int dia_shell_export_cli (const char *infile, const char *outfile);
+
 G_END_DECLS

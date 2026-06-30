@@ -33,6 +33,7 @@
 #include "dia-io.h"
 #include "dia_xml.h"
 #include "diacontext.h"
+#include "message.h"
 #include "properties.h"
 #include "prop_geomtypes.h"
 #include "prop_attr.h"
@@ -1379,6 +1380,95 @@ diagram_export_file (DiagramData *data, const char *path)
   cairo_destroy (cr);
   cairo_surface_destroy (surface);
   return ok;
+}
+
+/* Load a .dia file into a fresh DiagramData (no shell/GUI). Caller unrefs.
+ * Assumes libdia_init + object-type registration already happened. */
+static DiagramData *
+diagram_load_standalone (const char *path)
+{
+  DiaContext *ctx = dia_context_new ("Load Diagram");
+  xmlDocPtr doc = dia_io_load_document (path, ctx, NULL);
+  DiagramData *data = NULL;
+
+  if (doc) {
+    xmlNodePtr root = xmlDocGetRootElement (doc);
+    DiaLayer *layer;
+
+    data = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
+    layer = dia_diagram_data_get_active_layer (data);
+
+    for (xmlNodePtr ln = root ? root->children : NULL; ln; ln = ln->next) {
+      if (xmlStrcmp (ln->name, (const xmlChar *) "layer") != 0) {
+        continue;
+      }
+      for (xmlNodePtr on = ln->children; on; on = on->next) {
+        char *type_name, *version_str;
+        DiaObjectType *type;
+
+        if (xmlStrcmp (on->name, (const xmlChar *) "object") != 0) {
+          continue;
+        }
+        type_name = (char *) xmlGetProp (on, (const xmlChar *) "type");
+        version_str = (char *) xmlGetProp (on, (const xmlChar *) "version");
+        type = type_name ? object_get_type (type_name) : NULL;
+        if (type && type->ops->load) {
+          DiaObject *obj = type->ops->load (on,
+                                            version_str ? atoi (version_str) : 0,
+                                            ctx);
+          if (obj) {
+            dia_layer_add_object (layer, obj);
+          }
+        }
+        if (type_name) xmlFree (type_name);
+        if (version_str) xmlFree (version_str);
+      }
+    }
+    xmlFreeDoc (doc);
+  }
+  dia_context_release (ctx);
+  return data;
+}
+
+/* Console message handler for the headless CLI: libdia normally pops a GTK
+ * dialog (message.c), which crashes without a display, so route messages to
+ * stderr instead. */
+static void
+cli_message (const char *title, enum ShowAgainStyle showAgain,
+             const char *fmt, va_list args)
+{
+  char *body = g_strdup_vprintf (fmt, args);
+
+  g_printerr ("dia: %s: %s\n", title ? title : "message", body);
+  g_free (body);
+}
+
+/* Headless CLI: load @infile (.dia) and export it to @outfile, format chosen by
+ * @outfile's extension. Returns a process exit code. Needs no display. */
+int
+dia_shell_export_cli (const char *infile, const char *outfile)
+{
+  DiagramData *data;
+  gboolean ok;
+
+  set_message_func (cli_message);   /* no GUI dialogs in headless mode */
+  libdia_init (DIA_INTERACTIVE);
+  register_standard_object_types ();
+
+  data = diagram_load_standalone (infile);
+  if (!data) {
+    g_printerr ("dia: cannot load '%s'\n", infile);
+    return 1;
+  }
+  ok = diagram_export_file (data, outfile);
+  g_object_unref (data);
+
+  if (!ok) {
+    g_printerr ("dia: export to '%s' failed\n", outfile);
+    return 1;
+  }
+  g_print ("Exported '%s' -> '%s'\n", infile, outfile);
+  return 0;
 }
 
 static gboolean
