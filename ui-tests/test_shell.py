@@ -269,6 +269,18 @@ def main():
         ok = any('extra-objects OK' in (lab.name or '') for lab in labels)
         check("Flowchart/network/ER object types create on the canvas", ok)
 
+    # 3h. Modify tool: dragging a handle resizes/stretches the object. Exercised
+    #     via the DIA_UITEST trigger (it calls dia_object_move_handle, the same
+    #     call the canvas handle-drag uses) and asserts the object grew.
+    rz = find(app, name='uitest-resize', roleName='push button')
+    check("DIA_UITEST resize trigger present", rz)
+    if rz:
+        do_click(rz)
+        time.sleep(0.5)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('resize OK' in (lab.name or '') for lab in labels)
+        check("Modify tool resizes an object by its handle", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

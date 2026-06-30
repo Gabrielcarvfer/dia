@@ -52,6 +52,11 @@ typedef struct {
                            * DiaObjects, rendered via the Dia cairo renderer */
   DiaObject  *selected;   /* current selection (Modify tool) */
   Point       drag_origin; /* selected object's position at drag start */
+  /* Handle drag (resize/stretch/bend): when the press lands on a handle of the
+   * selection, the drag moves that handle instead of the whole object. */
+  Handle     *drag_handle;       /* handle being dragged, or NULL for a move */
+  int         drag_handle_idx;   /* its index in selected->handles (for undo) */
+  Point       drag_handle_start; /* the handle's position at drag start */
 
   GPtrArray  *undo;       /* UndoOp* — the undo/redo history */
   int         undo_pos;   /* number of ops currently applied (undo[0..pos-1]) */
@@ -152,13 +157,14 @@ diagram_create_object (DiaShell *self, const char *type_name, Point p)
  * A small history of create/move ops. Removing an object from a layer only
  * unlinks it (it isn't destroyed), so undo/redo can move objects in and out.
  */
-typedef enum { OP_CREATE, OP_MOVE } OpKind;
+typedef enum { OP_CREATE, OP_MOVE, OP_HANDLE } OpKind;
 
 typedef struct {
   OpKind     kind;
   DiaObject *obj;
-  Point      from;   /* OP_MOVE: position before */
-  Point      to;     /* OP_MOVE: position after */
+  Point      from;   /* OP_MOVE/OP_HANDLE: handle/object position before */
+  Point      to;     /* OP_MOVE/OP_HANDLE: handle/object position after */
+  int        handle; /* OP_HANDLE: index of the moved handle in obj->handles */
 } UndoOp;
 
 static void
@@ -195,6 +201,34 @@ push_op (DiaShell *self, OpKind kind, DiaObject *obj, Point from, Point to)
   update_undo_actions (self);
 }
 
+/* Record a handle move (resize/stretch/bend) as an undoable op. Reuses push_op
+ * for the history bookkeeping, then tags the entry as OP_HANDLE. */
+static void
+push_op_handle (DiaShell *self, DiaObject *obj, int handle_idx,
+                Point from, Point to)
+{
+  UndoOp *op;
+
+  push_op (self, OP_MOVE, obj, from, to);
+  op = g_ptr_array_index (self->undo, self->undo_pos - 1);
+  op->kind = OP_HANDLE;
+  op->handle = handle_idx;
+}
+
+/* Move op->obj's recorded handle to @p (used by both apply and revert). */
+static void
+op_move_handle (UndoOp *op, Point *p)
+{
+  DiaObjectChange *change;
+
+  if (op->handle < 0 || op->handle >= op->obj->num_handles) {
+    return;
+  }
+  change = dia_object_move_handle (op->obj, op->obj->handles[op->handle], p,
+                                   NULL, HANDLE_MOVE_USER_FINAL, 0);
+  g_clear_pointer (&change, dia_object_change_unref);
+}
+
 static void
 op_apply (DiaShell *self, UndoOp *op)   /* redo direction */
 {
@@ -208,6 +242,9 @@ op_apply (DiaShell *self, UndoOp *op)   /* redo direction */
     case OP_MOVE:
       change = dia_object_move (op->obj, &op->to);
       g_clear_pointer (&change, dia_object_change_unref);
+      break;
+    case OP_HANDLE:
+      op_move_handle (op, &op->to);
       break;
     default:
       break;
@@ -231,6 +268,9 @@ op_revert (DiaShell *self, UndoOp *op)  /* undo direction */
     case OP_MOVE:
       change = dia_object_move (op->obj, &op->from);
       g_clear_pointer (&change, dia_object_change_unref);
+      break;
+    case OP_HANDLE:
+      op_move_handle (op, &op->from);
       break;
     default:
       break;
@@ -565,6 +605,33 @@ select_at (DiaShell *self, Point p)
 }
 
 
+/* Return the index of @obj's handle within @tol cm of @p, or -1 if none. The
+ * handles are the small squares draw_selection_handles() paints; grabbing one
+ * lets the user resize/stretch/bend the object. */
+static int
+handle_at (DiaObject *obj, Point p, double tol)
+{
+  int best = -1;
+  double best2 = tol * tol;
+
+  if (obj == NULL) {
+    return -1;
+  }
+  for (int i = 0; i < obj->num_handles; i++) {
+    Handle *h = obj->handles[i];
+    double dx = h->pos.x - p.x;
+    double dy = h->pos.y - p.y;
+    double d2 = dx * dx + dy * dy;
+
+    if (d2 <= best2) {
+      best2 = d2;
+      best = i;
+    }
+  }
+  return best;
+}
+
+
 static void
 on_canvas_pressed (GtkGestureClick *gesture,
                    int              n_press,
@@ -581,23 +648,39 @@ on_canvas_pressed (GtkGestureClick *gesture,
   p.x = (x - self->page_x) / self->page_scale;
   p.y = (y - self->page_y) / self->page_scale;
 
-  /* Modify selects; the create tools place an object. */
   if (g_strcmp0 (self->tool, "Modify") == 0) {
-    select_at (self, p);
+    /* If the press is on a handle of the current selection, grab it for a
+     * resize/stretch/bend drag; otherwise (re)select the object under it. */
+    int hi = handle_at (self->selected, p, 0.3);
+
+    if (hi >= 0) {
+      self->drag_handle = self->selected->handles[hi];
+      self->drag_handle_idx = hi;
+    } else {
+      self->drag_handle = NULL;
+      self->drag_handle_idx = -1;
+      select_at (self, p);
+    }
   } else {
     apply_tool_at (self, p);
   }
 }
 
 
-/* Drag with the Modify tool moves the selected object. */
+/* Drag with the Modify tool: move the grabbed handle (resize/stretch/bend) if
+ * the press landed on one, otherwise move the whole selected object. */
 static void
 on_canvas_drag_begin (GtkGestureDrag *gesture,
                       double          start_x,
                       double          start_y,
                       DiaShell       *self)
 {
-  if (g_strcmp0 (self->tool, "Modify") == 0 && self->selected) {
+  if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected) {
+    return;
+  }
+  if (self->drag_handle) {
+    self->drag_handle_start = self->drag_handle->pos;
+  } else {
     self->drag_origin = self->selected->position;
   }
 }
@@ -616,10 +699,18 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
     return;
   }
 
-  to.x = self->drag_origin.x + offset_x / self->page_scale;
-  to.y = self->drag_origin.y + offset_y / self->page_scale;
-
-  change = dia_object_move (self->selected, &to);
+  if (self->drag_handle) {
+    /* Absolute target relative to the handle's start, so repeated updates are
+     * not cumulative. */
+    to.x = self->drag_handle_start.x + offset_x / self->page_scale;
+    to.y = self->drag_handle_start.y + offset_y / self->page_scale;
+    change = dia_object_move_handle (self->selected, self->drag_handle, &to,
+                                     NULL, HANDLE_MOVE_USER, 0);
+  } else {
+    to.x = self->drag_origin.x + offset_x / self->page_scale;
+    to.y = self->drag_origin.y + offset_y / self->page_scale;
+    change = dia_object_move (self->selected, &to);
+  }
   g_clear_pointer (&change, dia_object_change_unref);
   gtk_widget_queue_draw (self->canvas);
 }
@@ -630,10 +721,28 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
                     double          offset_y,
                     DiaShell       *self)
 {
+  DiaObjectChange *change;
   Point to;
 
   if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected ||
       self->page_scale <= 0.0) {
+    return;
+  }
+
+  if (self->drag_handle) {
+    to.x = self->drag_handle_start.x + offset_x / self->page_scale;
+    to.y = self->drag_handle_start.y + offset_y / self->page_scale;
+    change = dia_object_move_handle (self->selected, self->drag_handle, &to,
+                                     NULL, HANDLE_MOVE_USER_FINAL, 0);
+    g_clear_pointer (&change, dia_object_change_unref);
+    if (to.x != self->drag_handle_start.x ||
+        to.y != self->drag_handle_start.y) {
+      push_op_handle (self, self->selected, self->drag_handle_idx,
+                      self->drag_handle_start, to);
+    }
+    self->drag_handle = NULL;
+    self->drag_handle_idx = -1;
+    gtk_widget_queue_draw (self->canvas);
     return;
   }
 
@@ -990,6 +1099,55 @@ on_uitest_extra_objects (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): create a box, then drag one of its handles out
+ * via dia_object_move_handle() — the SAME call the canvas handle-drag uses —
+ * and verify the object actually grew. Proves resize/stretch works. */
+static void
+on_uitest_resize (GtkButton *button, DiaShell *self)
+{
+  DiaObject *obj;
+  DiaObjectChange *change;
+  Handle *h;
+  Point to;
+  double w0, h0, w1, h1;
+  char buf[128];
+
+  obj = diagram_create_object (self, "Standard - Box", (Point) { 5, 5 });
+  if (!obj || obj->num_handles < 1) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("resize FAIL (no object)"));
+    return;
+  }
+  push_op (self, OP_CREATE, obj, (Point) { 5, 5 }, (Point) { 5, 5 });
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+
+  w0 = obj->bounding_box.right - obj->bounding_box.left;
+  h0 = obj->bounding_box.bottom - obj->bounding_box.top;
+
+  /* The last handle is a corner; drag it out 2 cm each way. */
+  h = obj->handles[obj->num_handles - 1];
+  to.x = h->pos.x + 2.0;
+  to.y = h->pos.y + 2.0;
+  change = dia_object_move_handle (obj, h, &to, NULL, HANDLE_MOVE_USER_FINAL, 0);
+  g_clear_pointer (&change, dia_object_change_unref);
+
+  w1 = obj->bounding_box.right - obj->bounding_box.left;
+  h1 = obj->bounding_box.bottom - obj->bounding_box.top;
+
+  if (w1 > w0 + 0.5 || h1 > h0 + 0.5) {
+    g_snprintf (buf, sizeof (buf),
+                _("resize OK (%.1fx%.1f -> %.1fx%.1f)"), w0, h0, w1, h1);
+  } else {
+    g_snprintf (buf, sizeof (buf),
+                _("resize FAIL (%.1fx%.1f -> %.1fx%.1f)"), w0, h0, w1, h1);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -1221,21 +1379,25 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *m = gtk_button_new_with_label ("uitest-select-move");
     GtkWidget *u = gtk_button_new_with_label ("uitest-undo-redo");
     GtkWidget *x = gtk_button_new_with_label ("uitest-extra-objects");
+    GtkWidget *z = gtk_button_new_with_label ("uitest-resize");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (u), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (x), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (z), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
     g_signal_connect (u, "clicked", G_CALLBACK (on_uitest_undo_redo), self);
     g_signal_connect (x, "clicked", G_CALLBACK (on_uitest_extra_objects), self);
+    g_signal_connect (z, "clicked", G_CALLBACK (on_uitest_resize), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
     gtk_box_append (GTK_BOX (bar), u);
     gtk_box_append (GTK_BOX (bar), x);
+    gtk_box_append (GTK_BOX (bar), z);
   }
 
   return bar;
