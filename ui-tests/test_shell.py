@@ -44,6 +44,13 @@ def states_of(node):
         return set()
 
 
+def all_state_names(node):
+    try:
+        return sorted(str(s) for s in node.getState().get_states())
+    except Exception as exc:
+        return ["<err %s>" % exc]
+
+
 def is_selected(node):
     """GTK4 toggle buttons expose 'active' as PRESSED; radios as CHECKED."""
     s = states_of(node)
@@ -125,11 +132,33 @@ def main():
     check("layers list present",
           find(app, name='Background', roleName='label') is not None)
 
+    # --- DIAGNOSTICS: real states + drawing-area exposure -------------------
+    print("\n----- DIAGNOSTICS -----")
+    if modify:
+        print("DIAG Modify states :", all_state_names(modify))
+        print("DIAG Modify actions:", actions_of(modify))
+    if box:
+        print("DIAG Box states    :", all_state_names(box))
+    for role in ('drawing area', 'canvas', 'image', 'panel'):
+        try:
+            found = app.findChildren(predicate.GenericPredicate(roleName=role))
+            named = [n.name for n in found if n.name]
+            if role == 'drawing area' or named:
+                print("DIAG role %-12r count=%d named=%s" % (role, len(found), named[:8]))
+        except Exception as exc:
+            print("DIAG role", role, "error", exc)
+    for nm in ('diagram-canvas', 'colour-area'):
+        hits = app.findChildren(predicate.GenericPredicate(name=nm))
+        print("DIAG name %-15r hits=%d roles=%s" % (nm, len(hits), [h.roleName for h in hits]))
+    print("-----------------------\n")
+
     # 2. Tool palette behaves as a radio group (using PRESSED/CHECKED state).
     if modify and box:
         check("Modify selected initially", is_selected(modify))
         do_click(box)
         time.sleep(0.6)
+        print("DIAG after click -> Box states:", all_state_names(box))
+        print("DIAG after click -> Modify states:", all_state_names(modify))
         check("Box selected after clicking it", is_selected(box))
         check("Modify deselected after Box selected", not is_selected(modify))
 
