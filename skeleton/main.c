@@ -92,6 +92,12 @@ main (int argc, char *argv[])
   g_autoptr (AdwApplication) app = NULL;
   int status;
 
+  /* Use GTK's native file chooser rather than the xdg-desktop-portal one,
+   * which hangs in environments without a working portal (e.g. WSLg): the
+   * first cancelled portal dialog leaves a stuck modal grab and the next
+   * open freezes. Overridable with GTK_USE_PORTAL=1. */
+  g_setenv ("GTK_USE_PORTAL", "0", FALSE);
+
   app = adw_application_new (DIA_APP_ID, G_APPLICATION_DEFAULT_FLAGS);
 
   g_action_map_add_action_entries (G_ACTION_MAP (app),
