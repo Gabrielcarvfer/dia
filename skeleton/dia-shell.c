@@ -34,6 +34,7 @@
 #include "dia_xml.h"
 #include "diacontext.h"
 #include "message.h"
+#include "register-objects.h"
 #include "properties.h"
 #include "prop_geomtypes.h"
 #include "prop_attr.h"
@@ -101,59 +102,12 @@ typedef struct {
 #define PX_PER_CM 10.0
 
 
-/* Standard object types (defined in objects/standard, linked via objects-port).
- * We register them directly rather than through the plugin loader. */
-extern DiaObjectType *_box_type;
-extern DiaObjectType *_ellipse_type;
-extern DiaObjectType *_line_type;
-extern DiaObjectType *_textobj_type;
-extern DiaObjectType *_polygon_type;
-extern DiaObjectType *_beziergon_type;
-extern DiaObjectType *_zigzagline_type;
-extern DiaObjectType *_polyline_type;
-extern DiaObjectType *_bezierline_type;
-extern DiaObjectType *_arc_type;
-extern DiaObjectType *_image_type;
-extern DiaObjectType *_outline_type;
-
-/* Extra object sets (flowchart, network, ER). Their per-set registration file
- * (flowchart.c/network.c/er.c, each a dia_plugin_init) is NOT linked to avoid a
- * symbol clash, so we reference each type struct directly and register it. */
-extern DiaObjectType fc_box_type, diamond_type, fc_ellipse_type, pgram_type;
-extern DiaObjectType basestation_type, bus_type, radiocell_type, wanlink_type;
-extern DiaObjectType attribute_type, entity_type, participation_type, relationship_type;
-
+/* Object types are registered from objects-port (register-objects.c) so the
+ * skeleton and the object tests use the identical set. */
 static void
 register_standard_object_types (void)
 {
-  object_register_type (_box_type);
-  object_register_type (_ellipse_type);
-  object_register_type (_line_type);
-  object_register_type (_textobj_type);
-  object_register_type (_polygon_type);
-  object_register_type (_beziergon_type);
-  object_register_type (_zigzagline_type);
-  object_register_type (_polyline_type);
-  object_register_type (_bezierline_type);
-  object_register_type (_arc_type);
-  object_register_type (_image_type);
-  object_register_type (_outline_type);
-
-  /* flowchart */
-  object_register_type (&fc_box_type);
-  object_register_type (&diamond_type);
-  object_register_type (&fc_ellipse_type);
-  object_register_type (&pgram_type);
-  /* network */
-  object_register_type (&basestation_type);
-  object_register_type (&bus_type);
-  object_register_type (&radiocell_type);
-  object_register_type (&wanlink_type);
-  /* ER */
-  object_register_type (&attribute_type);
-  object_register_type (&entity_type);
-  object_register_type (&participation_type);
-  object_register_type (&relationship_type);
+  dia_port_register_objects ();
 }
 
 

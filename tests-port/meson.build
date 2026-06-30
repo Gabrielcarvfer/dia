@@ -29,3 +29,17 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Port-adapted object battery: create/clone/move/move-handle/save-load on every
+# statically-registered type (standard + flowchart/network/ER), under ASan.
+test(
+  'lib-objects',
+  executable(
+    'test-objects-port',
+    ['test-objects-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+  timeout: 120,
+)

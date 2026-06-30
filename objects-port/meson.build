@@ -38,6 +38,8 @@ libdia_objects_sources = files(
   objs / 'ER' / 'entity.c',
   objs / 'ER' / 'participation.c',
   objs / 'ER' / 'relationship.c',
+  # shared registration (used by the skeleton and the object tests)
+  meson.current_source_dir() / 'register-objects.c',
 )
 
 libdia_objects = static_library(
@@ -50,5 +52,7 @@ libdia_objects = static_library(
 
 libdia_objects_dep = declare_dependency(
   link_with: libdia_objects,
+  # expose this dir so callers can #include "register-objects.h"
+  include_directories: include_directories('.'),
   dependencies: [libdia_core_dep],
 )
