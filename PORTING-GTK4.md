@@ -69,8 +69,29 @@ migrations done so far:
   `GtkPopover`/`GtkMenuButton` holding flat preview buttons; the
   `button-press-event` vfunc → `GtkButton::clicked`.
 
-`lib/` is essentially done. `dia-io.c` is the only file left, blocked by
-libxml < 2.14 (re-add once the system libxml satisfies the >= 2.14 pin).
+`lib/` is done — all 100 `lib/*.c` compile and link (dia-io.c via libxml<2.14
+shims). The whole tree builds into `libdia-core`.
+
+### App layer (skeleton)
+
+`skeleton/` is a working GTK4 + libadwaita app linked against `libdia-core`:
+
+- **Layout**: `AdwToolbarView` with header + action toolbar, `[toolbox | canvas
+  | layers]`, and a statusbar (`dia-shell.c`).
+- **Canvas**: a `GtkDrawingArea` that renders a shape model with the real
+  `DiaCairoRenderer` (`gtk_drawing_area_set_draw_func` + cairo).
+- **Input**: `GtkEventControllerMotion` + `GtkGestureClick`; create tools
+  (Box/Ellipse/Line/Text) add shapes coloured by an async `GtkColorDialog`.
+- **Actions/menus**: a `GMenu` + `GAction` group (`dia.new/open/save/zoom-*`);
+  New clears, Open/Save via async `GtkFileDialog` (GKeyFile stand-in format).
+- **Tests**: `ui-tests/` drives it over AT-SPI with dogtail (17/17).
+- **WSL**: defaults to the X11 backend and the native (non-portal, non-modal)
+  file chooser there — see `main.c` (WSLg's native-Wayland popovers/portal hang).
+
+The shape model is a lightweight stand-in, **not real `DiaObjects`** — the next
+step is porting `objects/` (e.g. `objects/standard`) so the canvas creates
+actual Dia objects with true `.dia` load/save via `app/load_save.c`, then
+selection/Modify and undo/redo.
 
 ## Building
 
