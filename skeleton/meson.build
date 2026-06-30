@@ -91,4 +91,11 @@ if get_option('tests') and python3_prog.found()
     args: [meson.project_source_root() / 'ui-tests' / 'test_missing_image.py'],
     env: {'DIA_BIN': dia_skeleton_exe.full_path()},
   )
+  # A broken orthconn (missing orth_points) must not crash on load (#319).
+  test(
+    'broken-orthconn',
+    python3_prog,
+    args: [meson.project_source_root() / 'ui-tests' / 'test_broken_orthconn.py'],
+    env: {'DIA_BIN': dia_skeleton_exe.full_path()},
+  )
 endif

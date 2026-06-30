@@ -730,24 +730,51 @@ orthconn_load(OrthConn *orth, ObjectNode obj_node,
   else
     orth->numpoints = 0;
 
+  /* Defend against broken files (#319): the handle setup below writes start
+   * and end handles unconditionally, so an orthconn needs at least three
+   * points (two segments). A file that omits orth_points, or supplies too
+   * few, otherwise drives numpoints to 0/negative and crashes on the huge
+   * allocations that follow. Warn and substitute a default L-shaped
+   * placeholder the user can reroute by hand. */
+  if (orth->numpoints < 3) {
+    dia_context_add_message (ctx,
+        _("Broken orthogonal connection: missing or too few orth_points; "
+          "substituting a default placeholder."));
+    attr = NULL;
+    orth->numpoints = 3;
+  }
+
   orth->numorient = orth->numpoints - 1;
 
   object_init(obj, orth->numpoints-1, 0);
 
-  data = attribute_first_data(attr);
+  data = attr ? attribute_first_data(attr) : NULL;
   orth->points = g_new0 (Point, orth->numpoints);
   for (i=0;i<orth->numpoints;i++) {
-    data_point(data, &orth->points[i], ctx);
-    data = data_next(data);
+    if (data) {
+      data_point(data, &orth->points[i], ctx);
+      data = data_next(data);
+    }
+  }
+  if (attr == NULL) {
+    /* L-shaped placeholder: (0,0) -> (0,1) -> (1,1) */
+    orth->points[1].y = 1.0;
+    orth->points[2].x = 1.0;
+    orth->points[2].y = 1.0;
   }
 
   attr = object_find_attribute(obj_node, "orth_orient");
 
-  data = attribute_first_data(attr);
+  data = attr ? attribute_first_data(attr) : NULL;
   orth->orientation = g_new0 (Orientation, orth->numpoints - 1);
   for (i=0;i<orth->numpoints-1;i++) {
-    orth->orientation[i] = data_enum(data, ctx);
-    data = data_next(data);
+    if (data) {
+      orth->orientation[i] = data_enum(data, ctx);
+      data = data_next(data);
+    } else {
+      /* alternate, matching the L-shaped placeholder above */
+      orth->orientation[i] = (i % 2 == 0) ? VERTICAL : HORIZONTAL;
+    }
   }
 
   orth->autorouting = TRUE;
