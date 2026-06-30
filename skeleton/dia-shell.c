@@ -76,6 +76,7 @@ typedef struct {
   guint      scroll_guard;          /* >0 while we update adjustments ourselves */
   /* Snapping toggles (toolbar). snap_grid is applied to create/move/handle. */
   gboolean   snap_grid, snap_object, snap_guide;
+  GtkWidget *layers_panel;          /* right sidebar, hideable to free space */
 } DiaShell;
 
 /* Pixels per cm at 100% zoom. Chosen so a typical canvas shows ~80 cm across,
@@ -2221,6 +2222,17 @@ dia_shell_free (gpointer data)
 }
 
 
+/* Header toggle: show/hide the right-hand layers panel to free canvas space. */
+static void
+on_toggle_layers (GtkToggleButton *b, DiaShell *self)
+{
+  if (self->layers_panel) {
+    gtk_widget_set_visible (self->layers_panel,
+                            gtk_toggle_button_get_active (b));
+  }
+}
+
+
 /* Seed the diagram with a few real objects so it isn't blank on open and the
  * render pipeline is exercised before the user creates anything. */
 static void
@@ -2274,6 +2286,16 @@ dia_shell_new (void)
 
   adw_header_bar_set_title_widget (ADW_HEADER_BAR (header), title);
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), build_primary_menu_button ());
+  {
+    GtkWidget *layers_toggle = gtk_toggle_button_new ();
+    gtk_button_set_icon_name (GTK_BUTTON (layers_toggle), "view-list-symbolic");
+    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (layers_toggle), TRUE);
+    gtk_widget_set_tooltip_text (layers_toggle, _("Show or hide the layers panel"));
+    set_a11y_label (layers_toggle, "toggle-layers");
+    g_signal_connect (layers_toggle, "toggled",
+                      G_CALLBACK (on_toggle_layers), self);
+    adw_header_bar_pack_end (ADW_HEADER_BAR (header), layers_toggle);
+  }
 
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (view), header);
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (view), build_action_toolbar (self));
@@ -2282,9 +2304,15 @@ dia_shell_new (void)
   gtk_box_append (GTK_BOX (main_area),
                   gtk_separator_new (GTK_ORIENTATION_VERTICAL));
   gtk_box_append (GTK_BOX (main_area), build_canvas_area (self));
-  gtk_box_append (GTK_BOX (main_area),
-                  gtk_separator_new (GTK_ORIENTATION_VERTICAL));
-  gtk_box_append (GTK_BOX (main_area), build_layers ());
+  /* Layers panel + its divider in one box so the header toggle hides both. */
+  {
+    GtkWidget *layers_wrap = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_box_append (GTK_BOX (layers_wrap),
+                    gtk_separator_new (GTK_ORIENTATION_VERTICAL));
+    gtk_box_append (GTK_BOX (layers_wrap), build_layers ());
+    self->layers_panel = layers_wrap;
+    gtk_box_append (GTK_BOX (main_area), layers_wrap);
+  }
   adw_toolbar_view_set_content (ADW_TOOLBAR_VIEW (view), main_area);
 
   adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (view), statusbar);
