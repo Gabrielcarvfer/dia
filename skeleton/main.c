@@ -92,6 +92,14 @@ main (int argc, char *argv[])
   g_autoptr (AdwApplication) app = NULL;
   int status;
 
+  /* WSLg's native-Wayland popovers are unreliable (the menu/popover surfaces
+   * never show), so prefer the X11 (Xwayland) backend on WSL, where they work.
+   * Only on WSL, and overridable by setting GDK_BACKEND yourself. */
+  if (g_file_test ("/mnt/wslg", G_FILE_TEST_IS_DIR) ||
+      g_getenv ("WSL_DISTRO_NAME") != NULL) {
+    g_setenv ("GDK_BACKEND", "x11", FALSE);
+  }
+
   /* Use GTK's native file chooser rather than the xdg-desktop-portal one,
    * which hangs in environments without a working portal (e.g. WSLg): the
    * first cancelled portal dialog leaves a stuck modal grab and the next
