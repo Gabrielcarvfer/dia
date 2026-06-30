@@ -78,7 +78,9 @@ on_activate (GApplication *app,
 
   window = adw_application_window_new (GTK_APPLICATION (app));
   gtk_window_set_title (GTK_WINDOW (window), "Dia");
+  /* Default size is the unmaximized fallback; start maximized. */
   gtk_window_set_default_size (GTK_WINDOW (window), 1100, 720);
+  gtk_window_maximize (GTK_WINDOW (window));
 
   adw_application_window_set_content (ADW_APPLICATION_WINDOW (window),
                                       dia_shell_new ());

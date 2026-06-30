@@ -1416,7 +1416,6 @@ build_toolbox (DiaShell *self)
   gtk_widget_set_margin_start (box, 4);
   gtk_widget_set_margin_end (box, 4);
   gtk_widget_set_margin_top (box, 4);
-  gtk_widget_set_size_request (box, 140, -1);
 
   gtk_grid_set_row_homogeneous (GTK_GRID (grid), TRUE);
   gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
@@ -1441,7 +1440,8 @@ build_toolbox (DiaShell *self)
       gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (btn), first);
     }
     g_signal_connect (btn, "toggled", G_CALLBACK (on_tool_toggled), self);
-    gtk_grid_attach (GTK_GRID (grid), btn, i % 2, i / 2, 1, 1);
+    /* Single column: one tool per row. */
+    gtk_grid_attach (GTK_GRID (grid), btn, 0, i, 1, 1);
   }
   gtk_box_append (GTK_BOX (box), grid);
 
