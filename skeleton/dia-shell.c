@@ -66,7 +66,7 @@ typedef struct {
   DiagramData *diagram;   /* the real model: a DiagramData with a layer of
                            * DiaObjects, rendered via the Dia cairo renderer */
   DiaObject  *selected;   /* current selection (Modify tool) */
-  DiaObject  *clipboard;  /* a cloned object held for paste (cut/copy) */
+  GList      *clipboard;  /* cloned objects held for paste (cut/copy) */
   Point       drag_origin; /* selected object's position at drag start */
   /* Handle drag (resize/stretch/bend): when the press lands on a handle of the
    * selection, the drag moves that handle instead of the whole object. */
@@ -1578,17 +1578,33 @@ action_delete (GSimpleAction *a, GVariant *p, gpointer data)
   delete_selected (data);
 }
 
+/* Free the held clipboard clones. */
+static void
+clear_clipboard (DiaShell *self)
+{
+  for (GList *l = self->clipboard; l; l = l->next) {
+    dia_object_destroy (l->data);
+  }
+  g_clear_pointer (&self->clipboard, g_list_free);
+}
+
 static void
 action_copy (GSimpleAction *a, GVariant *p, gpointer data)
 {
   DiaShell *self = data;
+  char buf[48];
 
-  if (!self->selected) {
+  if (!self->diagram->selected) {
     return;
   }
-  dia_clear_object (&self->clipboard);
-  self->clipboard = dia_object_clone (self->selected);
-  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Copied"));
+  clear_clipboard (self);
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    self->clipboard = g_list_append (self->clipboard,
+                                     dia_object_clone (l->data));
+  }
+  g_snprintf (buf, sizeof (buf), _("Copied %u object(s)"),
+              g_list_length (self->clipboard));
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
 static void
@@ -1596,13 +1612,11 @@ action_cut (GSimpleAction *a, GVariant *p, gpointer data)
 {
   DiaShell *self = data;
 
-  if (!self->selected) {
-    return;
+  action_copy (a, p, data);
+  if (self->clipboard) {
+    delete_selected (self);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Cut"));
   }
-  dia_clear_object (&self->clipboard);
-  self->clipboard = dia_object_clone (self->selected);
-  delete_selected (self);
-  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Cut"));
 }
 
 static void
@@ -1610,28 +1624,32 @@ action_paste (GSimpleAction *a, GVariant *p, gpointer data)
 {
   DiaShell *self = data;
   DiaLayer *layer;
-  DiaObject *obj;
-  DiaObjectChange *change;
-  Point to;
+  guint count = 0;
+  char buf[48];
 
   if (!self->clipboard) {
     return;
   }
   layer = dia_diagram_data_get_active_layer (self->diagram);
-  obj = dia_object_clone (self->clipboard);
-  /* offset a little so the paste doesn't sit exactly on the original */
-  to.x = obj->position.x + 1.0;
-  to.y = obj->position.y + 1.0;
-  change = dia_object_move (obj, &to);
-  g_clear_pointer (&change, dia_object_change_unref);
-
-  dia_layer_add_object (layer, obj);
-  push_op (self, OP_CREATE, obj, obj->position, obj->position);
   data_remove_all_selected (self->diagram);
-  data_select (self->diagram, obj);
-  self->selected = obj;
+  self->selected = NULL;
+
+  for (GList *l = self->clipboard; l; l = l->next) {
+    DiaObject *obj = dia_object_clone (l->data);
+    DiaObjectChange *change;
+    Point to = { obj->position.x + 1.0, obj->position.y + 1.0 };
+
+    change = dia_object_move (obj, &to);   /* offset so it doesn't overlap */
+    g_clear_pointer (&change, dia_object_change_unref);
+    dia_layer_add_object (layer, obj);
+    push_op (self, OP_CREATE, obj, obj->position, obj->position);
+    data_select (self->diagram, obj);
+    self->selected = obj;
+    count++;
+  }
   gtk_widget_queue_draw (self->canvas);
-  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Pasted"));
+  g_snprintf (buf, sizeof (buf), _("Pasted %u object(s)"), count);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
 static void
@@ -3940,7 +3958,7 @@ dia_shell_free (gpointer data)
   DiaShell *self = data;
   g_clear_pointer (&self->undo, g_ptr_array_unref);
   g_clear_pointer (&self->drag_moves, g_array_unref);
-  dia_clear_object (&self->clipboard);
+  clear_clipboard (self);
   g_clear_object (&self->diagram);
   g_free (self);
 }
