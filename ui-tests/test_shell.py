@@ -370,6 +370,17 @@ def main():
         ok = any('connect OK' in (lab.name or '') for lab in labels)
         check("Connected line endpoint tracks the object", ok)
 
+    # 3r. Text editing: set + read back a text object's content (the get/set
+    #     the double-click editor uses).
+    tx = find(app, name='uitest-text', roleName='push button')
+    check("DIA_UITEST text trigger present", tx)
+    if tx:
+        do_click(tx)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('text OK' in (lab.name or '') for lab in labels)
+        check("Text object content can be set and read", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

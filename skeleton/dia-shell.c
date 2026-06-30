@@ -39,6 +39,7 @@
 #include "properties.h"
 #include "prop_geomtypes.h"
 #include "prop_attr.h"
+#include "prop_text.h"
 #include "arrows.h"
 #include "attributes.h"
 #include <libxml/tree.h>
@@ -934,6 +935,40 @@ on_line_attrs_changed (DiaShell *self)
 }
 
 
+/* Return a copy of @obj's text content, or NULL if it has no text property
+ * (object types without text leave the property unset on get). */
+static char *
+get_object_text (DiaObject *obj)
+{
+  static PropDescription descs[] = { PROP_STD_TEXT, PROP_DESC_END };
+  GPtrArray *props = prop_list_from_descs (descs, pdtpp_true);
+  TextProperty *tp = g_ptr_array_index (props, 0);
+  char *result = NULL;
+
+  dia_object_get_properties (obj, props);
+  if (tp->text_data) {
+    result = g_strdup (tp->text_data);
+  }
+  prop_list_free (props);
+  return result;
+}
+
+/* Replace @obj's text content, keeping its font/size/colour/alignment. */
+static void
+set_object_text (DiaObject *obj, const char *str)
+{
+  static PropDescription descs[] = { PROP_STD_TEXT, PROP_DESC_END };
+  GPtrArray *props = prop_list_from_descs (descs, pdtpp_true);
+  TextProperty *tp = g_ptr_array_index (props, 0);
+
+  dia_object_get_properties (obj, props);     /* keep the existing attributes */
+  g_free (tp->text_data);
+  tp->text_data = g_strdup (str);
+  dia_object_set_properties (obj, props);
+  prop_list_free (props);
+}
+
+
 /* If snap-to-grid is on, round @p to the nearest half-centimetre. */
 static void
 snap_to_grid (DiaShell *self, Point *p)
@@ -1058,6 +1093,49 @@ handle_at (DiaObject *obj, Point p, double tol)
 
 
 static void
+on_text_dialog_response (AdwAlertDialog *dlg, const char *response, DiaShell *self)
+{
+  GtkWidget *entry = g_object_get_data (G_OBJECT (dlg), "dia-entry");
+  DiaObject *obj = g_object_get_data (G_OBJECT (dlg), "dia-object");
+
+  if (g_strcmp0 (response, "ok") == 0 && entry && obj) {
+    set_object_text (obj, gtk_editable_get_text (GTK_EDITABLE (entry)));
+    gtk_widget_queue_draw (self->canvas);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Text updated"));
+  }
+}
+
+/* Open an inline text editor for @obj (a dialog with its current text), if the
+ * object has a text property. */
+static void
+open_text_editor (DiaShell *self, DiaObject *obj)
+{
+  char *cur = get_object_text (obj);
+  GtkWidget *entry;
+  AdwDialog *dlg;
+  GtkRoot *root;
+
+  if (!cur) {
+    return;   /* object has no editable text */
+  }
+  entry = gtk_entry_new ();
+  gtk_editable_set_text (GTK_EDITABLE (entry), cur);
+  g_free (cur);
+
+  dlg = adw_alert_dialog_new (_("Edit Text"), NULL);
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), entry);
+  adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "cancel", _("Cancel"));
+  adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "ok", _("OK"));
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "ok");
+  g_object_set_data (G_OBJECT (dlg), "dia-entry", entry);
+  g_object_set_data (G_OBJECT (dlg), "dia-object", obj);
+  g_signal_connect (dlg, "response", G_CALLBACK (on_text_dialog_response), self);
+
+  root = gtk_widget_get_root (self->canvas);
+  adw_dialog_present (dlg, GTK_WIDGET (root));
+}
+
+static void
 on_canvas_pressed (GtkGestureClick *gesture,
                    int              n_press,
                    double           x,
@@ -1077,7 +1155,15 @@ on_canvas_pressed (GtkGestureClick *gesture,
   p.y = (y - self->page_y) / self->page_scale;
 
   if (g_strcmp0 (self->tool, "Modify") == 0) {
-    select_at (self, p);
+    if (n_press >= 2) {
+      /* Double-click edits the selected object's text (the first click of the
+       * sequence already selected it). */
+      if (self->selected) {
+        open_text_editor (self, self->selected);
+      }
+    } else {
+      select_at (self, p);
+    }
   } else {
     apply_tool_at (self, p);
   }
@@ -2215,6 +2301,33 @@ on_uitest_connect (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): set a text object's content and read it back,
+ * exercising the same get/set the double-click editor uses. */
+static void
+on_uitest_text (GtkButton *button, DiaShell *self)
+{
+  DiaObject *obj = diagram_create_object (self, "Standard - Text", (Point) { 6, 6 });
+  char *got;
+  char buf[96];
+
+  if (!obj) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("text FAIL (no object)"));
+    return;
+  }
+  push_op (self, OP_CREATE, obj, (Point) { 6, 6 }, (Point) { 6, 6 });
+  set_object_text (obj, "Hello Dia");
+  got = get_object_text (obj);
+  if (got && g_strcmp0 (got, "Hello Dia") == 0) {
+    g_snprintf (buf, sizeof (buf), _("text OK (%s)"), got);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("text FAIL (%s)"), got ? got : "(null)");
+  }
+  g_free (got);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -2676,6 +2789,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *cb = gtk_button_new_with_label ("uitest-clipboard");
     GtkWidget *sh = gtk_button_new_with_label ("uitest-sheet");
     GtkWidget *cn = gtk_button_new_with_label ("uitest-connect");
+    GtkWidget *tx = gtk_button_new_with_label ("uitest-text");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -2691,6 +2805,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (cb), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (sh), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (cn), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (tx), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -2706,6 +2821,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (cb, "clicked", G_CALLBACK (on_uitest_clipboard), self);
     g_signal_connect (sh, "clicked", G_CALLBACK (on_uitest_sheet), self);
     g_signal_connect (cn, "clicked", G_CALLBACK (on_uitest_connect), self);
+    g_signal_connect (tx, "clicked", G_CALLBACK (on_uitest_text), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -2721,6 +2837,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), cb);
     gtk_box_append (GTK_BOX (bar), sh);
     gtk_box_append (GTK_BOX (bar), cn);
+    gtk_box_append (GTK_BOX (bar), tx);
   }
 
   return bar;
