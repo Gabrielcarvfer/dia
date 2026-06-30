@@ -103,21 +103,26 @@ def do_click(node):
         return False
 
 
-def coord_click(node):
-    """Click the centre of a widget at real screen coordinates via xdotool.
+def ydotool_click(node):
+    """Click the centre of a widget using ydotool (uinput/compositor-level).
 
-    More reliable than AT-SPI mouse synthesis for drawing areas under
-    Xwayland (which the app uses when run.sh sets GDK_BACKEND=x11).
+    Unlike xdotool's XTEST (which WSLg's Xwayland does not deliver), ydotool
+    injects through the kernel/compositor so the event is treated as real
+    input. ydotool 0.1.8 mousemove is relative-only, so home the pointer to
+    (0,0) first, then move by the absolute target. The widget's screen
+    coordinates come from AT-SPI (valid because the app runs on Xwayland).
     """
     try:
         x, y = node.position
         w, h = node.size
         cx, cy = int(x + w / 2), int(y + h / 2)
-        subprocess.run(["xdotool", "mousemove", str(cx), str(cy), "click", "1"],
-                       check=False)
+        subprocess.run(["ydotool", "mousemove", "-10000", "-10000"], check=False)
+        subprocess.run(["ydotool", "mousemove", str(cx), str(cy)], check=False)
+        time.sleep(0.2)
+        subprocess.run(["ydotool", "click", "0xC0"], check=False)
         return True
     except Exception as exc:
-        print("   (coord_click failed:", exc, ")")
+        print("   (ydotool_click failed:", exc, ")")
         return False
 
 
@@ -213,13 +218,17 @@ def main():
     #     on the drawing area -> best effort (reported, not fatal).
     if canvas:
         try:
-            coord_click(canvas)
+            print("   canvas screen pos=%s size=%s" % (canvas.position, canvas.size))
+            ydotool_click(canvas)
             time.sleep(0.6)
             labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
-            created = any('object(s)' in (lab.name or '') for lab in labels)
-            soft("clicking canvas with Box tool creates an object", created)
+            hits = [lab.name for lab in labels
+                    if lab.name and ('object(s)' in lab.name or 'created' in lab.name)]
+            if VERBOSE:
+                print("   statusbar after click:", hits)
+            check("clicking canvas with Box tool creates an object", bool(hits))
         except Exception as exc:
-            soft("canvas click creates an object (%s)" % exc, False)
+            check("canvas click creates an object (%s)" % exc, False)
 
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
