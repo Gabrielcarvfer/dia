@@ -2159,8 +2159,27 @@ build_canvas_area (DiaShell *self)
 }
 
 
-/* Rebuild the layers list box from the diagram's layers (topmost first, the way
- * Dia shows them); the active layer is emphasised. */
+/* Commit an inline layer rename when its GtkEditableLabel stops editing. */
+static void
+on_layer_label_editing (GObject *labelobj, GParamSpec *ps, DiaShell *self)
+{
+  GtkEditableLabel *el = GTK_EDITABLE_LABEL (labelobj);
+  int idx;
+  DiaLayer *l;
+
+  if (gtk_editable_label_get_editing (el)) {
+    return;   /* only act when editing finishes */
+  }
+  idx = GPOINTER_TO_INT (g_object_get_data (labelobj, "dia-layer-index"));
+  l = data_layer_get_nth (self->diagram, idx);
+  if (l) {
+    g_object_set (l, "name", gtk_editable_get_text (GTK_EDITABLE (el)), NULL);
+  }
+}
+
+/* Rebuild the layers list (topmost first, the way Dia shows them). The single
+ * selection highlight tracks the active layer; rows are GtkEditableLabels so a
+ * double-click renames them. */
 static void
 refresh_layers_list (DiaShell *self)
 {
@@ -2168,21 +2187,30 @@ refresh_layers_list (DiaShell *self)
   DiaLayer *active = dia_diagram_data_get_active_layer (self->diagram);
   GtkWidget *child;
   int n = data_layer_count (self->diagram);
+  int active_idx = active ? data_layer_get_index (self->diagram, active) : -1;
 
+  self->scroll_guard++;   /* programmatic select shouldn't recurse */
   while ((child = gtk_widget_get_first_child (GTK_WIDGET (lb))) != NULL) {
     gtk_list_box_remove (lb, child);
   }
   for (int i = n - 1; i >= 0; i--) {
     DiaLayer *l = data_layer_get_nth (self->diagram, i);
-    GtkWidget *row = gtk_label_new (dia_layer_get_name (l));
+    GtkWidget *row = gtk_editable_label_new (dia_layer_get_name (l));
 
     gtk_widget_set_halign (row, GTK_ALIGN_START);
-    if (l == active) {
-      gtk_widget_add_css_class (row, "heading");
-    }
     g_object_set_data (G_OBJECT (row), "dia-layer-index", GINT_TO_POINTER (i));
+    g_signal_connect (row, "notify::editing",
+                      G_CALLBACK (on_layer_label_editing), self);
     gtk_list_box_insert (lb, row, -1);
   }
+  if (active_idx >= 0) {
+    /* listbox position of layer i is (n-1 - i) since we inserted top-first */
+    GtkListBoxRow *r = gtk_list_box_get_row_at_index (lb, n - 1 - active_idx);
+    if (r) {
+      gtk_list_box_select_row (lb, r);
+    }
+  }
+  self->scroll_guard--;
 }
 
 static void
@@ -2192,14 +2220,29 @@ on_layer_row_selected (GtkListBox *lb, GtkListBoxRow *row, DiaShell *self)
   DiaLayer *l;
   int idx;
 
-  if (!row) {
-    return;
+  if (!row || self->scroll_guard) {
+    return;   /* ignore our own programmatic re-selection during refresh */
   }
   child = gtk_list_box_row_get_child (row);
   idx = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (child), "dia-layer-index"));
   l = data_layer_get_nth (self->diagram, idx);
   if (l) {
     data_set_active_layer (self->diagram, l);
+  }
+}
+
+/* Double-click / Enter on a row starts an inline rename. */
+static void
+on_layer_row_activated (GtkListBox *lb, GtkListBoxRow *row, DiaShell *self)
+{
+  GtkWidget *child;
+
+  if (!row) {
+    return;
+  }
+  child = gtk_list_box_row_get_child (row);
+  if (GTK_IS_EDITABLE_LABEL (child)) {
+    gtk_editable_label_start_editing (GTK_EDITABLE_LABEL (child));
   }
 }
 
@@ -2284,6 +2327,8 @@ build_layers (DiaShell *self)
   gtk_widget_set_vexpand (list, TRUE);
   g_signal_connect (list, "row-selected",
                     G_CALLBACK (on_layer_row_selected), self);
+  g_signal_connect (list, "row-activated",
+                    G_CALLBACK (on_layer_row_activated), self);
   refresh_layers_list (self);
   gtk_box_append (GTK_BOX (box), list);
 
