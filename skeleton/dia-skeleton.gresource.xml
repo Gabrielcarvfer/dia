@@ -23,5 +23,8 @@
     <file>dia-tool-text.png</file>
     <file>dia-tool-zoom.png</file>
     <file>dia-tool-scroll.png</file>
+    <file>dia-grid-on.png</file>
+    <file>dia-mainpoints-on.png</file>
+    <file>dia-guides-snap-on.png</file>
   </gresource>
 </gresources>

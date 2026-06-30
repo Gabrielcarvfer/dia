@@ -74,6 +74,8 @@ typedef struct {
   gboolean   page_infinite;
   GtkWidget *hscroll, *vscroll;     /* scrollbars over the workspace */
   guint      scroll_guard;          /* >0 while we update adjustments ourselves */
+  /* Snapping toggles (toolbar). snap_grid is applied to create/move/handle. */
+  gboolean   snap_grid, snap_object, snap_guide;
 } DiaShell;
 
 /* Pixels per cm at 100% zoom. Chosen so a typical canvas shows ~80 cm across,
@@ -482,7 +484,9 @@ on_vadj_changed (GtkAdjustment *adj, DiaShell *self)
   redraw_canvas_and_rulers (self);
 }
 
-/* Mouse-wheel scrolling (Shift = horizontal). */
+static void update_zoom (DiaShell *self, double factor);
+
+/* Mouse wheel: Ctrl = zoom, Shift = horizontal scroll, otherwise vertical. */
 static gboolean
 on_canvas_scroll (GtkEventControllerScroll *ctrl,
                   double dx, double dy, DiaShell *self)
@@ -491,6 +495,13 @@ on_canvas_scroll (GtkEventControllerScroll *ctrl,
                            GTK_EVENT_CONTROLLER (ctrl));
   double step = 2.0;   /* cm per wheel notch */
 
+  if (mods & GDK_CONTROL_MASK) {
+    /* Zoom: wheel up (dy<0) zooms in, wheel down zooms out. */
+    if (dy != 0.0) {
+      update_zoom (self, dy < 0 ? 1.1 : 1.0 / 1.1);
+    }
+    return TRUE;
+  }
   if (mods & GDK_SHIFT_MASK) {
     self->origin_x += (dy + dx) * step;
   } else {
@@ -524,12 +535,20 @@ draw_canvas (GtkDrawingArea *area,
   double pxcm, ox, oy;
   double cm_x0, cm_y0, cm_x1, cm_y1;
 
-  cairo_set_source_rgb (cr, 0.6, 0.6, 0.62);
-  cairo_paint (cr);
-
   if (!self) {
+    cairo_set_source_rgb (cr, 0.6, 0.6, 0.62);
+    cairo_paint (cr);
     return;
   }
+
+  /* Infinite workspace is all white (one boundless sheet); a fixed page sits in
+   * a grey workspace so its edges are visible. */
+  if (self->page_infinite) {
+    cairo_set_source_rgb (cr, 1, 1, 1);
+  } else {
+    cairo_set_source_rgb (cr, 0.6, 0.6, 0.62);
+  }
+  cairo_paint (cr);
 
   update_transform (self);
   pxcm = self->page_scale;
@@ -783,6 +802,20 @@ tool_to_type_name (const char *tool)
 }
 
 
+/* If snap-to-grid is on, round @p to the nearest half-centimetre. */
+static void
+snap_to_grid (DiaShell *self, Point *p)
+{
+  const double step = 0.5;
+
+  if (!self->snap_grid) {
+    return;
+  }
+  p->x = round (p->x / step) * step;
+  p->y = round (p->y / step) * step;
+}
+
+
 /* Apply the current tool at diagram point @p: create a real DiaObject (create
  * tools) or just report the position. Shared by the canvas gesture and the
  * UI-test trigger so both exercise the same code path. */
@@ -790,8 +823,12 @@ static void
 apply_tool_at (DiaShell *self, Point p)
 {
   char buf[128];
-  const char *type_name = tool_to_type_name (self->tool);
-  DiaObject *obj = type_name ? diagram_create_object (self, type_name, p) : NULL;
+  const char *type_name;
+  DiaObject *obj;
+
+  snap_to_grid (self, &p);
+  type_name = tool_to_type_name (self->tool);
+  obj = type_name ? diagram_create_object (self, type_name, p) : NULL;
 
   if (obj) {
     push_op (self, OP_CREATE, obj, p, p);
@@ -967,11 +1004,13 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
      * not cumulative. */
     to.x = self->drag_handle_start.x + offset_x / self->page_scale;
     to.y = self->drag_handle_start.y + offset_y / self->page_scale;
+    snap_to_grid (self, &to);
     change = dia_object_move_handle (self->selected, self->drag_handle, &to,
                                      NULL, HANDLE_MOVE_USER, 0);
   } else {
     to.x = self->drag_origin.x + offset_x / self->page_scale;
     to.y = self->drag_origin.y + offset_y / self->page_scale;
+    snap_to_grid (self, &to);
     change = dia_object_move (self->selected, &to);
   }
   g_clear_pointer (&change, dia_object_change_unref);
@@ -995,6 +1034,7 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
   if (self->drag_handle) {
     to.x = self->drag_handle_start.x + offset_x / self->page_scale;
     to.y = self->drag_handle_start.y + offset_y / self->page_scale;
+    snap_to_grid (self, &to);
     change = dia_object_move_handle (self->selected, self->drag_handle, &to,
                                      NULL, HANDLE_MOVE_USER_FINAL, 0);
     g_clear_pointer (&change, dia_object_change_unref);
@@ -1012,6 +1052,7 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
   /* Record the whole drag as a single undoable move. */
   to.x = self->drag_origin.x + offset_x / self->page_scale;
   to.y = self->drag_origin.y + offset_y / self->page_scale;
+  snap_to_grid (self, &to);
   if (to.x != self->drag_origin.x || to.y != self->drag_origin.y) {
     push_op (self, OP_MOVE, self->selected, self->drag_origin, to);
   }
@@ -1080,7 +1121,7 @@ update_zoom (DiaShell *self, double factor)
   update_scrollbars (self);
 
   g_snprintf (buf, sizeof (buf), "%.0f%%", self->zoom * 100.0);
-  gtk_label_set_text (GTK_LABEL (self->zoom_label), buf);
+  gtk_editable_set_text (GTK_EDITABLE (self->zoom_label), buf);
   redraw_canvas_and_rulers (self);
 }
 
@@ -1498,6 +1539,52 @@ on_uitest_delete (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): zoom in then out and confirm the zoom level
+ * tracked (the editable entry's text is not reliably exposed over AT-SPI, so
+ * we assert on the model). */
+static void
+on_uitest_zoom (GtkButton *button, DiaShell *self)
+{
+  double z0 = self->zoom, z1, z2;
+  char buf[96];
+
+  update_zoom (self, 1.5);
+  z1 = self->zoom;
+  update_zoom (self, 1.0 / 1.5);
+  z2 = self->zoom;
+
+  if (z1 > z0 * 1.4 && z1 < z0 * 1.6 && z2 > z0 * 0.95 && z2 < z0 * 1.05) {
+    g_snprintf (buf, sizeof (buf), _("zoom OK (%.0f%%/%.0f%%/%.0f%%)"),
+                z0 * 100, z1 * 100, z2 * 100);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("zoom FAIL (%.0f/%.0f/%.0f)"),
+                z0 * 100, z1 * 100, z2 * 100);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
+/* UI-test hook (DIA_UITEST): snap a point to the grid and confirm rounding. */
+static void
+on_uitest_snap (GtkButton *button, DiaShell *self)
+{
+  Point p = { 5.3, 5.2 };
+  gboolean saved = self->snap_grid;
+  char buf[96];
+
+  self->snap_grid = TRUE;
+  snap_to_grid (self, &p);          /* expect 5.5, 5.0 */
+  self->snap_grid = saved;
+
+  if (p.x == 5.5 && p.y == 5.0) {
+    g_snprintf (buf, sizeof (buf), _("snap OK (%.2f, %.2f)"), p.x, p.y);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("snap FAIL (%.2f, %.2f)"), p.x, p.y);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -1741,6 +1828,42 @@ build_page_size_dropdown (DiaShell *self)
   return dd;
 }
 
+static void
+on_snap_grid_toggled (GtkToggleButton *b, DiaShell *self)
+{
+  self->snap_grid = gtk_toggle_button_get_active (b);
+}
+
+static void
+on_snap_object_toggled (GtkToggleButton *b, DiaShell *self)
+{
+  self->snap_object = gtk_toggle_button_get_active (b);
+}
+
+static void
+on_snap_guide_toggled (GtkToggleButton *b, DiaShell *self)
+{
+  self->snap_guide = gtk_toggle_button_get_active (b);
+}
+
+/* A flat toggle button with an icon from the resource bundle. */
+static GtkWidget *
+make_snap_toggle (const char *icon_res, const char *tip, const char *a11y,
+                  gboolean active, GCallback cb, DiaShell *self)
+{
+  GtkWidget *b = gtk_toggle_button_new ();
+  GtkWidget *img = gtk_image_new_from_resource (icon_res);
+
+  gtk_image_set_pixel_size (GTK_IMAGE (img), 18);
+  gtk_button_set_child (GTK_BUTTON (b), img);
+  gtk_button_set_has_frame (GTK_BUTTON (b), FALSE);
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (b), active);
+  gtk_widget_set_tooltip_text (b, tip);
+  set_a11y_label (b, a11y);
+  g_signal_connect (b, "toggled", cb, self);
+  return b;
+}
+
 static GtkWidget *
 build_action_toolbar (DiaShell *self)
 {
@@ -1785,6 +1908,24 @@ build_action_toolbar (DiaShell *self)
   gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
   gtk_box_append (GTK_BOX (bar), build_page_size_dropdown (self));
 
+  /* Snapping toggles: grid (functional), object & guide (state for now). */
+  gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
+  gtk_box_append (GTK_BOX (bar),
+                  make_snap_toggle ("/org/gnome/Dia/icons/dia-grid-on.png",
+                                    _("Snap to grid"), "snap-grid",
+                                    self->snap_grid,
+                                    G_CALLBACK (on_snap_grid_toggled), self));
+  gtk_box_append (GTK_BOX (bar),
+                  make_snap_toggle ("/org/gnome/Dia/icons/dia-mainpoints-on.png",
+                                    _("Snap to objects"), "snap-object",
+                                    self->snap_object,
+                                    G_CALLBACK (on_snap_object_toggled), self));
+  gtk_box_append (GTK_BOX (bar),
+                  make_snap_toggle ("/org/gnome/Dia/icons/dia-guides-snap-on.png",
+                                    _("Snap to guides"), "snap-guide",
+                                    self->snap_guide,
+                                    G_CALLBACK (on_snap_guide_toggled), self));
+
   /* UI-test-only trigger (see on_uitest_apply_tool). Absent in normal use.
    * The label IS the AT-SPI name the test searches for. */
   if (g_getenv ("DIA_UITEST")) {
@@ -1795,6 +1936,8 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *x = gtk_button_new_with_label ("uitest-extra-objects");
     GtkWidget *z = gtk_button_new_with_label ("uitest-resize");
     GtkWidget *d = gtk_button_new_with_label ("uitest-delete");
+    GtkWidget *zm = gtk_button_new_with_label ("uitest-zoom");
+    GtkWidget *sn = gtk_button_new_with_label ("uitest-snap");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -1802,6 +1945,8 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (x), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (z), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (d), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (zm), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (sn), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -1809,6 +1954,8 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (x, "clicked", G_CALLBACK (on_uitest_extra_objects), self);
     g_signal_connect (z, "clicked", G_CALLBACK (on_uitest_resize), self);
     g_signal_connect (d, "clicked", G_CALLBACK (on_uitest_delete), self);
+    g_signal_connect (zm, "clicked", G_CALLBACK (on_uitest_zoom), self);
+    g_signal_connect (sn, "clicked", G_CALLBACK (on_uitest_snap), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -1816,6 +1963,8 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), x);
     gtk_box_append (GTK_BOX (bar), z);
     gtk_box_append (GTK_BOX (bar), d);
+    gtk_box_append (GTK_BOX (bar), zm);
+    gtk_box_append (GTK_BOX (bar), sn);
   }
 
   return bar;
@@ -2014,6 +2163,22 @@ build_layers (void)
 }
 
 
+/* Editable zoom field: typing a percentage and pressing Enter sets the zoom. */
+static void
+on_zoom_entry_activate (GtkEntry *entry, DiaShell *self)
+{
+  const char *text = gtk_editable_get_text (GTK_EDITABLE (entry));
+  double pct = g_strtod (text, NULL);   /* parses the number, ignores a '%' */
+
+  if (pct >= 1.0 && pct <= 2000.0) {
+    update_zoom (self, (pct / 100.0) / self->zoom);   /* set absolute zoom */
+  } else {
+    char buf[32];
+    g_snprintf (buf, sizeof (buf), "%.0f%%", self->zoom * 100.0);
+    gtk_editable_set_text (GTK_EDITABLE (entry), buf);
+  }
+}
+
 static GtkWidget *
 build_statusbar (DiaShell *self)
 {
@@ -2021,7 +2186,15 @@ build_statusbar (DiaShell *self)
 
   self->status_msg = gtk_label_new ("");
   self->pos_label = gtk_label_new ("0, 0");
-  self->zoom_label = gtk_label_new (_("100%"));
+  /* Editable zoom readout (type a percentage + Enter). */
+  self->zoom_label = gtk_entry_new ();
+  gtk_editable_set_text (GTK_EDITABLE (self->zoom_label), _("100%"));
+  gtk_editable_set_width_chars (GTK_EDITABLE (self->zoom_label), 5);
+  gtk_entry_set_alignment (GTK_ENTRY (self->zoom_label), 1.0);
+  gtk_widget_set_tooltip_text (self->zoom_label, _("Zoom — type a percentage"));
+  set_a11y_label (self->zoom_label, "zoom");
+  g_signal_connect (self->zoom_label, "activate",
+                    G_CALLBACK (on_zoom_entry_activate), self);
 
   gtk_widget_add_css_class (bar, "toolbar");
   gtk_widget_set_margin_start (bar, 6);
@@ -2080,6 +2253,7 @@ dia_shell_new (void)
   self->page_infinite = FALSE;
   self->origin_x = -2.0;
   self->origin_y = -2.0;
+  self->snap_grid = TRUE;     /* on by default, like upstream Dia */
   update_transform (self);
 
   /* Initialise libdia (property system, object registry, fonts) before any
