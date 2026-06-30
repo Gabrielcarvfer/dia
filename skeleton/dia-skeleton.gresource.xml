@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Tool-palette images for the GTK4 skeleton: the standard object pixmaps
+     (create tools) and the control-tool icons. Files are found via the
+     source_dir list in skeleton/meson.build (objects/standard/pixmaps and
+     app/icons). Paths match what the object types reference (res:/...). -->
+<gresources>
+  <gresource prefix="/org/gnome/Dia/objects/standard/">
+    <file>arc.png</file>
+    <file>box.png</file>
+    <file>line.png</file>
+    <file>polyline.png</file>
+    <file>beziergon.png</file>
+    <file>ellipse.png</file>
+    <file>outline.png</file>
+    <file>text.png</file>
+    <file>bezierline.png</file>
+    <file>image.png</file>
+    <file>polygon.png</file>
+    <file>zigzagline.png</file>
+  </gresource>
+  <gresource prefix="/org/gnome/Dia/icons/">
+    <file>dia-tool-modify.png</file>
+    <file>dia-tool-text.png</file>
+    <file>dia-tool-zoom.png</file>
+    <file>dia-tool-scroll.png</file>
+  </gresource>
+</gresources>

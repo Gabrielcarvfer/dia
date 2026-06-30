@@ -35,10 +35,14 @@
  * window via g_object_set_data_full(). */
 typedef struct {
   GtkWidget *canvas;
+  GtkWidget *hruler;
+  GtkWidget *vruler;
   GtkWidget *colour_area;
   GtkWidget *status_msg;
   GtkWidget *pos_label;
   GtkWidget *zoom_label;
+  double     cursor_x, cursor_y;  /* pointer position over the canvas (px) */
+  gboolean   cursor_valid;
   double     zoom;        /* 1.0 == 100% */
   GdkRGBA    fg;
   GdkRGBA    bg;
@@ -117,29 +121,35 @@ diagram_create_object (DiaShell *self, const char *type_name, Point p)
 }
 
 
-/* The standard tool palette (mirrors app/toolbox.c tool_data). */
+/* The standard tool palette (mirrors app/toolbox.c tool_data). The icon is a
+ * GResource path: control tools use app/icons/dia-tool-*, create tools use the
+ * object pixmaps (the same images the object types reference). */
 typedef struct {
   const char *name;
   const char *tooltip;
+  const char *icon;
 } ToolEntry;
 
+#define ICON_TOOL(n)   "/org/gnome/Dia/icons/dia-tool-" n ".png"
+#define ICON_OBJ(n)    "/org/gnome/Dia/objects/standard/" n ".png"
+
 static const ToolEntry tool_entries[] = {
-  { N_("Modify"),     N_("Modify object(s)") },
-  { N_("Text edit"),  N_("Edit text (F2)") },
-  { N_("Magnify"),    N_("Magnify (M)") },
-  { N_("Scroll"),     N_("Scroll around the diagram (S)") },
-  { N_("Text"),       N_("Create a text object (T)") },
-  { N_("Box"),        N_("Create a box (R)") },
-  { N_("Ellipse"),    N_("Create an ellipse (E)") },
-  { N_("Polygon"),    N_("Create a polygon (P)") },
-  { N_("Beziergon"),  N_("Create a beziergon (B)") },
-  { N_("Line"),       N_("Create a line (L)") },
-  { N_("Arc"),        N_("Create an arc (A)") },
-  { N_("Zigzag"),     N_("Create a zigzag line (Z)") },
-  { N_("Polyline"),   N_("Create a polyline") },
-  { N_("Bezier"),     N_("Create a bezier line (C)") },
-  { N_("Image"),      N_("Insert an image (I)") },
-  { N_("Outline"),    N_("Create an outline") },
+  { N_("Modify"),     N_("Modify object(s)"),              ICON_TOOL ("modify") },
+  { N_("Text edit"),  N_("Edit text (F2)"),                ICON_TOOL ("text") },
+  { N_("Magnify"),    N_("Magnify (M)"),                   ICON_TOOL ("zoom") },
+  { N_("Scroll"),     N_("Scroll around the diagram (S)"), ICON_TOOL ("scroll") },
+  { N_("Text"),       N_("Create a text object (T)"),      ICON_OBJ ("text") },
+  { N_("Box"),        N_("Create a box (R)"),              ICON_OBJ ("box") },
+  { N_("Ellipse"),    N_("Create an ellipse (E)"),         ICON_OBJ ("ellipse") },
+  { N_("Polygon"),    N_("Create a polygon (P)"),          ICON_OBJ ("polygon") },
+  { N_("Beziergon"),  N_("Create a beziergon (B)"),        ICON_OBJ ("beziergon") },
+  { N_("Line"),       N_("Create a line (L)"),             ICON_OBJ ("line") },
+  { N_("Arc"),        N_("Create an arc (A)"),             ICON_OBJ ("arc") },
+  { N_("Zigzag"),     N_("Create a zigzag line (Z)"),      ICON_OBJ ("zigzagline") },
+  { N_("Polyline"),   N_("Create a polyline"),             ICON_OBJ ("polyline") },
+  { N_("Bezier"),     N_("Create a bezier line (C)"),      ICON_OBJ ("bezierline") },
+  { N_("Image"),      N_("Insert an image (I)"),           ICON_OBJ ("image") },
+  { N_("Outline"),    N_("Create an outline"),             ICON_OBJ ("outline") },
 };
 
 
@@ -258,7 +268,8 @@ draw_ruler (GtkDrawingArea *area,
             int             height,
             gpointer        user_data)
 {
-  gboolean horizontal = GPOINTER_TO_INT (user_data);
+  DiaShell *self = user_data;
+  gboolean horizontal = (GTK_WIDGET (area) == self->hruler);
   int extent = horizontal ? width : height;
   int i;
 
@@ -279,6 +290,26 @@ draw_ruler (GtkDrawingArea *area,
     }
   }
   cairo_stroke (cr);
+
+  /* Cursor-tracking marker: a small black triangle at the pointer's position
+   * along the ruler (the canvas and rulers share a grid column/row, so the
+   * canvas-relative pointer coordinate maps straight onto the ruler). */
+  if (self->cursor_valid) {
+    cairo_set_source_rgb (cr, 0, 0, 0);
+    if (horizontal) {
+      double x = self->cursor_x;
+      cairo_move_to (cr, x, height);
+      cairo_line_to (cr, x - 4, height - 7);
+      cairo_line_to (cr, x + 4, height - 7);
+    } else {
+      double y = self->cursor_y;
+      cairo_move_to (cr, width, y);
+      cairo_line_to (cr, width - 7, y - 4);
+      cairo_line_to (cr, width - 7, y + 4);
+    }
+    cairo_close_path (cr);
+    cairo_fill (cr);
+  }
 }
 
 
@@ -317,7 +348,7 @@ on_tool_toggled (GtkToggleButton *button, DiaShell *self)
   if (!gtk_toggle_button_get_active (button))
     return;
 
-  name = gtk_button_get_label (GTK_BUTTON (button));
+  name = g_object_get_data (G_OBJECT (button), "tool-name");
   g_strlcpy (self->tool, name ? name : "", sizeof (self->tool));
   gtk_label_set_text (GTK_LABEL (self->status_msg), self->tool);
 }
@@ -330,6 +361,13 @@ on_canvas_motion (GtkEventControllerMotion *controller,
                   DiaShell                 *self)
 {
   char buf[64];
+
+  /* track the pointer so the rulers can draw their position markers */
+  self->cursor_x = x;
+  self->cursor_y = y;
+  self->cursor_valid = TRUE;
+  if (self->hruler) gtk_widget_queue_draw (self->hruler);
+  if (self->vruler) gtk_widget_queue_draw (self->vruler);
 
   /* report diagram (cm) coordinates: inverse of the page transform */
   if (self->page_scale > 0.0) {
@@ -961,9 +999,17 @@ build_toolbox (DiaShell *self)
   gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
 
   for (gsize i = 0; i < G_N_ELEMENTS (tool_entries); i++) {
-    GtkWidget *btn = gtk_toggle_button_new_with_label (gettext (tool_entries[i].name));
+    GtkWidget *btn = gtk_toggle_button_new ();
+    GtkWidget *img = gtk_image_new_from_resource (tool_entries[i].icon);
+    const char *name = gettext (tool_entries[i].name);
 
+    gtk_image_set_pixel_size (GTK_IMAGE (img), 22);
+    gtk_button_set_child (GTK_BUTTON (btn), img);
     gtk_widget_set_tooltip_text (btn, gettext (tool_entries[i].tooltip));
+    /* No text label now, so set the accessible name (for the tests/readers)
+     * and stash the tool name for the toggle handler. */
+    set_a11y_label (btn, name);
+    g_object_set_data (G_OBJECT (btn), "tool-name", (gpointer) name);
     if (first == NULL) {
       first = GTK_TOGGLE_BUTTON (btn);
       gtk_toggle_button_set_active (first, TRUE);
@@ -1023,13 +1069,16 @@ build_canvas_area (DiaShell *self)
 
   gtk_button_set_has_frame (GTK_BUTTON (origin), FALSE);
 
+  self->hruler = hruler;
+  self->vruler = vruler;
+
   gtk_widget_set_size_request (hruler, -1, 20);
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (hruler),
-                                  draw_ruler, GINT_TO_POINTER (TRUE), NULL);
+                                  draw_ruler, self, NULL);
 
   gtk_widget_set_size_request (vruler, 20, -1);
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (vruler),
-                                  draw_ruler, GINT_TO_POINTER (FALSE), NULL);
+                                  draw_ruler, self, NULL);
 
   gtk_widget_set_hexpand (canvas, TRUE);
   gtk_widget_set_vexpand (canvas, TRUE);

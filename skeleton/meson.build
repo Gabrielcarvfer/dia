@@ -4,10 +4,25 @@
 # canvas can draw via the real DiaCairoRenderer. As app/ is ported, wire its
 # widgets in here.
 
+# Tool-palette images: object pixmaps + control-tool icons, found in
+# objects/standard/pixmaps and app/icons. The generated source auto-registers
+# the resource bundle at startup.
+gnome = import('gnome')
+skeleton_resources = gnome.compile_resources(
+  'dia-skeleton-resources',
+  'dia-skeleton.gresource.xml',
+  source_dir: [
+    meson.project_source_root() / 'objects' / 'standard' / 'pixmaps',
+    meson.project_source_root() / 'app' / 'icons',
+  ],
+  c_name: 'dia_skeleton',
+)
+
 dia_skeleton_exe = executable(
   'dia',
   'main.c',
   'dia-shell.c',
+  skeleton_resources,
   c_args: [
     '-DPACKAGE_VERSION="@0@"'.format(meson.project_version()),
   ],

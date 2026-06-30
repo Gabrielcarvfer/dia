@@ -144,7 +144,7 @@ def main():
         print("================================================\n")
 
     # 1. Structure.
-    check("main window present", find(app, roleName='frame') is not None)
+    check("Main window present", find(app, roleName='frame') is not None)
     modify = find(app, name='Modify', roleName='toggle button')
     box = find(app, name='Box', roleName='toggle button')
     check("Modify tool button present", modify)
@@ -153,8 +153,8 @@ def main():
     canvas = (find(app, name='diagram-canvas')
               or find(app, roleName='image')
               or find(app, roleName='drawing area'))
-    check("diagram canvas present", canvas)
-    check("layers list present",
+    check("Diagram canvas present", canvas)
+    check("Layers list present",
           find(app, name='Background', roleName='label') is not None)
 
     if VERBOSE:
@@ -178,15 +178,15 @@ def main():
         check("Modify deselected after Box selected", not is_selected(modify))
 
     # 3. Zoom buttons update the readout (100% -> 150%).
-    check("zoom readout starts at 100%",
+    check("Zoom readout starts at 100%",
           find(app, name='100%', roleName='label') is not None)
     zoom_in = find(app, name='Zoom in', roleName='push button')
-    check("zoom-in button present", zoom_in)
+    check("Zoom-in button present", zoom_in)
     if zoom_in:
         print("   zoom-in actions:", actions_of(zoom_in))
         do_click(zoom_in)
         time.sleep(0.6)
-        check("zoom readout becomes 150% after zoom-in",
+        check("Zoom readout becomes 150% after zoom-in",
               find(app, name='150%', roleName='label') is not None)
 
     # 3b. Clicking the canvas with the Box tool creates an object (the
@@ -236,7 +236,7 @@ def main():
         time.sleep(0.5)
         labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
         ok = any('round-trip OK' in (lab.name or '') for lab in labels)
-        check(".dia save/reload round-trip preserves objects", ok)
+        check("Real .dia save/reload round-trip preserves objects", ok)
 
     # 3e. Modify tool: select + move logic (via the DIA_UITEST trigger).
     sm = find(app, name='uitest-select-move', roleName='push button')
@@ -250,16 +250,16 @@ def main():
 
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
-    check("colour area present", colour)
+    check("Colour area present", colour)
     if colour:
         try:
             do_click(colour)
             time.sleep(1.2)
             dlg = (find(app, roleName='dialog')
                    or find(root, name='Foreground Colour'))
-            check("colour dialog opened on click", dlg)
+            check("Colour dialog opened on click", dlg)
         except Exception as exc:
-            check("colour dialog opened on click (%s)" % exc, False)
+            check("Colour dialog opened on click (%s)" % exc, False)
 
     passed = sum(results)
     total = len(results)
