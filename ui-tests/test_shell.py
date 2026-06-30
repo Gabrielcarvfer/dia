@@ -431,6 +431,16 @@ def main():
         ok = any('colour OK' in (lab.name or '') for lab in labels)
         check("Colour picker sets the object's line colour", ok)
 
+    # 3x. Distribute: three boxes spaced evenly.
+    di = find(app, name='uitest-distribute', roleName='push button')
+    check("DIA_UITEST distribute trigger present", di)
+    if di:
+        do_click(di)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('distribute OK' in (lab.name or '') for lab in labels)
+        check("Distribute evenly spaces objects", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

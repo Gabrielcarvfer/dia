@@ -1858,13 +1858,80 @@ align_selected (DiaShell *self, AlignMode mode)
   gtk_widget_queue_draw (self->canvas);
 }
 
+static double
+bbox_center (DiaObject *o, gboolean horizontal)
+{
+  DiaRectangle *b = &o->bounding_box;
+  return horizontal ? (b->left + b->right) / 2 : (b->top + b->bottom) / 2;
+}
+
+static gint
+cmp_center_x (gconstpointer a, gconstpointer b)
+{
+  double d = bbox_center ((DiaObject *) a, TRUE) - bbox_center ((DiaObject *) b, TRUE);
+  return (d < 0) ? -1 : (d > 0) ? 1 : 0;
+}
+
+static gint
+cmp_center_y (gconstpointer a, gconstpointer b)
+{
+  double d = bbox_center ((DiaObject *) a, FALSE) - bbox_center ((DiaObject *) b, FALSE);
+  return (d < 0) ? -1 : (d > 0) ? 1 : 0;
+}
+
+/* Evenly space the selected objects' centres between the two extreme ones. */
+static void
+distribute_selected (DiaShell *self, gboolean horizontal)
+{
+  GList *sel = g_list_copy (self->diagram->selected);
+  guint n = g_list_length (sel);
+  double c0, c1, step;
+  int i = 0;
+
+  if (n < 3) {
+    g_list_free (sel);
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Select three or more objects to distribute"));
+    return;
+  }
+  sel = g_list_sort (sel, horizontal ? cmp_center_x : cmp_center_y);
+  c0 = bbox_center (sel->data, horizontal);
+  c1 = bbox_center (g_list_last (sel)->data, horizontal);
+  step = (c1 - c0) / (n - 1);
+
+  for (GList *l = sel; l; l = l->next, i++) {
+    DiaObject *obj = l->data;
+    double cur, target = c0 + i * step;
+    Point from = obj->position, to;
+    DiaObjectChange *ch;
+
+    if (i == 0 || i == (int) n - 1) {
+      continue;   /* the extremes stay put */
+    }
+    cur = bbox_center (obj, horizontal);
+    to = from;
+    if (horizontal) to.x += target - cur; else to.y += target - cur;
+    ch = dia_object_move (obj, &to);
+    g_clear_pointer (&ch, dia_object_change_unref);
+    update_connections_for (obj);
+    if (to.x != from.x || to.y != from.y) {
+      push_op (self, OP_MOVE, obj, from, to);
+    }
+  }
+  g_list_free (sel);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Distributed"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
 static void
 action_align (GSimpleAction *a, GVariant *p, gpointer data)
 {
   const char *m = p ? g_variant_get_string (p, NULL) : "";
   AlignMode mode = ALIGN_LEFT;
 
-  if (g_strcmp0 (m, "right") == 0)        mode = ALIGN_RIGHT;
+  if (g_strcmp0 (m, "dist-h") == 0)       { distribute_selected (data, TRUE);  return; }
+  else if (g_strcmp0 (m, "dist-v") == 0)  { distribute_selected (data, FALSE); return; }
+  else if (g_strcmp0 (m, "right") == 0)   mode = ALIGN_RIGHT;
   else if (g_strcmp0 (m, "top") == 0)     mode = ALIGN_TOP;
   else if (g_strcmp0 (m, "bottom") == 0)  mode = ALIGN_BOTTOM;
   else if (g_strcmp0 (m, "center-h") == 0) mode = ALIGN_CENTER_H;
@@ -2874,6 +2941,43 @@ on_uitest_colour (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): distribute three boxes horizontally and confirm
+ * the middle one's centre is midway between the outer two. */
+static void
+on_uitest_distribute (GtkButton *button, DiaShell *self)
+{
+  DiaObject *a, *b, *c;
+  double ca, cb, cc;
+  char buf[96];
+
+  a = diagram_create_object (self, "Standard - Box", (Point) { 70, 70 });
+  b = diagram_create_object (self, "Standard - Box", (Point) { 73, 70 });
+  c = diagram_create_object (self, "Standard - Box", (Point) { 85, 70 });
+  if (a) push_op (self, OP_CREATE, a, (Point) { 70, 70 }, (Point) { 70, 70 });
+  if (b) push_op (self, OP_CREATE, b, (Point) { 73, 70 }, (Point) { 73, 70 });
+  if (c) push_op (self, OP_CREATE, c, (Point) { 85, 70 }, (Point) { 85, 70 });
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, a);
+  data_select (self->diagram, b);
+  data_select (self->diagram, c);
+  self->selected = c;
+  distribute_selected (self, TRUE);
+
+  ca = bbox_center (a, TRUE);
+  cb = bbox_center (b, TRUE);
+  cc = bbox_center (c, TRUE);
+  if (a && b && c && fabs (cb - (ca + cc) / 2) < 0.05) {
+    g_snprintf (buf, sizeof (buf), _("distribute OK (mid=%.1f)"), cb);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("distribute FAIL (%.1f,%.1f,%.1f)"),
+                ca, cb, cc);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -3214,6 +3318,8 @@ build_primary_menu_button (void)
     g_menu_append (align, _("Bottom"), "dia.align::bottom");
     g_menu_append (align, _("Center Horizontally"), "dia.align::center-h");
     g_menu_append (align, _("Center Vertically"), "dia.align::center-v");
+    g_menu_append (align, _("Distribute Horizontally"), "dia.align::dist-h");
+    g_menu_append (align, _("Distribute Vertically"), "dia.align::dist-v");
     g_menu_append_submenu (edit, _("_Align"), G_MENU_MODEL (align));
     g_object_unref (align);
   }
@@ -3422,6 +3528,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *zo = gtk_button_new_with_label ("uitest-zorder");
     GtkWidget *al = gtk_button_new_with_label ("uitest-align");
     GtkWidget *co = gtk_button_new_with_label ("uitest-colour");
+    GtkWidget *di = gtk_button_new_with_label ("uitest-distribute");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -3443,6 +3550,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (zo), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (al), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (co), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (di), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -3464,6 +3572,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (zo, "clicked", G_CALLBACK (on_uitest_zorder), self);
     g_signal_connect (al, "clicked", G_CALLBACK (on_uitest_align), self);
     g_signal_connect (co, "clicked", G_CALLBACK (on_uitest_colour), self);
+    g_signal_connect (di, "clicked", G_CALLBACK (on_uitest_distribute), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -3485,6 +3594,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), zo);
     gtk_box_append (GTK_BOX (bar), al);
     gtk_box_append (GTK_BOX (bar), co);
+    gtk_box_append (GTK_BOX (bar), di);
   }
 
   return bar;
