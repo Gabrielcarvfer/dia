@@ -53,6 +53,7 @@ typedef struct {
   GtkWidget *hruler;
   GtkWidget *vruler;
   GtkWidget *colour_area;
+  GtkWidget *fill_area;
   GtkWidget *status_msg;
   GtkWidget *pos_label;
   GtkWidget *zoom_label;
@@ -837,6 +838,21 @@ draw_color_area (GtkDrawingArea *area,
   gdk_cairo_set_source_rgba (cr, &self->fg);
   cairo_fill_preserve (cr);
   cairo_set_source_rgb (cr, 0.3, 0.3, 0.3);
+  cairo_stroke (cr);
+}
+
+/* A single swatch of the current fill colour (self->bg). */
+static void
+draw_fill_swatch (GtkDrawingArea *area, cairo_t *cr, int width, int height,
+                  gpointer user_data)
+{
+  DiaShell *self = user_data;
+
+  cairo_rectangle (cr, 2, 2, width - 4, height - 4);
+  gdk_cairo_set_source_rgba (cr, &self->bg);
+  cairo_fill_preserve (cr);
+  cairo_set_source_rgb (cr, 0.3, 0.3, 0.3);
+  cairo_set_line_width (cr, 1.0);
   cairo_stroke (cr);
 }
 
@@ -2831,12 +2847,27 @@ on_uitest_colour (GtkButton *button, DiaShell *self)
   got = ((ColorProperty *) g_ptr_array_index (props, 0))->color_data;
   prop_list_free (props);
 
-  if (got.red > 0.99 && got.green < 0.01 && got.blue < 0.01) {
-    g_snprintf (buf, sizeof (buf), _("colour OK (%.1f,%.1f,%.1f)"),
-                got.red, got.green, got.blue);
-  } else {
-    g_snprintf (buf, sizeof (buf), _("colour FAIL (%.1f,%.1f,%.1f)"),
-                got.red, got.green, got.blue);
+  /* also the fill colour */
+  {
+    static PropDescription fd[] = { PROP_STD_FILL_COLOUR, PROP_DESC_END };
+    Color blue = { 0.0f, 0.0f, 1.0f, 1.0f };
+    Color gotf;
+    gboolean line_ok = (got.red > 0.99 && got.green < 0.01 && got.blue < 0.01);
+    gboolean fill_ok;
+
+    apply_colour_to_selected (self, blue, TRUE);
+    props = prop_list_from_descs (fd, pdtpp_true);
+    dia_object_get_properties (obj, props);
+    gotf = ((ColorProperty *) g_ptr_array_index (props, 0))->color_data;
+    prop_list_free (props);
+    fill_ok = (gotf.blue > 0.99 && gotf.red < 0.01);
+
+    if (line_ok && fill_ok) {
+      g_snprintf (buf, sizeof (buf), _("colour OK (line+fill)"));
+    } else {
+      g_snprintf (buf, sizeof (buf), _("colour FAIL (line=%d fill=%d)"),
+                  line_ok, fill_ok);
+    }
   }
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
   gtk_widget_queue_draw (self->canvas);
@@ -3099,12 +3130,48 @@ on_colour_clicked (GtkButton *button, DiaShell *self)
   GtkColorDialog *dialog = gtk_color_dialog_new ();
   GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (button));
 
-  gtk_color_dialog_set_title (dialog, _("Foreground Colour"));
+  gtk_color_dialog_set_title (dialog, _("Line Colour"));
   gtk_color_dialog_choose_rgba (dialog,
                                 GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
                                 &self->fg,
                                 NULL,
                                 on_colour_chosen,
+                                self);
+  g_object_unref (dialog);
+}
+
+static void
+on_fill_chosen (GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  DiaShell *self = user_data;
+  GdkRGBA *rgba = gtk_color_dialog_choose_rgba_finish (GTK_COLOR_DIALOG (source),
+                                                       result, NULL);
+  if (rgba) {
+    Color c = { rgba->red, rgba->green, rgba->blue, rgba->alpha };
+
+    self->bg = *rgba;
+    gdk_rgba_free (rgba);
+    apply_colour_to_selected (self, c, TRUE);
+    attributes_set_background (&c);
+    gtk_widget_queue_draw (self->colour_area);
+    if (self->fill_area) gtk_widget_queue_draw (self->fill_area);
+    gtk_widget_queue_draw (self->canvas);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Fill colour set"));
+  }
+}
+
+static void
+on_fill_clicked (GtkButton *button, DiaShell *self)
+{
+  GtkColorDialog *dialog = gtk_color_dialog_new ();
+  GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (button));
+
+  gtk_color_dialog_set_title (dialog, _("Fill Colour"));
+  gtk_color_dialog_choose_rgba (dialog,
+                                GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                                &self->bg,
+                                NULL,
+                                on_fill_chosen,
                                 self);
   g_object_unref (dialog);
 }
@@ -3689,6 +3756,7 @@ build_toolbox (DiaShell *self)
   GtkWidget *grid = gtk_grid_new ();
   GtkWidget *colour;
   GtkWidget *colour_btn;
+  GtkWidget *fill_btn;
   GtkToggleButton *first = NULL;
 
   gtk_widget_set_margin_start (box, 4);
@@ -3743,8 +3811,23 @@ build_toolbox (DiaShell *self)
   gtk_button_set_child (GTK_BUTTON (colour_btn), colour);
   gtk_button_set_has_frame (GTK_BUTTON (colour_btn), FALSE);
   set_a11y_label (colour_btn, "colour-area");
-  gtk_widget_set_tooltip_text (colour_btn, _("Click to pick the foreground colour"));
+  gtk_widget_set_tooltip_text (colour_btn, _("Line colour (of the selection)"));
   g_signal_connect (colour_btn, "clicked", G_CALLBACK (on_colour_clicked), self);
+
+  {
+    GtkWidget *fill = gtk_drawing_area_new ();
+
+    self->fill_area = fill;
+    gtk_widget_set_size_request (fill, 24, 24);
+    gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (fill),
+                                    draw_fill_swatch, self, NULL);
+    fill_btn = gtk_button_new ();
+    gtk_button_set_child (GTK_BUTTON (fill_btn), fill);
+    gtk_button_set_has_frame (GTK_BUTTON (fill_btn), FALSE);
+    set_a11y_label (fill_btn, "fill-colour");
+    gtk_widget_set_tooltip_text (fill_btn, _("Fill colour (of the selection)"));
+    g_signal_connect (fill_btn, "clicked", G_CALLBACK (on_fill_clicked), self);
+  }
 
   /* Line attributes. Changing these restyles the current selection and becomes
    * the default for newly created objects. */
@@ -3783,6 +3866,7 @@ build_toolbox (DiaShell *self)
     gtk_widget_set_halign (wl, GTK_ALIGN_START);
     gtk_widget_set_hexpand (lw, TRUE);
     gtk_box_append (GTK_BOX (wrow), colour_btn);
+    gtk_box_append (GTK_BOX (wrow), fill_btn);
     gtk_box_append (GTK_BOX (wrow), wl);
     gtk_box_append (GTK_BOX (wrow), lw);
     gtk_box_append (GTK_BOX (box), wrow);
