@@ -2208,20 +2208,22 @@ draw_linestyle_item (GtkDrawingArea *area, cairo_t *cr, int w, int h,
   cairo_stroke (cr);
 }
 
-/* Preview drawer: a line ending in the chosen arrow (item position indexes
- * arrow_choices). */
+/* Preview drawer: a horizontal line with the chosen arrow at one end (item
+ * position indexes arrow_choices). @at_start draws it on the left (the arrow
+ * for a line's start handle, i.e. rotated 180°); otherwise on the right. */
 static void
-draw_arrow_item (GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data)
+draw_arrow_preview (cairo_t *cr, int w, int h, int idx, gboolean at_start)
 {
-  int idx = GPOINTER_TO_INT (data);
   ArrowType t = (idx >= 0 && idx < (int) G_N_ELEMENTS (arrow_choices))
                   ? arrow_choices[idx] : ARROW_NONE;
-  double y = h / 2.0, tip = w - 4, base = w - 12, hh = 4.0;
+  double y = h / 2.0, hh = 4.0;
+  double tip  = at_start ? 4.0     : w - 4.0;
+  double base = at_start ? 12.0    : w - 12.0;
 
   cairo_set_source_rgb (cr, 0.1, 0.1, 0.1);
   cairo_set_line_width (cr, 1.5);
   cairo_move_to (cr, 4, y);
-  cairo_line_to (cr, tip, y);
+  cairo_line_to (cr, w - 4, y);
   cairo_stroke (cr);
 
   if (t == ARROW_LINES) {
@@ -2235,6 +2237,18 @@ draw_arrow_item (GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data)
     cairo_close_path (cr);
     cairo_fill (cr);
   }
+}
+
+static void
+draw_start_arrow_item (GtkDrawingArea *a, cairo_t *cr, int w, int h, gpointer d)
+{
+  draw_arrow_preview (cr, w, h, GPOINTER_TO_INT (d), TRUE);
+}
+
+static void
+draw_end_arrow_item (GtkDrawingArea *a, cairo_t *cr, int w, int h, gpointer d)
+{
+  draw_arrow_preview (cr, w, h, GPOINTER_TO_INT (d), FALSE);
 }
 
 static void
@@ -2373,11 +2387,11 @@ build_toolbox (DiaShell *self)
     GtkWidget *ls = make_preview_dropdown (styles, draw_linestyle_item,
                                            self->line_style, "line-style",
                                            G_CALLBACK (on_lstyle_changed), self);
-    GtkWidget *sa = make_preview_dropdown (arrows, draw_arrow_item, 0,
+    GtkWidget *sa = make_preview_dropdown (arrows, draw_start_arrow_item, 0,
                                            "start-arrow",
                                            G_CALLBACK (on_start_arrow_changed),
                                            self);
-    GtkWidget *ea = make_preview_dropdown (arrows, draw_arrow_item, 0,
+    GtkWidget *ea = make_preview_dropdown (arrows, draw_end_arrow_item, 0,
                                            "end-arrow",
                                            G_CALLBACK (on_end_arrow_changed),
                                            self);
@@ -2393,8 +2407,8 @@ build_toolbox (DiaShell *self)
     g_signal_connect (lw, "value-changed", G_CALLBACK (on_lw_changed), self);
 
     attr_row (GTK_GRID (attrs), 0, _("Width"), lw);
-    attr_row (GTK_GRID (attrs), 1, _("Style"), ls);
-    attr_row (GTK_GRID (attrs), 2, _("Start"), sa);
+    attr_row (GTK_GRID (attrs), 1, _("Start"), sa);
+    attr_row (GTK_GRID (attrs), 2, _("Style"), ls);
     attr_row (GTK_GRID (attrs), 3, _("End"),   ea);
     gtk_box_append (GTK_BOX (box), attrs);
   }
