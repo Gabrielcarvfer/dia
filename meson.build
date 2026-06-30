@@ -237,6 +237,9 @@ else
   subdir('lib-port')
   subdir('objects-port')
   subdir('skeleton')
+  if get_option('tests')
+    subdir('tests-port')
+  endif
 
   summary(
     {'Toolkit': 'GTK4 + libadwaita (port skeleton)'},
