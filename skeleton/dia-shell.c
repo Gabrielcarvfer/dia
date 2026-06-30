@@ -2256,7 +2256,7 @@ preview_setup (GtkSignalListItemFactory *f, GtkListItem *item, gpointer draw_fun
 {
   GtkWidget *area = gtk_drawing_area_new ();
 
-  gtk_widget_set_size_request (area, 40, 16);
+  gtk_widget_set_size_request (area, 28, 16);
   gtk_list_item_set_child (item, area);
 }
 
@@ -2345,24 +2345,23 @@ build_toolbox (DiaShell *self)
                   gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
   /* Colour area: a flat button (so AT-SPI exposes a click action and it is
-   * keyboard-operable) wrapping a drawing area that paints the fg/bg swatches. */
+   * keyboard-operable) wrapping a drawing area that paints the fg/bg swatches.
+   * It shares a row with the line-width selector below. */
   colour = gtk_drawing_area_new ();
   self->colour_area = colour;
-  gtk_widget_set_size_request (colour, 56, 56);
+  gtk_widget_set_size_request (colour, 34, 34);
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (colour),
                                   draw_color_area, self, NULL);
 
   colour_btn = gtk_button_new ();
   gtk_button_set_child (GTK_BUTTON (colour_btn), colour);
   gtk_button_set_has_frame (GTK_BUTTON (colour_btn), FALSE);
-  gtk_widget_set_halign (colour_btn, GTK_ALIGN_CENTER);
   set_a11y_label (colour_btn, "colour-area");
   gtk_widget_set_tooltip_text (colour_btn, _("Click to pick the foreground colour"));
   g_signal_connect (colour_btn, "clicked", G_CALLBACK (on_colour_clicked), self);
-  gtk_box_append (GTK_BOX (box), colour_btn);
 
-  /* Line attributes: width, style and start/end arrows. Changing these restyles
-   * the current selection and becomes the default for newly created objects. */
+  /* Line attributes. Changing these restyles the current selection and becomes
+   * the default for newly created objects. */
   gtk_box_append (GTK_BOX (box),
                   gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
   {
@@ -2394,14 +2393,16 @@ build_toolbox (DiaShell *self)
     set_a11y_label (lw, "line-width");
     g_signal_connect (lw, "value-changed", G_CALLBACK (on_lw_changed), self);
 
-    /* Width on its own row; the three arrow/style previews share one row. */
+    /* Row 1: colour swatch + Width spin. */
     gtk_widget_set_halign (wl, GTK_ALIGN_START);
     gtk_widget_set_hexpand (lw, TRUE);
+    gtk_box_append (GTK_BOX (wrow), colour_btn);
     gtk_box_append (GTK_BOX (wrow), wl);
     gtk_box_append (GTK_BOX (wrow), lw);
     gtk_box_append (GTK_BOX (box), wrow);
 
-    gtk_widget_set_halign (drow, GTK_ALIGN_CENTER);
+    /* Row 2: the three previews, equal width, spanning the tool-grid width. */
+    gtk_box_set_homogeneous (GTK_BOX (drow), TRUE);
     gtk_box_append (GTK_BOX (drow), sa);
     gtk_box_append (GTK_BOX (drow), ls);
     gtk_box_append (GTK_BOX (drow), ea);
