@@ -432,14 +432,193 @@ update_zoom (DiaShell *self, double factor)
   gtk_widget_queue_draw (self->canvas);
 }
 
-static void on_zoom_in  (GtkButton *b, DiaShell *s) { update_zoom (s, 1.5); }
-static void on_zoom_out (GtkButton *b, DiaShell *s) { update_zoom (s, 1.0 / 1.5); }
+/* --- GActions (the "dia" action group, installed on the window content) -- */
 
 static void
-on_zoom_reset (GtkButton *b, DiaShell *self)
+action_zoom_in (GSimpleAction *a, GVariant *p, gpointer data)
 {
+  update_zoom (data, 1.5);
+}
+
+static void
+action_zoom_out (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  update_zoom (data, 1.0 / 1.5);
+}
+
+static void
+action_zoom_reset (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
   self->zoom = 1.0;
   update_zoom (self, 1.0);
+}
+
+static void
+action_new (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  char buf[64];
+
+  g_ptr_array_set_size (self->shapes, 0);   /* frees elements via free_func */
+  gtk_widget_queue_draw (self->canvas);
+  g_snprintf (buf, sizeof (buf), _("New diagram — %u object(s)"),
+              self->shapes->len);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
+/* Serialize the shape list to a GKeyFile (a stand-in diagram format until the
+ * object model / real .dia I/O is wired in). */
+static void
+shapes_to_file (DiaShell *self, GFile *file)
+{
+  GKeyFile *kf = g_key_file_new ();
+  char *path;
+
+  g_key_file_set_integer (kf, "diagram", "count", (int) self->shapes->len);
+  for (guint i = 0; i < self->shapes->len; i++) {
+    Shape *s = g_ptr_array_index (self->shapes, i);
+    char grp[32];
+    double rect[4]   = { s->a.x, s->a.y, s->b.x, s->b.y };
+    double fill[4]   = { s->fill.red, s->fill.green, s->fill.blue, s->fill.alpha };
+    double stroke[4] = { s->stroke.red, s->stroke.green, s->stroke.blue, s->stroke.alpha };
+
+    g_snprintf (grp, sizeof (grp), "shape%u", i);
+    g_key_file_set_integer (kf, grp, "kind", s->kind);
+    g_key_file_set_double_list (kf, grp, "rect", rect, 4);
+    g_key_file_set_double_list (kf, grp, "fill", fill, 4);
+    g_key_file_set_double_list (kf, grp, "stroke", stroke, 4);
+    if (s->text)
+      g_key_file_set_string (kf, grp, "text", s->text);
+  }
+
+  path = g_file_get_path (file);
+  g_key_file_save_to_file (kf, path, NULL);
+  g_free (path);
+  g_key_file_free (kf);
+}
+
+
+static void
+shapes_from_file (DiaShell *self, GFile *file)
+{
+  GKeyFile *kf = g_key_file_new ();
+  char *path = g_file_get_path (file);
+
+  if (g_key_file_load_from_file (kf, path, G_KEY_FILE_NONE, NULL)) {
+    int count = g_key_file_get_integer (kf, "diagram", "count", NULL);
+
+    g_ptr_array_set_size (self->shapes, 0);
+    for (int i = 0; i < count; i++) {
+      char grp[32];
+      gsize n = 0;
+      double *rect, *fill, *stroke;
+      Shape *s;
+
+      g_snprintf (grp, sizeof (grp), "shape%d", i);
+      rect   = g_key_file_get_double_list (kf, grp, "rect", &n, NULL);
+      fill   = g_key_file_get_double_list (kf, grp, "fill", &n, NULL);
+      stroke = g_key_file_get_double_list (kf, grp, "stroke", &n, NULL);
+
+      if (rect && fill && stroke) {
+        s = g_new0 (Shape, 1);
+        s->kind = g_key_file_get_integer (kf, grp, "kind", NULL);
+        s->a = (Point) { rect[0], rect[1] };
+        s->b = (Point) { rect[2], rect[3] };
+        s->fill = (Color) { fill[0], fill[1], fill[2], fill[3] };
+        s->stroke = (Color) { stroke[0], stroke[1], stroke[2], stroke[3] };
+        s->text = g_key_file_get_string (kf, grp, "text", NULL);
+        g_ptr_array_add (self->shapes, s);
+      }
+      g_free (rect);
+      g_free (fill);
+      g_free (stroke);
+    }
+    gtk_widget_queue_draw (self->canvas);
+  }
+
+  g_free (path);
+  g_key_file_free (kf);
+}
+
+
+static void
+save_done (GObject *source, GAsyncResult *res, gpointer data)
+{
+  DiaShell *self = data;
+  GFile *file = gtk_file_dialog_save_finish (GTK_FILE_DIALOG (source), res, NULL);
+
+  if (file) {
+    shapes_to_file (self, file);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Saved diagram"));
+    g_object_unref (file);
+  }
+}
+
+static void
+action_save (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GtkFileDialog *dialog = gtk_file_dialog_new ();
+  GtkRoot *root = gtk_widget_get_root (self->canvas);
+
+  gtk_file_dialog_set_title (dialog, _("Save Diagram"));
+  gtk_file_dialog_save (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                        NULL, save_done, self);
+  g_object_unref (dialog);
+}
+
+
+static void
+open_done (GObject *source, GAsyncResult *res, gpointer data)
+{
+  DiaShell *self = data;
+  GFile *file = gtk_file_dialog_open_finish (GTK_FILE_DIALOG (source), res, NULL);
+
+  if (file) {
+    char buf[64];
+
+    shapes_from_file (self, file);
+    g_snprintf (buf, sizeof (buf), _("Opened diagram — %u object(s)"),
+                self->shapes->len);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+    g_object_unref (file);
+  }
+}
+
+static void
+action_open (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GtkFileDialog *dialog = gtk_file_dialog_new ();
+  GtkRoot *root = gtk_widget_get_root (self->canvas);
+
+  gtk_file_dialog_set_title (dialog, _("Open Diagram"));
+  gtk_file_dialog_open (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                        NULL, open_done, self);
+  g_object_unref (dialog);
+}
+
+
+static const GActionEntry dia_actions[] = {
+  { "new",        action_new,        NULL, NULL, NULL },
+  { "open",       action_open,       NULL, NULL, NULL },
+  { "save",       action_save,       NULL, NULL, NULL },
+  { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
+  { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
+  { "zoom-reset", action_zoom_reset, NULL, NULL, NULL },
+};
+
+static void
+dia_shell_install_actions (DiaShell *self, GtkWidget *view)
+{
+  GSimpleActionGroup *group = g_simple_action_group_new ();
+
+  g_action_map_add_action_entries (G_ACTION_MAP (group), dia_actions,
+                                   G_N_ELEMENTS (dia_actions), self);
+  gtk_widget_insert_action_group (view, "dia", G_ACTION_GROUP (group));
+  g_object_unref (group);
 }
 
 
@@ -483,13 +662,31 @@ build_primary_menu_button (void)
 {
   GtkWidget *button = gtk_menu_button_new ();
   GMenu *menu = g_menu_new ();
+  GMenu *file = g_menu_new ();
+  GMenu *view = g_menu_new ();
+  GMenu *app = g_menu_new ();
 
-  g_menu_append (menu, _("_About Dia"), "app.about");
-  g_menu_append (menu, _("_Quit"), "app.quit");
+  g_menu_append (file, _("_New"), "dia.new");
+  g_menu_append (file, _("_Open…"), "dia.open");
+  g_menu_append (file, _("_Save…"), "dia.save");
+  g_menu_append_section (menu, NULL, G_MENU_MODEL (file));
+
+  g_menu_append (view, _("Zoom _In"), "dia.zoom-in");
+  g_menu_append (view, _("Zoom _Out"), "dia.zoom-out");
+  g_menu_append (view, _("_Reset Zoom"), "dia.zoom-reset");
+  g_menu_append_section (menu, NULL, G_MENU_MODEL (view));
+
+  g_menu_append (app, _("_About Dia"), "app.about");
+  g_menu_append (app, _("_Quit"), "app.quit");
+  g_menu_append_section (menu, NULL, G_MENU_MODEL (app));
 
   gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (button), "open-menu-symbolic");
   gtk_menu_button_set_menu_model (GTK_MENU_BUTTON (button), G_MENU_MODEL (menu));
+
   g_object_unref (menu);
+  g_object_unref (file);
+  g_object_unref (view);
+  g_object_unref (app);
 
   return button;
 }
@@ -499,17 +696,19 @@ static GtkWidget *
 build_action_toolbar (DiaShell *self)
 {
   GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-  struct { const char *icon; const char *tip; GCallback cb; } items[] = {
-    { "document-new-symbolic",   N_("New diagram"), NULL },
-    { "document-open-symbolic",  N_("Open"),        NULL },
-    { "document-save-symbolic",  N_("Save"),        NULL },
+  /* GTK4: buttons drive GActions by name (the "dia" group, installed on the
+   * window content) rather than direct callbacks. */
+  struct { const char *icon; const char *tip; const char *action; } items[] = {
+    { "document-new-symbolic",   N_("New diagram"), "dia.new" },
+    { "document-open-symbolic",  N_("Open"),        "dia.open" },
+    { "document-save-symbolic",  N_("Save"),        "dia.save" },
     { NULL, NULL, NULL },
     { "edit-undo-symbolic",      N_("Undo"),        NULL },
     { "edit-redo-symbolic",      N_("Redo"),        NULL },
     { NULL, NULL, NULL },
-    { "zoom-in-symbolic",        N_("Zoom in"),     G_CALLBACK (on_zoom_in) },
-    { "zoom-out-symbolic",       N_("Zoom out"),    G_CALLBACK (on_zoom_out) },
-    { "zoom-original-symbolic",  N_("Zoom 1:1"),    G_CALLBACK (on_zoom_reset) },
+    { "zoom-in-symbolic",        N_("Zoom in"),     "dia.zoom-in" },
+    { "zoom-out-symbolic",       N_("Zoom out"),    "dia.zoom-out" },
+    { "zoom-original-symbolic",  N_("Zoom 1:1"),    "dia.zoom-reset" },
   };
 
   gtk_widget_add_css_class (bar, "toolbar");
@@ -527,8 +726,10 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (b), FALSE);
     gtk_widget_set_tooltip_text (b, gettext (items[i].tip));
     set_a11y_label (b, gettext (items[i].tip));
-    if (items[i].cb)
-      g_signal_connect (b, "clicked", items[i].cb, self);
+    if (items[i].action)
+      gtk_actionable_set_action_name (GTK_ACTIONABLE (b), items[i].action);
+    else
+      gtk_widget_set_sensitive (b, FALSE);   /* Undo/Redo: not wired yet */
     gtk_box_append (GTK_BOX (bar), b);
   }
 
@@ -770,6 +971,10 @@ dia_shell_new (void)
   self->bg = (GdkRGBA) { 1, 1, 1, 1 };
   self->shapes = g_ptr_array_new_with_free_func (shape_free);
   dia_shell_seed_sample (self);
+
+  /* Install the "dia" action group on the content so the toolbar buttons and
+   * menu items resolve dia.new / dia.open / dia.save / dia.zoom-*. */
+  dia_shell_install_actions (self, view);
 
   /* Build the statusbar first: its labels are updated by handlers that can
    * fire during construction (e.g. activating the first tool button). */

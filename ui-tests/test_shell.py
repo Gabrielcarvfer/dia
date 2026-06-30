@@ -215,6 +215,17 @@ def main():
         created = any('object(s)' in (lab.name or '') for lab in labels)
         check("Box tool creates an object on the canvas", created)
 
+    # 3c. The File menu actions: the New toolbar button drives the dia.new
+    #     GAction, which clears the diagram (statusbar -> "0 object(s)").
+    new_btn = find(app, name='New diagram', roleName='push button')
+    check("New toolbar button present (GAction wired)", new_btn)
+    if new_btn:
+        do_click(new_btn)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        cleared = any('0 object(s)' in (lab.name or '') for lab in labels)
+        check("New action clears the diagram", cleared)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("colour area present", colour)
