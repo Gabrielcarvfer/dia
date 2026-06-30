@@ -62,6 +62,7 @@ typedef struct {
   DiagramData *diagram;   /* the real model: a DiagramData with a layer of
                            * DiaObjects, rendered via the Dia cairo renderer */
   DiaObject  *selected;   /* current selection (Modify tool) */
+  DiaObject  *clipboard;  /* a cloned object held for paste (cut/copy) */
   Point       drag_origin; /* selected object's position at drag start */
   /* Handle drag (resize/stretch/bend): when the press lands on a handle of the
    * selection, the drag moves that handle instead of the whole object. */
@@ -1178,6 +1179,26 @@ on_canvas_key (GtkEventControllerKey *controller,
                GdkModifierType        state,
                DiaShell              *self)
 {
+  /* Ctrl+X/C/V/A dispatch through the "dia" action group (cut/copy/paste/
+   * select-all), so the shortcut and the menu item share one implementation. */
+  if (state & GDK_CONTROL_MASK) {
+    const char *act = NULL;
+
+    switch (keyval) {
+      case GDK_KEY_x: case GDK_KEY_X: act = "cut";        break;
+      case GDK_KEY_c: case GDK_KEY_C: act = "copy";       break;
+      case GDK_KEY_v: case GDK_KEY_V: act = "paste";      break;
+      case GDK_KEY_a: case GDK_KEY_A: act = "select-all"; break;
+      case GDK_KEY_z: case GDK_KEY_Z: act = "undo";       break;
+      case GDK_KEY_y: case GDK_KEY_Y: act = "redo";       break;
+      default: break;
+    }
+    if (act) {
+      g_action_group_activate_action (self->actions, act, NULL);
+      return TRUE;
+    }
+  }
+
   switch (keyval) {
     case GDK_KEY_Delete:
     case GDK_KEY_BackSpace:
@@ -1297,6 +1318,81 @@ static void
 action_delete (GSimpleAction *a, GVariant *p, gpointer data)
 {
   delete_selected (data);
+}
+
+static void
+action_copy (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+
+  if (!self->selected) {
+    return;
+  }
+  dia_clear_object (&self->clipboard);
+  self->clipboard = dia_object_clone (self->selected);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Copied"));
+}
+
+static void
+action_cut (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+
+  if (!self->selected) {
+    return;
+  }
+  dia_clear_object (&self->clipboard);
+  self->clipboard = dia_object_clone (self->selected);
+  delete_selected (self);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Cut"));
+}
+
+static void
+action_paste (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  DiaLayer *layer;
+  DiaObject *obj;
+  DiaObjectChange *change;
+  Point to;
+
+  if (!self->clipboard) {
+    return;
+  }
+  layer = dia_diagram_data_get_active_layer (self->diagram);
+  obj = dia_object_clone (self->clipboard);
+  /* offset a little so the paste doesn't sit exactly on the original */
+  to.x = obj->position.x + 1.0;
+  to.y = obj->position.y + 1.0;
+  change = dia_object_move (obj, &to);
+  g_clear_pointer (&change, dia_object_change_unref);
+
+  dia_layer_add_object (layer, obj);
+  push_op (self, OP_CREATE, obj, obj->position, obj->position);
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+  gtk_widget_queue_draw (self->canvas);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Pasted"));
+}
+
+static void
+action_select_all (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  int n = layer ? dia_layer_object_count (layer) : 0;
+  char buf[64];
+
+  data_remove_all_selected (self->diagram);
+  for (int i = 0; i < n; i++) {
+    data_select (self->diagram, dia_layer_object_get_nth (layer, i));
+  }
+  /* operations act on a single primary selection; use the topmost object */
+  self->selected = n > 0 ? dia_layer_object_get_nth (layer, n - 1) : NULL;
+  gtk_widget_queue_draw (self->canvas);
+  g_snprintf (buf, sizeof (buf), _("Selected all (%d)"), n);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
 static void
@@ -1933,6 +2029,39 @@ on_uitest_export (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): create -> copy -> paste, verifying the count goes
+ * N -> N+1 -> N+2 and a clipboard object is held. */
+static void
+on_uitest_clipboard (GtkButton *button, DiaShell *self)
+{
+  guint c0, c1, c2;
+  DiaObject *obj;
+  char buf[96];
+
+  c0 = diagram_object_count (self);
+  obj = diagram_create_object (self, "Standard - Box", (Point) { 9, 9 });
+  if (obj) {
+    push_op (self, OP_CREATE, obj, (Point) { 9, 9 }, (Point) { 9, 9 });
+  }
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+  c1 = diagram_object_count (self);
+
+  action_copy (NULL, NULL, self);
+  action_paste (NULL, NULL, self);
+  c2 = diagram_object_count (self);
+
+  if (c1 == c0 + 1 && c2 == c1 + 1 && self->clipboard != NULL) {
+    g_snprintf (buf, sizeof (buf), _("clipboard OK (%u/%u/%u)"), c0, c1, c2);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("clipboard FAIL (%u/%u/%u)"), c0, c1, c2);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -2073,6 +2202,10 @@ static const GActionEntry dia_actions[] = {
   { "export",     action_export,     NULL, NULL, NULL },
   { "undo",       action_undo,       NULL, NULL, NULL },
   { "redo",       action_redo,       NULL, NULL, NULL },
+  { "cut",        action_cut,        NULL, NULL, NULL },
+  { "copy",       action_copy,       NULL, NULL, NULL },
+  { "paste",      action_paste,      NULL, NULL, NULL },
+  { "select-all", action_select_all, NULL, NULL, NULL },
   { "delete",     action_delete,     NULL, NULL, NULL },
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
   { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
@@ -2147,6 +2280,10 @@ build_primary_menu_button (void)
 
   g_menu_append (edit, _("_Undo"), "dia.undo");
   g_menu_append (edit, _("_Redo"), "dia.redo");
+  g_menu_append (edit, _("Cu_t"), "dia.cut");
+  g_menu_append (edit, _("_Copy"), "dia.copy");
+  g_menu_append (edit, _("_Paste"), "dia.paste");
+  g_menu_append (edit, _("Select _All"), "dia.select-all");
   g_menu_append (edit, _("_Delete"), "dia.delete");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (edit));
 
@@ -2271,9 +2408,14 @@ build_action_toolbar (DiaShell *self)
     { "document-new-symbolic",   N_("New diagram"), "dia.new" },
     { "document-open-symbolic",  N_("Open"),        "dia.open" },
     { "document-save-symbolic",  N_("Save"),        "dia.save" },
+    { "document-send-symbolic",  N_("Export"),      "dia.export" },
     { NULL, NULL, NULL },
     { "edit-undo-symbolic",      N_("Undo"),        "dia.undo" },
     { "edit-redo-symbolic",      N_("Redo"),        "dia.redo" },
+    { NULL, NULL, NULL },
+    { "edit-cut-symbolic",       N_("Cut"),         "dia.cut" },
+    { "edit-copy-symbolic",      N_("Copy"),        "dia.copy" },
+    { "edit-paste-symbolic",     N_("Paste"),       "dia.paste" },
     { NULL, NULL, NULL },
     { "zoom-in-symbolic",        N_("Zoom in"),     "dia.zoom-in" },
     { "zoom-out-symbolic",       N_("Zoom out"),    "dia.zoom-out" },
@@ -2338,6 +2480,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *ly = gtk_button_new_with_label ("uitest-layers");
     GtkWidget *la = gtk_button_new_with_label ("uitest-lineattr");
     GtkWidget *ex = gtk_button_new_with_label ("uitest-export");
+    GtkWidget *cb = gtk_button_new_with_label ("uitest-clipboard");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -2350,6 +2493,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (ly), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (la), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ex), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (cb), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -2362,6 +2506,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (ly, "clicked", G_CALLBACK (on_uitest_layers), self);
     g_signal_connect (la, "clicked", G_CALLBACK (on_uitest_lineattr), self);
     g_signal_connect (ex, "clicked", G_CALLBACK (on_uitest_export), self);
+    g_signal_connect (cb, "clicked", G_CALLBACK (on_uitest_clipboard), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -2374,6 +2519,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), ly);
     gtk_box_append (GTK_BOX (bar), la);
     gtk_box_append (GTK_BOX (bar), ex);
+    gtk_box_append (GTK_BOX (bar), cb);
   }
 
   return bar;
@@ -2980,6 +3126,7 @@ dia_shell_free (gpointer data)
 {
   DiaShell *self = data;
   g_clear_pointer (&self->undo, g_ptr_array_unref);
+  dia_clear_object (&self->clipboard);
   g_clear_object (&self->diagram);
   g_free (self);
 }

@@ -339,6 +339,16 @@ def main():
         ok = any('export OK' in (lab.name or '') for lab in labels)
         check("Export renders the diagram to a file", ok)
 
+    # 3o. Copy/paste clones the selected object (clipboard).
+    cb = find(app, name='uitest-clipboard', roleName='push button')
+    check("DIA_UITEST clipboard trigger present", cb)
+    if cb:
+        do_click(cb)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('clipboard OK' in (lab.name or '') for lab in labels)
+        check("Copy/paste clones the selected object", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
