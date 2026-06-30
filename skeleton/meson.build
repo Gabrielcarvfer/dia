@@ -1,9 +1,8 @@
 # GTK4 + libadwaita port: foundation skeleton.
 #
-# Self-contained on purpose -- it links only GTK4 + libadwaita (+ glib/gio,
-# pulled in transitively) and does not depend on the legacy libdia/config.h.
-# As lib/ and app/ widgets are ported, add their sources/deps here and wire
-# them into the window in main.c.
+# Links GTK4 + libadwaita and the ported core library (libdia-core), so the
+# canvas can draw via the real DiaCairoRenderer. As app/ is ported, wire its
+# widgets in here.
 
 executable(
   'dia',
@@ -17,6 +16,7 @@ executable(
     libgtk_dep,
     libglib_dep,
     gio_dep,
+    libdia_core_dep,
   ],
   install: true,
 )

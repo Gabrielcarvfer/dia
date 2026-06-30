@@ -160,12 +160,58 @@ multistringprop_set_from_widget(StringProperty *prop, GtkWidget *widget) {
 }
 
 
+/* GTK4: GtkFileChooserButton is gone. Use a plain button that shows the
+ * chosen path and opens an async GtkFileDialog; the path is stashed on the
+ * widget so reset/set can read it. */
+#define FILEPROP_PATH_KEY  "dia-file-path"
+#define FILEPROP_FILTER_KEY "dia-file-filter"
+
+
+static void
+fileprop_dialog_done (GObject *source, GAsyncResult *result, gpointer data)
+{
+  GtkButton *button = GTK_BUTTON (data);
+  GFile *file = gtk_file_dialog_open_finish (GTK_FILE_DIALOG (source),
+                                             result, NULL);
+  if (file) {
+    char *path = g_file_get_path (file);
+
+    g_object_set_data_full (G_OBJECT (button), FILEPROP_PATH_KEY,
+                            path, g_free);
+    gtk_button_set_label (button, path ? path : _("Choose a file..."));
+    g_object_notify (G_OBJECT (button), "label");
+    g_object_unref (file);
+  }
+}
+
+
+static void
+fileprop_clicked (GtkButton *button, gpointer user_data)
+{
+  GtkFileDialog *fdialog = gtk_file_dialog_new ();
+  GtkFileFilter *filter = g_object_get_data (G_OBJECT (button),
+                                             FILEPROP_FILTER_KEY);
+  GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (button));
+
+  if (filter) {
+    GListStore *filters = g_list_store_new (GTK_TYPE_FILE_FILTER);
+    g_list_store_append (filters, filter);
+    gtk_file_dialog_set_filters (fdialog, G_LIST_MODEL (filters));
+    g_object_unref (filters);
+  }
+
+  gtk_file_dialog_open (fdialog,
+                        GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                        NULL, fileprop_dialog_done, button);
+  g_object_unref (fdialog);
+}
+
+
 static GtkWidget *
 fileprop_get_widget (StringProperty *prop, PropDialog *dialog)
 {
   GtkFileFilter *filter = gtk_file_filter_new ();
-  GtkWidget *ret = gtk_file_chooser_button_new (_("Choose a file..."),
-                                                GTK_FILE_CHOOSER_ACTION_OPEN);
+  GtkWidget *ret = gtk_button_new_with_label (_("Choose a file..."));
 
   if (prop->common.descr->extra_data) {
     const char **exts = prop->common.descr->extra_data;
@@ -181,8 +227,11 @@ fileprop_get_widget (StringProperty *prop, PropDialog *dialog)
     gtk_file_filter_add_pixbuf_formats (filter);
   }
 
-  gtk_file_chooser_set_filter (GTK_FILE_CHOOSER (ret), filter);
-  prophandler_connect (&prop->common, G_OBJECT (ret), "file-set");
+  g_object_set_data_full (G_OBJECT (ret), FILEPROP_FILTER_KEY,
+                          g_object_ref_sink (filter), g_object_unref);
+  g_signal_connect (ret, "clicked", G_CALLBACK (fileprop_clicked), NULL);
+  /* "label" notifies when the chosen file changes (see fileprop_dialog_done). */
+  prophandler_connect (&prop->common, G_OBJECT (ret), "clicked");
 
   return ret;
 }
@@ -192,7 +241,9 @@ static void
 fileprop_reset_widget (StringProperty *prop, GtkWidget *widget)
 {
   if (prop->string_data) {
-    gtk_file_chooser_set_filename (GTK_FILE_CHOOSER (widget), prop->string_data);
+    g_object_set_data_full (G_OBJECT (widget), FILEPROP_PATH_KEY,
+                            g_strdup (prop->string_data), g_free);
+    gtk_button_set_label (GTK_BUTTON (widget), prop->string_data);
   }
 }
 
@@ -200,8 +251,10 @@ fileprop_reset_widget (StringProperty *prop, GtkWidget *widget)
 static void
 fileprop_set_from_widget (StringProperty *prop, GtkWidget *widget)
 {
+  const char *path = g_object_get_data (G_OBJECT (widget), FILEPROP_PATH_KEY);
+
   g_clear_pointer (&prop->string_data, g_free);
-  prop->string_data = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (widget));
+  prop->string_data = g_strdup (path);
 }
 
 

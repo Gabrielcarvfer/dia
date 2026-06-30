@@ -13,6 +13,14 @@
 
 #include "dia-shell.h"
 
+/* Ported core library: draw on the canvas with the real Dia renderer. */
+#include "diarenderer.h"
+#include "renderer/diacairo.h"
+#include "dia-colour.h"
+#include "geometry.h"
+#include "font.h"
+#include "dia-enums.h"
+
 /* Shared shell state so the event handlers can reach the widgets they update.
  * Owns nothing but itself (widget pointers are borrowed); freed with the
  * window via g_object_set_data_full(). */
@@ -68,6 +76,46 @@ set_a11y_label (GtkWidget *widget, const char *label)
 
 /* --- drawing callbacks --------------------------------------------------- */
 
+/* Draw a small sample diagram onto the page using the REAL Dia renderer, so
+ * the canvas exercises the ported libdia rendering pipeline (not placeholder
+ * cairo). The page maps a 20cm-wide virtual diagram to the drawn page area. */
+static void
+draw_sample_diagram (cairo_t *cr, double scale)
+{
+  DiaRenderer *renderer;
+  DiaCairoRenderer *cairo_renderer;
+  DiaFont *font;
+  Color black = { 0.0, 0.0, 0.0, 1.0 };
+  Color box_a = { 0.80, 0.89, 1.0, 1.0 };
+  Color box_b = { 0.85, 1.0, 0.85, 1.0 };
+  Point a_ul = { 2.0, 2.0 },  a_lr = { 7.0, 5.0 };
+  Point b_ul = { 12.0, 8.0 }, b_lr = { 17.0, 11.0 };
+  Point l_from = { 7.0, 3.5 }, l_to = { 12.0, 9.5 };
+  Point label = { 2.0, 14.0 };
+
+  renderer = g_object_new (DIA_CAIRO_TYPE_RENDERER, NULL);
+  cairo_renderer = DIA_CAIRO_RENDERER (renderer);
+  cairo_renderer->cr = cairo_reference (cr);
+  cairo_renderer->with_alpha = TRUE;
+
+  dia_renderer_begin_render (renderer, NULL);
+  dia_renderer_set_linewidth (renderer, 0.05);
+
+  dia_renderer_draw_rect (renderer, &a_ul, &a_lr, &box_a, &black);
+  dia_renderer_draw_rect (renderer, &b_ul, &b_lr, &box_b, &black);
+  dia_renderer_draw_line (renderer, &l_from, &l_to, &black);
+
+  font = dia_font_new_from_style (DIA_FONT_SANS, 0.8);
+  dia_renderer_set_font (renderer, font, 0.8);
+  dia_renderer_draw_string (renderer, "Dia \xc2\xb7 GTK4 port",
+                            &label, DIA_ALIGN_LEFT, &black);
+  g_clear_object (&font);
+
+  dia_renderer_end_render (renderer);
+  g_object_unref (renderer);
+}
+
+
 static void
 draw_canvas (GtkDrawingArea *area,
              cairo_t        *cr,
@@ -97,6 +145,15 @@ draw_canvas (GtkDrawingArea *area,
   cairo_set_source_rgb (cr, 0.4, 0.4, 0.4);
   cairo_set_line_width (cr, 1.0);
   cairo_stroke (cr);
+
+  /* Render the sample diagram in page coordinates (cm), clipped to the page. */
+  cairo_save (cr);
+  cairo_rectangle (cr, px, py, page_w, page_h);
+  cairo_clip (cr);
+  cairo_translate (cr, px, py);
+  cairo_scale (cr, page_w / 20.0, page_w / 20.0);
+  draw_sample_diagram (cr, page_w / 20.0);
+  cairo_restore (cr);
 }
 
 

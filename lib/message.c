@@ -105,7 +105,6 @@ message_create_dialog(const gchar *title, DiaMessageInfo *msginfo, gchar *buf)
                                    type,
                                    GTK_BUTTONS_CLOSE,
                                    "%s", buf);
-  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
   if (title) {
     char *real_title;
 

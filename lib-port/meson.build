@@ -77,8 +77,7 @@ libdia_core_ported = files(
   lib_dir / 'debug.c',
   lib_dir / 'dia-change.c',
   lib_dir / 'dia-handle.c',
-  # dia-io.c needs libxml >= 2.14 (XML_SAVE_EMPTY); not a GTK4 issue. Re-add
-  # once the system libxml satisfies the legacy >= 2.14 requirement.
+  lib_dir / 'dia-io.c',   # XML_SAVE_EMPTY shimmed for libxml < 2.14
   lib_dir / 'dia-object-change-list.c',
   lib_dir / 'dia-object-change.c',
   lib_dir / 'dia-part.c',
@@ -169,12 +168,9 @@ libdia_core_ported = files(
   lib_dir / 'dia-line-chooser.c',         # GtkMenu -> GtkPopover, button-press -> clicked
   lib_dir / 'diapatternselector.c',       # GtkMenu/GtkArrow -> GtkMenuButton + popover
 
-  # --- Still need real GTK4 widget porting (deferred) ---------------------
-  # prop_geomtypes.c        -> pulls dia-unit-spinner.h (subclasses
-  #                            GtkSpinButton; GtkSpinButtonClass is private in
-  #                            GTK4 -> widget needs porting first).
-  # dia-colour-cell-renderer.c, and the other cell renderers -> GtkCellRenderer
-  #                            'render' vfunc (cairo) replaced by 'snapshot'.
+  # The cairo renderer (renders DiaRenderer ops to a cairo_t) lives in
+  # lib/renderer/. Needed so the cell renderers + the canvas can draw.
+  lib_dir / 'renderer' / 'diacairo-renderer.c',
 )
 
 libdia_core_deps = [
@@ -190,14 +186,16 @@ libdia_core_deps = [
 libdia_core = static_library(
   'dia-core',
   libdia_core_ported + libdia_core_generated,
-  include_directories: include_directories('../lib'),
+  include_directories: include_directories('../lib', '../lib/renderer'),
   dependencies: libdia_core_deps,
-  c_args: ['-DLIBDIA_COMPILATION'],
+  # Make calls to removed GTK4 APIs a hard error (they are only a warning by
+  # default in C, so they would otherwise slip through to link failures).
+  c_args: ['-DLIBDIA_COMPILATION', '-Werror=implicit-function-declaration'],
 )
 
 libdia_core_dep = declare_dependency(
   link_with: libdia_core,
-  include_directories: include_directories('../lib'),
+  include_directories: include_directories('../lib', '../lib/renderer'),
   # Expose generated headers so dependents can #include them.
   sources: [dia_version_info_h, dia_lib_enums[1], dia_lib_private_enums[1], diamarshal[1]],
   dependencies: libdia_core_deps,

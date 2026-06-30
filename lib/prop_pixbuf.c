@@ -322,9 +322,9 @@ static void
 _pixbuf_toggled(GtkWidget *wid)
 {
   if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON(wid)))
-    gtk_label_set_text(GTK_LABEL(gtk_bin_get_child(GTK_BIN(wid))), _("Yes"));
+    gtk_label_set_text(GTK_LABEL(gtk_button_get_child(GTK_BUTTON(wid))), _("Yes"));
   else
-    gtk_label_set_text(GTK_LABEL(gtk_bin_get_child(GTK_BIN(wid))), _("No"));
+    gtk_label_set_text(GTK_LABEL(gtk_button_get_child(GTK_BUTTON(wid))), _("No"));
 }
 
 static GtkWidget *

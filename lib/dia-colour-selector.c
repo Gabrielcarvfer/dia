@@ -83,7 +83,7 @@ dia_colour_selector_dispose (GObject *object)
   DiaColourSelector *self = DIA_COLOUR_SELECTOR (object);
 
   if (self->dialog) {
-    gtk_widget_destroy (self->dialog);
+    gtk_window_destroy (GTK_WINDOW (self->dialog));
     g_clear_weak_pointer (&self->dialog);
   }
 
@@ -180,7 +180,7 @@ colour_response (GtkDialog *dialog, int response, gpointer user_data)
     g_clear_pointer (&colour, dia_colour_free);
   }
 
-  gtk_widget_destroy (self->dialog);
+  gtk_window_destroy (GTK_WINDOW (self->dialog));
   g_clear_weak_pointer (&self->dialog);
 }
 
@@ -194,7 +194,7 @@ more_colours (DiaColourSelector *self)
   GList *tmplist;
   GdkRGBA rgba;
 
-  parent = gtk_widget_get_toplevel (GTK_WIDGET (self));
+  parent = GTK_WIDGET (gtk_widget_get_root (GTK_WIDGET (self)));
 
   dialog = gtk_color_chooser_dialog_new (_("Select color"),
                                          GTK_WINDOW (parent));

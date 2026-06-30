@@ -30,6 +30,12 @@
 #include <libxml/parser.h>
 #include <libxml/xmlsave.h>
 
+#ifndef XML_SAVE_EMPTY
+/* XML_SAVE_EMPTY was added in libxml 2.14; fall back to libxml's default
+ * empty-element handling on older versions. */
+#define XML_SAVE_EMPTY 0
+#endif
+
 #include "diacontext.h"
 
 #include "dia-io.h"
@@ -73,7 +79,14 @@ read_context_new (GFile *file, DiaContext *ctx)
   g_set_object (&self->dia_ctx, ctx);
 
   self->xml_ctx = xmlNewParserCtxt ();
+#if LIBXML_VERSION >= 21300
   xmlCtxtSetErrorHandler (self->xml_ctx, read_context_error_handler, self);
+#else
+  /* libxml < 2.13 has no per-context structured error setter; the handler
+   * signature also predates the const xmlError*, so cast it. */
+  xmlSetStructuredErrorFunc (self,
+                             (xmlStructuredErrorFunc) read_context_error_handler);
+#endif
 
   g_set_object (&self->source, file);
   self->uri = g_file_get_uri (self->source);

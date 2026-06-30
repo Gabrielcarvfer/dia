@@ -536,7 +536,7 @@ persistence_save (void)
 static const char *
 persistence_get_window_name (GtkWindow *window)
 {
-  const char *name = gtk_window_get_role (window);
+  const char *name = gtk_widget_get_name (GTK_WIDGET (window));
 
   if (name == NULL) {
     g_warning ("Internal: Window %s has no role.",

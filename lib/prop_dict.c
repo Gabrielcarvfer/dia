@@ -238,7 +238,6 @@ _create_view (GtkTreeModel *model)
 
   tree_view = gtk_tree_view_new_with_model (model);
   gtk_widget_set_vexpand (tree_view, TRUE);
-  gtk_tree_view_set_rules_hint (GTK_TREE_VIEW (tree_view), TRUE);
   gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (tree_view), TRUE);
 
   col = gtk_tree_view_column_new_with_attributes(
