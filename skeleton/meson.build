@@ -98,4 +98,12 @@ if get_option('tests') and python3_prog.found()
     args: [meson.project_source_root() / 'ui-tests' / 'test_broken_orthconn.py'],
     env: {'DIA_BIN': dia_skeleton_exe.full_path()},
   )
+  # Broken poly/bezier objects (missing poly_points/bez_points) must not crash
+  # on load (#319 / bug 302781).
+  test(
+    'broken-polyobjects',
+    python3_prog,
+    args: [meson.project_source_root() / 'ui-tests' / 'test_broken_polyobjects.py'],
+    env: {'DIA_BIN': dia_skeleton_exe.full_path()},
+  )
 endif
