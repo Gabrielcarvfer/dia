@@ -421,6 +421,16 @@ def main():
         ok = any('align OK' in (lab.name or '') for lab in labels)
         check("Align left lines up the left edges", ok)
 
+    # 3w. Colour: set a box's line colour and read it back.
+    co = find(app, name='uitest-colour', roleName='push button')
+    check("DIA_UITEST colour trigger present", co)
+    if co:
+        do_click(co)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('colour OK' in (lab.name or '') for lab in labels)
+        check("Colour picker sets the object's line colour", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

@@ -112,6 +112,8 @@ typedef struct {
 /* A moving object + its position at drag start (for multi-object move). */
 typedef struct { DiaObject *obj; Point start; } MoveItem;
 
+static void apply_colour_to_selected (DiaShell *self, Color c, gboolean is_fill);
+
 
 /* Object types are registered from objects-port (register-objects.c) so the
  * skeleton and the object tests use the identical set. */
@@ -2802,6 +2804,45 @@ on_uitest_align (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): set a box's line colour to red and read it back,
+ * exercising the same path the colour picker uses. */
+static void
+on_uitest_colour (GtkButton *button, DiaShell *self)
+{
+  static PropDescription d[] = { PROP_STD_LINE_COLOUR, PROP_DESC_END };
+  DiaObject *obj = diagram_create_object (self, "Standard - Box", (Point) { 6, 12 });
+  Color red = { 1.0f, 0.0f, 0.0f, 1.0f };
+  Color got = { 0, 0, 0, 0 };
+  GPtrArray *props;
+  char buf[96];
+
+  if (!obj) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("colour FAIL (no object)"));
+    return;
+  }
+  push_op (self, OP_CREATE, obj, (Point) { 6, 12 }, (Point) { 6, 12 });
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+
+  apply_colour_to_selected (self, red, FALSE);
+  props = prop_list_from_descs (d, pdtpp_true);
+  dia_object_get_properties (obj, props);
+  got = ((ColorProperty *) g_ptr_array_index (props, 0))->color_data;
+  prop_list_free (props);
+
+  if (got.red > 0.99 && got.green < 0.01 && got.blue < 0.01) {
+    g_snprintf (buf, sizeof (buf), _("colour OK (%.1f,%.1f,%.1f)"),
+                got.red, got.green, got.blue);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("colour FAIL (%.1f,%.1f,%.1f)"),
+                got.red, got.green, got.blue);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -3011,6 +3052,24 @@ dia_shell_install_actions (DiaShell *self, GtkWidget *view)
 }
 
 
+/* Apply a colour to the selection via StdProp: the line colour, or (is_fill)
+ * the fill colour. Objects lacking the property ignore it. */
+static void
+apply_colour_to_selected (DiaShell *self, Color c, gboolean is_fill)
+{
+  static PropDescription line_descs[] = { PROP_STD_LINE_COLOUR, PROP_DESC_END };
+  static PropDescription fill_descs[] = { PROP_STD_FILL_COLOUR, PROP_DESC_END };
+  PropDescription *descs = is_fill ? fill_descs : line_descs;
+
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    GPtrArray *props = prop_list_from_descs (descs, pdtpp_true);
+
+    ((ColorProperty *) g_ptr_array_index (props, 0))->color_data = c;
+    dia_object_set_properties (l->data, props);
+    prop_list_free (props);
+  }
+}
+
 static void
 on_colour_chosen (GObject *source, GAsyncResult *result, gpointer user_data)
 {
@@ -3020,9 +3079,16 @@ on_colour_chosen (GObject *source, GAsyncResult *result, gpointer user_data)
   rgba = gtk_color_dialog_choose_rgba_finish (GTK_COLOR_DIALOG (source),
                                               result, NULL);
   if (rgba) {
+    Color c = { rgba->red, rgba->green, rgba->blue, rgba->alpha };
+
     self->fg = *rgba;
     gdk_rgba_free (rgba);
+    /* colour the current selection and make it the default for new objects */
+    apply_colour_to_selected (self, c, FALSE);
+    attributes_set_foreground (&c);
     gtk_widget_queue_draw (self->colour_area);
+    gtk_widget_queue_draw (self->canvas);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Line colour set"));
   }
 }
 
@@ -3288,6 +3354,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *gr = gtk_button_new_with_label ("uitest-group");
     GtkWidget *zo = gtk_button_new_with_label ("uitest-zorder");
     GtkWidget *al = gtk_button_new_with_label ("uitest-align");
+    GtkWidget *co = gtk_button_new_with_label ("uitest-colour");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -3308,6 +3375,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (gr), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (zo), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (al), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (co), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -3328,6 +3396,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (gr, "clicked", G_CALLBACK (on_uitest_group), self);
     g_signal_connect (zo, "clicked", G_CALLBACK (on_uitest_zorder), self);
     g_signal_connect (al, "clicked", G_CALLBACK (on_uitest_align), self);
+    g_signal_connect (co, "clicked", G_CALLBACK (on_uitest_colour), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -3348,6 +3417,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), gr);
     gtk_box_append (GTK_BOX (bar), zo);
     gtk_box_append (GTK_BOX (bar), al);
+    gtk_box_append (GTK_BOX (bar), co);
   }
 
   return bar;
