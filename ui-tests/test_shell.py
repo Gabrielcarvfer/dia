@@ -238,6 +238,16 @@ def main():
         ok = any('round-trip OK' in (lab.name or '') for lab in labels)
         check(".dia save/reload round-trip preserves objects", ok)
 
+    # 3e. Modify tool: select + move logic (via the DIA_UITEST trigger).
+    sm = find(app, name='uitest-select-move', roleName='push button')
+    check("DIA_UITEST select-move trigger present", sm)
+    if sm:
+        do_click(sm)
+        time.sleep(0.5)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('select+move OK' in (lab.name or '') for lab in labels)
+        check("Modify tool selects and moves an object", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("colour area present", colour)

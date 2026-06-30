@@ -23,6 +23,7 @@
 #include "object.h"
 #include "diagramdata.h"
 #include "dia-layer.h"
+#include "dia-object-change.h"
 #include "dialib.h"
 #include "dia-io.h"
 #include "dia_xml.h"
@@ -45,6 +46,8 @@ typedef struct {
 
   DiagramData *diagram;   /* the real model: a DiagramData with a layer of
                            * DiaObjects, rendered via the Dia cairo renderer */
+  DiaObject  *selected;   /* current selection (Modify tool) */
+  Point       drag_origin; /* selected object's position at drag start */
   /* page transform (diagram cm -> widget px), recomputed each draw, so the
    * click handler can map pointer coordinates back to diagram coordinates. */
   double     page_x, page_y, page_scale;
@@ -174,6 +177,29 @@ draw_diagram (cairo_t *cr, DiagramData *diagram)
 }
 
 
+/* Draw small squares at each selected object's handles (the interactive
+ * renderer normally does this; we draw them directly here). cr is in cm. */
+static void
+draw_selection_handles (cairo_t *cr, DiagramData *diagram)
+{
+  const double s = 0.12;   /* half handle size, cm */
+
+  for (GList *l = diagram->selected; l; l = l->next) {
+    DiaObject *obj = l->data;
+
+    for (int i = 0; i < obj->num_handles; i++) {
+      Handle *h = obj->handles[i];
+      cairo_rectangle (cr, h->pos.x - s, h->pos.y - s, 2 * s, 2 * s);
+    }
+    cairo_set_source_rgb (cr, 0.10, 0.45, 0.90);
+    cairo_fill_preserve (cr);
+    cairo_set_source_rgb (cr, 1, 1, 1);
+    cairo_set_line_width (cr, 0.03);
+    cairo_stroke (cr);
+  }
+}
+
+
 static void
 draw_canvas (GtkDrawingArea *area,
              cairo_t        *cr,
@@ -219,6 +245,7 @@ draw_canvas (GtkDrawingArea *area,
   cairo_scale (cr, page_w / 20.0, page_w / 20.0);
   if (self && self->diagram) {
     draw_diagram (cr, self->diagram);
+    draw_selection_handles (cr, self->diagram);
   }
   cairo_restore (cr);
 }
@@ -360,6 +387,27 @@ apply_tool_at (DiaShell *self, Point p)
 }
 
 
+/* Modify tool: hit-test the object under @p and make it the selection. */
+static void
+select_at (DiaShell *self, Point p)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  DiaObject *obj = layer ? dia_layer_find_closest_object (layer, &p, 0.5) : NULL;
+  char buf[96];
+
+  data_remove_all_selected (self->diagram);
+  self->selected = obj;
+  if (obj) {
+    data_select (self->diagram, obj);
+    g_snprintf (buf, sizeof (buf), _("Selected %s"), obj->type->name);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("Nothing selected"));
+  }
+  gtk_widget_queue_draw (self->canvas);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
 static void
 on_canvas_pressed (GtkGestureClick *gesture,
                    int              n_press,
@@ -376,7 +424,47 @@ on_canvas_pressed (GtkGestureClick *gesture,
   p.x = (x - self->page_x) / self->page_scale;
   p.y = (y - self->page_y) / self->page_scale;
 
-  apply_tool_at (self, p);
+  /* Modify selects; the create tools place an object. */
+  if (g_strcmp0 (self->tool, "Modify") == 0) {
+    select_at (self, p);
+  } else {
+    apply_tool_at (self, p);
+  }
+}
+
+
+/* Drag with the Modify tool moves the selected object. */
+static void
+on_canvas_drag_begin (GtkGestureDrag *gesture,
+                      double          start_x,
+                      double          start_y,
+                      DiaShell       *self)
+{
+  if (g_strcmp0 (self->tool, "Modify") == 0 && self->selected) {
+    self->drag_origin = self->selected->position;
+  }
+}
+
+static void
+on_canvas_drag_update (GtkGestureDrag *gesture,
+                       double          offset_x,
+                       double          offset_y,
+                       DiaShell       *self)
+{
+  DiaObjectChange *change;
+  Point to;
+
+  if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected ||
+      self->page_scale <= 0.0) {
+    return;
+  }
+
+  to.x = self->drag_origin.x + offset_x / self->page_scale;
+  to.y = self->drag_origin.y + offset_y / self->page_scale;
+
+  change = dia_object_move (self->selected, &to);
+  g_clear_pointer (&change, dia_object_change_unref);
+  gtk_widget_queue_draw (self->canvas);
 }
 
 
@@ -575,6 +663,44 @@ on_uitest_roundtrip (GtkButton *button, DiaShell *self)
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
   gtk_widget_queue_draw (self->canvas);
   g_object_unref (file);
+}
+
+
+/* UI-test hook (DIA_UITEST): select the first object and move it, verifying the
+ * Modify tool's select + move logic without synthesized pointer input. */
+static void
+on_uitest_select_move (GtkButton *button, DiaShell *self)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  DiaObject *obj;
+  Point before, to;
+  DiaObjectChange *change;
+  char buf[96];
+
+  if (!layer || dia_layer_object_count (layer) == 0) {
+    diagram_create_object (self, "Standard - Box", (Point) { 5, 5 });
+    layer = dia_diagram_data_get_active_layer (self->diagram);
+  }
+
+  obj = dia_layer_object_get_nth (layer, 0);
+  before = obj->position;
+  to.x = before.x + 3.0;
+  to.y = before.y + 2.0;
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+  change = dia_object_move (obj, &to);
+  g_clear_pointer (&change, dia_object_change_unref);
+
+  if (obj->position.x != before.x || obj->position.y != before.y) {
+    g_snprintf (buf, sizeof (buf), _("select+move OK (now %.1f, %.1f)"),
+                obj->position.x, obj->position.y);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("select+move FAIL"));
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
 }
 
 
@@ -801,12 +927,16 @@ build_action_toolbar (DiaShell *self)
   if (g_getenv ("DIA_UITEST")) {
     GtkWidget *t = gtk_button_new_with_label ("uitest-apply-tool");
     GtkWidget *r = gtk_button_new_with_label ("uitest-roundtrip");
+    GtkWidget *m = gtk_button_new_with_label ("uitest-select-move");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
+    g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
+    gtk_box_append (GTK_BOX (bar), m);
   }
 
   return bar;
@@ -887,6 +1017,7 @@ build_canvas_area (DiaShell *self)
   GtkWidget *hscroll = gtk_scrollbar_new (GTK_ORIENTATION_HORIZONTAL, NULL);
   GtkEventController *motion;
   GtkGesture *click;
+  GtkGesture *drag;
 
   self->canvas = canvas;
 
@@ -915,6 +1046,11 @@ build_canvas_area (DiaShell *self)
   click = gtk_gesture_click_new ();
   g_signal_connect (click, "pressed", G_CALLBACK (on_canvas_pressed), self);
   gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (click));
+
+  drag = gtk_gesture_drag_new ();
+  g_signal_connect (drag, "drag-begin", G_CALLBACK (on_canvas_drag_begin), self);
+  g_signal_connect (drag, "drag-update", G_CALLBACK (on_canvas_drag_update), self);
+  gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (drag));
 
   gtk_grid_attach (GTK_GRID (grid), origin, 0, 0, 1, 1);
   gtk_grid_attach (GTK_GRID (grid), hruler, 1, 0, 1, 1);
