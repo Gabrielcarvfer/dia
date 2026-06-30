@@ -1791,6 +1791,69 @@ action_to_back (GSimpleAction *a, GVariant *p, gpointer data)
   restack_selected (data, FALSE);
 }
 
+/* Align the selected objects' bounding boxes by edge or centre. */
+typedef enum {
+  ALIGN_LEFT, ALIGN_RIGHT, ALIGN_TOP, ALIGN_BOTTOM, ALIGN_CENTER_H, ALIGN_CENTER_V
+} AlignMode;
+
+static void
+align_selected (DiaShell *self, AlignMode mode)
+{
+  GList *sel = self->diagram->selected;
+  double minl = G_MAXDOUBLE, maxr = -G_MAXDOUBLE;
+  double mint = G_MAXDOUBLE, maxb = -G_MAXDOUBLE;
+
+  if (!sel || !sel->next) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Select two or more objects to align"));
+    return;
+  }
+  for (GList *l = sel; l; l = l->next) {
+    DiaRectangle *bb = &((DiaObject *) l->data)->bounding_box;
+    minl = MIN (minl, bb->left);   maxr = MAX (maxr, bb->right);
+    mint = MIN (mint, bb->top);    maxb = MAX (maxb, bb->bottom);
+  }
+  for (GList *l = sel; l; l = l->next) {
+    DiaObject *obj = l->data;
+    DiaRectangle *bb = &obj->bounding_box;
+    Point from = obj->position;
+    Point to = from;
+    DiaObjectChange *ch;
+
+    switch (mode) {
+      case ALIGN_LEFT:     to.x += minl - bb->left;   break;
+      case ALIGN_RIGHT:    to.x += maxr - bb->right;  break;
+      case ALIGN_TOP:      to.y += mint - bb->top;    break;
+      case ALIGN_BOTTOM:   to.y += maxb - bb->bottom; break;
+      case ALIGN_CENTER_H: to.x += (minl + maxr) / 2 - (bb->left + bb->right) / 2; break;
+      case ALIGN_CENTER_V: to.y += (mint + maxb) / 2 - (bb->top + bb->bottom) / 2; break;
+      default: break;
+    }
+    ch = dia_object_move (obj, &to);
+    g_clear_pointer (&ch, dia_object_change_unref);
+    update_connections_for (obj);
+    if (to.x != from.x || to.y != from.y) {
+      push_op (self, OP_MOVE, obj, from, to);
+    }
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Aligned"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
+static void
+action_align (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  const char *m = p ? g_variant_get_string (p, NULL) : "";
+  AlignMode mode = ALIGN_LEFT;
+
+  if (g_strcmp0 (m, "right") == 0)        mode = ALIGN_RIGHT;
+  else if (g_strcmp0 (m, "top") == 0)     mode = ALIGN_TOP;
+  else if (g_strcmp0 (m, "bottom") == 0)  mode = ALIGN_BOTTOM;
+  else if (g_strcmp0 (m, "center-h") == 0) mode = ALIGN_CENTER_H;
+  else if (g_strcmp0 (m, "center-v") == 0) mode = ALIGN_CENTER_V;
+  align_selected (data, mode);
+}
+
 static void
 action_new (GSimpleAction *a, GVariant *p, gpointer data)
 {
@@ -2706,6 +2769,39 @@ on_uitest_zorder (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): align two boxes with different left edges to the
+ * left and confirm their left edges match. */
+static void
+on_uitest_align (GtkButton *button, DiaShell *self)
+{
+  DiaObject *a, *b;
+  gboolean ok;
+  char buf[96];
+
+  a = diagram_create_object (self, "Standard - Box", (Point) { 30, 30 });
+  b = diagram_create_object (self, "Standard - Box", (Point) { 40, 35 });
+  if (a) push_op (self, OP_CREATE, a, (Point) { 30, 30 }, (Point) { 30, 30 });
+  if (b) push_op (self, OP_CREATE, b, (Point) { 40, 35 }, (Point) { 40, 35 });
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, a);
+  data_select (self->diagram, b);
+  self->selected = b;
+  align_selected (self, ALIGN_LEFT);
+
+  ok = a && b
+       && fabs (a->bounding_box.left - b->bounding_box.left) < 0.01;
+  if (ok) {
+    g_snprintf (buf, sizeof (buf), _("align OK (%.2f)"), a->bounding_box.left);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("align FAIL (%.2f, %.2f)"),
+                a ? a->bounding_box.left : 0.0, b ? b->bounding_box.left : 0.0);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -2893,6 +2989,7 @@ static const GActionEntry dia_actions[] = {
   { "ungroup",    action_ungroup,    NULL, NULL, NULL },
   { "to-front",   action_to_front,   NULL, NULL, NULL },
   { "to-back",    action_to_back,    NULL, NULL, NULL },
+  { "align",      action_align,      "s",  NULL, NULL },
   { "delete",     action_delete,     NULL, NULL, NULL },
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
   { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
@@ -2976,6 +3073,17 @@ build_primary_menu_button (void)
   g_menu_append (edit, _("_Ungroup"), "dia.ungroup");
   g_menu_append (edit, _("Bring to _Front"), "dia.to-front");
   g_menu_append (edit, _("Send to _Back"), "dia.to-back");
+  {
+    GMenu *align = g_menu_new ();
+    g_menu_append (align, _("Left"), "dia.align::left");
+    g_menu_append (align, _("Right"), "dia.align::right");
+    g_menu_append (align, _("Top"), "dia.align::top");
+    g_menu_append (align, _("Bottom"), "dia.align::bottom");
+    g_menu_append (align, _("Center Horizontally"), "dia.align::center-h");
+    g_menu_append (align, _("Center Vertically"), "dia.align::center-v");
+    g_menu_append_submenu (edit, _("_Align"), G_MENU_MODEL (align));
+    g_object_unref (align);
+  }
   g_menu_append (edit, _("_Delete"), "dia.delete");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (edit));
 
@@ -3179,6 +3287,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *ms = gtk_button_new_with_label ("uitest-multiselect");
     GtkWidget *gr = gtk_button_new_with_label ("uitest-group");
     GtkWidget *zo = gtk_button_new_with_label ("uitest-zorder");
+    GtkWidget *al = gtk_button_new_with_label ("uitest-align");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -3198,6 +3307,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (ms), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (gr), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (zo), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (al), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -3217,6 +3327,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (ms, "clicked", G_CALLBACK (on_uitest_multiselect), self);
     g_signal_connect (gr, "clicked", G_CALLBACK (on_uitest_group), self);
     g_signal_connect (zo, "clicked", G_CALLBACK (on_uitest_zorder), self);
+    g_signal_connect (al, "clicked", G_CALLBACK (on_uitest_align), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -3236,6 +3347,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), ms);
     gtk_box_append (GTK_BOX (bar), gr);
     gtk_box_append (GTK_BOX (bar), zo);
+    gtk_box_append (GTK_BOX (bar), al);
   }
 
   return bar;

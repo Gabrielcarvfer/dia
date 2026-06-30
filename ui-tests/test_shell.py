@@ -411,6 +411,16 @@ def main():
         ok = any('zorder OK' in (lab.name or '') for lab in labels)
         check("Bring-to-front / send-to-back reorders objects", ok)
 
+    # 3v. Align: two boxes aligned left share a left edge.
+    al = find(app, name='uitest-align', roleName='push button')
+    check("DIA_UITEST align trigger present", al)
+    if al:
+        do_click(al)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('align OK' in (lab.name or '') for lab in labels)
+        check("Align left lines up the left edges", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
