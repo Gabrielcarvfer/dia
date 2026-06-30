@@ -99,7 +99,8 @@ typedef struct {
   GtkWidget *layers_panel;          /* right sidebar, hideable to free space */
   GtkWidget *layers_list;           /* GtkListBox of the diagram's layers */
   GtkWidget *sheet_box;             /* FlowBox of the current sheet's shapes */
-  int        sheet_index;           /* selected sheet (see sheets[]) */
+  int        sheet_index;           /* selected sheet (index into sheet_cats) */
+  GList     *sheet_cats;            /* loaded shape-category names (sorted) */
   /* Line attributes applied to new objects (and the current selection). */
   double       line_width;          /* cm */
   DiaLineStyle line_style;
@@ -122,6 +123,7 @@ static void
 register_standard_object_types (void)
 {
   dia_port_register_objects ();
+  dia_port_load_shapes ();   /* the .shape libraries (flowchart/Cisco/UML/…) */
 }
 
 
@@ -3753,27 +3755,13 @@ make_preview_dropdown (const char * const *labels, gpointer draw_func,
 
 /* --- shapes drawer (object sheets) -------------------------------------- */
 
-/* The object sheets shown below the toolbox. The standard set is the palette;
- * these are the extra registered sets (flowchart/network/ER). */
-static const struct {
-  const char *sheet;
-  const char *types[6];   /* NULL-terminated */
-} sheets[] = {
-  { N_("Flowchart"), { "Flowchart - Box", "Flowchart - Diamond",
-                       "Flowchart - Ellipse", "Flowchart - Parallelogram", NULL } },
-  { N_("Network"),   { "Network - Bus", "Network - Base Station",
-                       "Network - Radio Cell", "Network - WAN Link", NULL } },
-  { N_("ER"),        { "ER - Entity", "ER - Relationship",
-                       "ER - Attribute", "ER - Participation", NULL } },
-};
-
 /* Clicking a shape makes it the active create tool (apply_tool_at falls back to
  * a registered type name when it isn't a palette tool). */
 static void
 on_sheet_shape_clicked (GtkButton *btn, DiaShell *self)
 {
   const char *tn = g_object_get_data (G_OBJECT (btn), "type-name");
-  char buf[96];
+  char buf[128];
 
   if (!tn) {
     return;
@@ -3783,40 +3771,52 @@ on_sheet_shape_clicked (GtkButton *btn, DiaShell *self)
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
-/* Rebuild the shape buttons for the currently selected sheet. */
+/* Make a small image of an object type's icon (XPM pixmap or icon file). */
+static GtkWidget *
+shape_icon (DiaObjectType *t)
+{
+  GtkWidget *img = NULL;
+
+  if (t && t->pixmap) {
+    GdkPixbuf *pb = gdk_pixbuf_new_from_xpm_data (t->pixmap);
+    img = gtk_image_new_from_pixbuf (pb);
+    g_clear_object (&pb);
+  } else if (t && t->pixmap_file) {
+    GdkPixbuf *pb = gdk_pixbuf_new_from_file (t->pixmap_file, NULL);
+    if (pb) {
+      img = gtk_image_new_from_pixbuf (pb);
+      g_clear_object (&pb);
+    }
+  }
+  if (!img) {
+    img = gtk_image_new_from_icon_name ("image-x-generic-symbolic");
+  }
+  gtk_image_set_pixel_size (GTK_IMAGE (img), 24);
+  return img;
+}
+
+/* Rebuild the shape buttons for the currently selected sheet (category). */
 static void
 rebuild_sheet_shapes (DiaShell *self)
 {
   GtkFlowBox *fb = GTK_FLOW_BOX (self->sheet_box);
-  const char * const *types;
+  const char *cat = g_list_nth_data (self->sheet_cats, self->sheet_index);
+  GPtrArray *names = cat ? dia_port_shapes_in_category (cat) : NULL;
   GtkWidget *child;
 
   while ((child = gtk_widget_get_first_child (GTK_WIDGET (fb))) != NULL) {
     gtk_flow_box_remove (fb, child);
   }
-  if (self->sheet_index < 0 || self->sheet_index >= (int) G_N_ELEMENTS (sheets)) {
-    return;
-  }
-  types = sheets[self->sheet_index].types;
-  for (int i = 0; types[i]; i++) {
-    DiaObjectType *t = object_get_type ((char *) types[i]);
+  for (guint i = 0; names && i < names->len; i++) {
+    const char *tn = g_ptr_array_index (names, i);
+    DiaObjectType *t = object_get_type ((char *) tn);
     GtkWidget *btn = gtk_button_new ();
-    GtkWidget *img;
 
-    if (t && t->pixmap) {
-      GdkPixbuf *pb = gdk_pixbuf_new_from_xpm_data (t->pixmap);
-      img = gtk_image_new_from_pixbuf (pb);
-      g_clear_object (&pb);
-    } else {
-      img = gtk_image_new_from_icon_name ("image-x-generic-symbolic");
-    }
-    gtk_image_set_pixel_size (GTK_IMAGE (img), 22);
-    gtk_button_set_child (GTK_BUTTON (btn), img);
+    gtk_button_set_child (GTK_BUTTON (btn), shape_icon (t));
     gtk_button_set_has_frame (GTK_BUTTON (btn), FALSE);
-    gtk_widget_set_tooltip_text (btn, types[i]);
-    set_a11y_label (btn, types[i]);
-    g_object_set_data_full (G_OBJECT (btn), "type-name",
-                            g_strdup (types[i]), g_free);
+    gtk_widget_set_tooltip_text (btn, tn);
+    set_a11y_label (btn, tn);
+    g_object_set_data_full (G_OBJECT (btn), "type-name", g_strdup (tn), g_free);
     g_signal_connect (btn, "clicked",
                       G_CALLBACK (on_sheet_shape_clicked), self);
     gtk_flow_box_insert (fb, btn, -1);
@@ -3834,15 +3834,16 @@ static GtkWidget *
 build_sheets (DiaShell *self)
 {
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
-  const char *names[G_N_ELEMENTS (sheets) + 1];
+  GtkWidget *scroller = gtk_scrolled_window_new ();
+  GtkStringList *model = gtk_string_list_new (NULL);
   GtkWidget *dd;
 
-  for (gsize i = 0; i < G_N_ELEMENTS (sheets); i++) {
-    names[i] = gettext (sheets[i].sheet);
+  /* Build the sheet dropdown from the loaded shape categories. */
+  self->sheet_cats = dia_port_shape_categories ();
+  for (GList *l = self->sheet_cats; l; l = l->next) {
+    gtk_string_list_append (model, l->data);
   }
-  names[G_N_ELEMENTS (sheets)] = NULL;
-
-  dd = gtk_drop_down_new_from_strings (names);
+  dd = gtk_drop_down_new (G_LIST_MODEL (model), NULL);
   gtk_drop_down_set_selected (GTK_DROP_DOWN (dd), 0);
   set_a11y_label (dd, "sheet");
   g_signal_connect (dd, "notify::selected", G_CALLBACK (on_sheet_changed), self);
@@ -3854,8 +3855,15 @@ build_sheets (DiaShell *self)
   self->sheet_index = 0;
   rebuild_sheet_shapes (self);
 
+  /* Categories can hold hundreds of shapes; scroll within a bounded height. */
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroller),
+                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroller), self->sheet_box);
+  gtk_widget_set_vexpand (scroller, TRUE);
+  gtk_widget_set_size_request (scroller, -1, 140);
+
   gtk_box_append (GTK_BOX (box), dd);
-  gtk_box_append (GTK_BOX (box), self->sheet_box);
+  gtk_box_append (GTK_BOX (box), scroller);
   return box;
 }
 
@@ -4336,6 +4344,7 @@ dia_shell_free (gpointer data)
   DiaShell *self = data;
   g_clear_pointer (&self->undo, g_ptr_array_unref);
   g_clear_pointer (&self->drag_moves, g_array_unref);
+  g_clear_pointer (&self->sheet_cats, g_list_free);   /* strings owned elsewhere */
   clear_clipboard (self);
   g_clear_object (&self->diagram);
   g_free (self);

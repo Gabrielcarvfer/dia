@@ -18,7 +18,8 @@ libdia_objects_sources = files(
   objs / 'standard' / 'zigzagline.c',
   objs / 'standard' / 'polyline.c',
   objs / 'standard' / 'bezier.c',
-  objs / 'standard' / 'standard.c',   # keeps the only dia_plugin_init we link
+  # standard.c (just a dia_plugin_init) dropped: we register manually and its
+  # dia_plugin_init would clash with custom.c's below.
   objs / 'standard' / 'image.c',
   objs / 'standard' / 'outline.c',
   objs / 'standard' / 'polygon.c',
@@ -38,6 +39,14 @@ libdia_objects_sources = files(
   objs / 'ER' / 'entity.c',
   objs / 'ER' / 'participation.c',
   objs / 'ER' / 'relationship.c',
+  # custom-shapes engine: loads .shape XML files as object types (custom.c's
+  # dia_plugin_init is the only one linked now and is left unused; we call
+  # custom_object_load ourselves from register-objects.c).
+  objs / 'custom' / 'custom.c',
+  objs / 'custom' / 'custom_object.c',
+  objs / 'custom' / 'custom_util.c',
+  objs / 'custom' / 'shape_info.c',
+  objs / 'custom' / 'shape_typeinfo.c',
   # shared registration (used by the skeleton and the object tests)
   meson.current_source_dir() / 'register-objects.c',
 )
@@ -45,14 +54,18 @@ libdia_objects_sources = files(
 libdia_objects = static_library(
   'dia-objects',
   libdia_objects_sources,
-  include_directories: include_directories('../objects/standard'),
-  dependencies: [libdia_core_dep],
-  c_args: ['-DLIBDIA_COMPILATION', '-Werror=implicit-function-declaration'],
+  include_directories: include_directories('../objects/standard', '../objects/custom'),
+  dependencies: [libdia_core_dep, gmodule_dep],
+  c_args: [
+    '-DLIBDIA_COMPILATION', '-Werror=implicit-function-declaration',
+    # source location of the bundled .shape / .sheet trees, for the dev build
+    '-DDIA_SHAPES_DIR="@0@"'.format(meson.project_source_root() / 'shapes'),
+  ],
 )
 
 libdia_objects_dep = declare_dependency(
   link_with: libdia_objects,
   # expose this dir so callers can #include "register-objects.h"
   include_directories: include_directories('.'),
-  dependencies: [libdia_core_dep],
+  dependencies: [libdia_core_dep, gmodule_dep],
 )

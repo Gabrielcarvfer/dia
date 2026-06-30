@@ -65,3 +65,112 @@ dia_port_register_objects (void)
 
   object_register_type (&group_type);   /* so groups can be saved/loaded */
 }
+
+
+/* --- custom shapes (.shape files) -------------------------------------- */
+
+/* custom.c exports this (no header); loads one .shape file into a new type. */
+extern gboolean custom_object_load (char *filename, DiaObjectType **otype);
+
+/* Loading all ~780 .shape files up front costs ~10s at startup, so we load
+ * lazily per category: at startup we only SCAN the directory tree (cheap),
+ * recording each category's .shape file paths; the shapes in a category are
+ * custom_object_load()ed + registered the first time the category is opened. */
+static GHashTable *shape_files = NULL;   /* category -> GPtrArray<char* path> */
+static GHashTable *shape_types = NULL;   /* category -> GPtrArray<char* name> */
+
+static void
+scan_shapes_in (const char *dir, const char *category)
+{
+  GDir *dp = g_dir_open (dir, 0, NULL);
+  const char *name;
+
+  if (!dp) {
+    return;
+  }
+  while ((name = g_dir_read_name (dp)) != NULL) {
+    char *path = g_build_filename (dir, name, NULL);
+
+    if (g_file_test (path, G_FILE_TEST_IS_DIR)) {
+      scan_shapes_in (path, category);     /* recurse; keep the top category */
+      g_free (path);
+    } else if (g_str_has_suffix (name, ".shape")) {
+      GPtrArray *arr = g_hash_table_lookup (shape_files, category);
+
+      if (!arr) {
+        arr = g_ptr_array_new_with_free_func (g_free);
+        g_hash_table_insert (shape_files, g_strdup (category), arr);
+      }
+      g_ptr_array_add (arr, path);   /* takes ownership of path */
+    } else {
+      g_free (path);
+    }
+  }
+  g_dir_close (dp);
+}
+
+void
+dia_port_load_shapes (void)
+{
+  GDir *dp;
+  const char *name;
+
+  if (shape_files) {
+    return;   /* scan once */
+  }
+  shape_files = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
+                                       (GDestroyNotify) g_ptr_array_unref);
+  shape_types = g_hash_table_new (g_str_hash, g_str_equal);
+
+  dp = g_dir_open (DIA_SHAPES_DIR, 0, NULL);
+  if (!dp) {
+    return;
+  }
+  /* each top-level subdirectory of shapes/ is a category (a "sheet"). */
+  while ((name = g_dir_read_name (dp)) != NULL) {
+    char *path = g_build_filename (DIA_SHAPES_DIR, name, NULL);
+
+    if (g_file_test (path, G_FILE_TEST_IS_DIR)) {
+      scan_shapes_in (path, name);
+    }
+    g_free (path);
+  }
+  g_dir_close (dp);
+}
+
+GList *
+dia_port_shape_categories (void)
+{
+  if (!shape_files) {
+    return NULL;
+  }
+  return g_list_sort (g_hash_table_get_keys (shape_files),
+                      (GCompareFunc) g_strcmp0);
+}
+
+GPtrArray *
+dia_port_shapes_in_category (const char *category)
+{
+  GPtrArray *types, *paths;
+
+  if (!shape_types) {
+    return NULL;
+  }
+  types = g_hash_table_lookup (shape_types, category);
+  if (types) {
+    return types;   /* already loaded */
+  }
+  /* first access: load + register every shape in this category */
+  types = g_ptr_array_new ();
+  g_hash_table_insert (shape_types, g_strdup (category), types);
+  paths = g_hash_table_lookup (shape_files, category);
+  for (guint i = 0; paths && i < paths->len; i++) {
+    DiaObjectType *ot = NULL;
+
+    if (custom_object_load (g_ptr_array_index (paths, i), &ot) && ot != NULL) {
+      object_register_type (ot);
+      g_ptr_array_add (types, ot->name);
+    }
+  }
+  return types;
+}
