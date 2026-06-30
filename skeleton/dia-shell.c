@@ -26,6 +26,7 @@
 #include "font.h"
 #include "dia-enums.h"
 #include "object.h"
+#include "diamenu.h"
 #include "connectionpoint.h"
 #include "group.h"
 #include "diagramdata.h"
@@ -57,6 +58,7 @@ typedef struct {
   GtkWidget *status_msg;
   GtkWidget *pos_label;
   GtkWidget *zoom_label;
+  GtkWidget *ctx_menu;    /* canvas right-click popover (parented to canvas) */
   double     cursor_x, cursor_y;  /* pointer position over the canvas (px) */
   gboolean   cursor_valid;
   double     zoom;        /* 1.0 == 100% */
@@ -88,6 +90,8 @@ typedef struct {
    * page_{x,y,scale} is the derived device transform (px of cm 0, and px/cm) so
    * the click/motion handlers and rulers can map between px and cm. */
   double     origin_x, origin_y;    /* cm at the viewport's top-left pixel */
+  gboolean   panning;               /* Scroll tool: dragging to pan */
+  double     pan_x0, pan_y0;        /* origin at the start of a pan drag */
   double     page_x, page_y, page_scale;
   /* The drawing page, in cm. page_infinite => unbounded scrollable workspace. */
   double     page_w_cm, page_h_cm;
@@ -564,6 +568,8 @@ clamp_origin_to_page (DiaShell *self)
 }
 
 static void update_zoom (DiaShell *self, double factor);
+static void zoom_about (DiaShell *self, double factor, double cx, double cy);
+static void refresh_layers_list (DiaShell *self);
 
 /* Mouse wheel: Ctrl = zoom, Shift = horizontal scroll, otherwise vertical. */
 static gboolean
@@ -1031,9 +1037,10 @@ snap_to_grid (DiaShell *self, Point *p)
 
 
 /* Apply the current tool at diagram point @p: create a real DiaObject (create
- * tools) or just report the position. Shared by the canvas gesture and the
- * UI-test trigger so both exercise the same code path. */
-static void
+ * tools) or just report the position. Returns the created object (or NULL).
+ * Shared by the canvas gesture and the UI-test trigger so both exercise the
+ * same code path. */
+static DiaObject *
 apply_tool_at (DiaShell *self, Point p)
 {
   char buf[128];
@@ -1052,6 +1059,7 @@ apply_tool_at (DiaShell *self, Point p)
     apply_line_props (self, obj);   /* honour the toolbox line attributes */
     push_op (self, OP_CREATE, obj, p, p);
     gtk_widget_queue_draw (self->canvas);
+    refresh_layers_list (self);     /* the layer's object list grew */
     g_snprintf (buf, sizeof (buf),
                 _("%s created at (%.1f, %.1f) — %u object(s)"),
                 self->tool, p.x, p.y, diagram_object_count (self));
@@ -1061,6 +1069,7 @@ apply_tool_at (DiaShell *self, Point p)
   }
 
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  return obj;
 }
 
 
@@ -1125,6 +1134,7 @@ delete_selected (DiaShell *self)
               count, diagram_object_count (self));
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
   gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);     /* the layer's object list shrank */
 }
 
 
@@ -1217,7 +1227,23 @@ on_canvas_pressed (GtkGestureClick *gesture,
   p.x = (x - self->page_x) / self->page_scale;
   p.y = (y - self->page_y) / self->page_scale;
 
-  if (g_strcmp0 (self->tool, "Modify") == 0) {
+  if (g_strcmp0 (self->tool, "Magnify") == 0) {
+    /* Magnifying glass: click zooms in about the point, Shift/Ctrl zooms out. */
+    GdkModifierType m = gtk_event_controller_get_current_event_state (
+                          GTK_EVENT_CONTROLLER (gesture));
+    gboolean out = (m & (GDK_SHIFT_MASK | GDK_CONTROL_MASK)) != 0;
+
+    zoom_about (self, out ? 1.0 / 1.5 : 1.5, p.x, p.y);
+  } else if (g_strcmp0 (self->tool, "Text edit") == 0) {
+    /* Edit the text of the object under the cursor. */
+    DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+    DiaObject *obj = layer ? dia_layer_find_closest_object (layer, &p, 0.5)
+                           : NULL;
+    if (obj) {
+      select_at (self, p, FALSE);
+      open_text_editor (self, obj);
+    }
+  } else if (g_strcmp0 (self->tool, "Modify") == 0) {
     if (n_press >= 2) {
       /* Double-click edits the selected object's text (the first click of the
        * sequence already selected it). */
@@ -1230,8 +1256,185 @@ on_canvas_pressed (GtkGestureClick *gesture,
       select_at (self, p, (m & GDK_SHIFT_MASK) != 0);
     }
   } else {
-    apply_tool_at (self, p);
+    DiaObject *created = apply_tool_at (self, p);
+
+    /* The Text tool drops an (initially empty) text object; open its editor
+     * straight away so the user can type, and leave it selected. */
+    if (created && g_strcmp0 (self->tool, "Text") == 0) {
+      data_remove_all_selected (self->diagram);
+      data_select (self->diagram, created);
+      self->selected = created;
+      open_text_editor (self, created);
+    }
   }
+}
+
+
+/* One row in the dynamic right-click popover that invokes an object's own
+ * DiaMenu item (Add Corner, Delete Segment, …) at the click position. */
+typedef struct {
+  DiaShell    *self;
+  DiaObject   *obj;
+  DiaMenuItem *item;   /* points into the object's static DiaMenu */
+  Point        pos;
+} ObjMenuClick;
+
+static void
+popover_popdown (GtkWidget *w)
+{
+  GtkWidget *pop = gtk_widget_get_ancestor (w, GTK_TYPE_POPOVER);
+
+  if (pop) {
+    gtk_popover_popdown (GTK_POPOVER (pop));
+  }
+}
+
+static void
+on_obj_menu_item (GtkButton *btn, gpointer data)
+{
+  ObjMenuClick *c = data;
+  DiaObjectChange *change;
+
+  if (c->item->callback) {
+    /* The callback applies the change immediately and returns it. We don't
+     * thread object-menu edits through the skeleton's simple undo stack yet,
+     * so just release it. */
+    change = c->item->callback (c->obj, &c->pos, c->item->callback_data);
+    g_clear_pointer (&change, dia_object_change_unref);
+    update_connections_for (c->obj);
+    gtk_widget_queue_draw (c->self->canvas);
+    refresh_layers_list (c->self);
+  }
+  popover_popdown (GTK_WIDGET (btn));
+}
+
+/* Activate a "dia.*" GAction (installed on the window content) then close. */
+static void
+on_ctx_action (GtkButton *btn, gpointer data)
+{
+  DiaShell *self = data;
+  const char *action = g_object_get_data (G_OBJECT (btn), "dia-action");
+  const char *target = g_object_get_data (G_OBJECT (btn), "dia-target");
+
+  if (action) {
+    gtk_widget_activate_action (GTK_WIDGET (self->canvas), action,
+                                target ? "s" : NULL, target);
+  }
+  popover_popdown (GTK_WIDGET (btn));
+}
+
+static GtkWidget *
+ctx_button (const char *label)
+{
+  GtkWidget *b = gtk_button_new_with_mnemonic (label);
+  GtkWidget *lbl = gtk_button_get_child (GTK_BUTTON (b));
+
+  gtk_button_set_has_frame (GTK_BUTTON (b), FALSE);
+  if (GTK_IS_LABEL (lbl)) {
+    gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
+  }
+  return b;
+}
+
+static void
+ctx_add_action (GtkWidget *box, DiaShell *self, const char *label,
+                const char *action, const char *target)
+{
+  GtkWidget *b = ctx_button (label);
+
+  g_object_set_data (G_OBJECT (b), "dia-action", (gpointer) action);
+  g_object_set_data (G_OBJECT (b), "dia-target", (gpointer) target);
+  g_signal_connect (b, "clicked", G_CALLBACK (on_ctx_action), self);
+  gtk_box_append (GTK_BOX (box), b);
+}
+
+/* Secondary (right) button: select what's under the cursor, then pop up a
+ * context menu there. The menu leads with the object's OWN DiaMenu (so e.g. a
+ * polygon offers "Add Corner" at the click point), followed by the generic
+ * edit/arrange actions. */
+static void
+on_canvas_secondary (GtkGestureClick *gesture,
+                     int              n_press,
+                     double           x,
+                     double           y,
+                     DiaShell        *self)
+{
+  GdkRectangle r = { (int) x, (int) y, 1, 1 };
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+  GtkWidget *pop;
+  DiaObject *obj = NULL;
+  Point p = { 0, 0 };
+
+  gtk_widget_grab_focus (self->canvas);
+
+  if (self->page_scale > 0.0) {
+    DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+
+    p.x = (x - self->page_x) / self->page_scale;
+    p.y = (y - self->page_y) / self->page_scale;
+    obj = layer ? dia_layer_find_closest_object (layer, &p, 0.5) : NULL;
+
+    /* Select the object under the cursor unless it's already in the selection. */
+    if (obj && !(self->diagram->selected
+                 && g_list_find (self->diagram->selected, obj))) {
+      select_at (self, p, FALSE);
+    }
+  }
+
+  /* 1. the object's own menu (Add/Delete Corner, Add Segment, …) */
+  if (obj) {
+    DiaMenu *m = dia_object_get_menu (obj, &p);
+
+    for (int i = 0; m && i < m->num_items; i++) {
+      DiaMenuItem *it = &m->items[i];
+      GtkWidget *b;
+      ObjMenuClick *c;
+
+      if (!it->text || !it->text[0]) {
+        continue;   /* separator */
+      }
+      b = ctx_button (it->text);
+      gtk_widget_set_sensitive (b, (it->active & DIAMENU_ACTIVE) != 0);
+
+      c = g_new0 (ObjMenuClick, 1);
+      c->self = self;
+      c->obj = obj;
+      c->item = it;
+      c->pos = p;
+      g_object_set_data_full (G_OBJECT (b), "omc", c, g_free);
+      g_signal_connect (b, "clicked", G_CALLBACK (on_obj_menu_item), c);
+      gtk_box_append (GTK_BOX (box), b);
+    }
+    if (m && m->num_items > 0) {
+      gtk_box_append (GTK_BOX (box),
+                      gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
+    }
+  }
+
+  /* 2. generic edit / arrange actions (map to the "dia" action group) */
+  ctx_add_action (box, self, _("Cu_t"), "dia.cut", NULL);
+  ctx_add_action (box, self, _("_Copy"), "dia.copy", NULL);
+  ctx_add_action (box, self, _("_Paste"), "dia.paste", NULL);
+  ctx_add_action (box, self, _("_Delete"), "dia.delete", NULL);
+  gtk_box_append (GTK_BOX (box),
+                  gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
+  ctx_add_action (box, self, _("Bring to _Front"), "dia.to-front", NULL);
+  ctx_add_action (box, self, _("Send to _Back"), "dia.to-back", NULL);
+  ctx_add_action (box, self, _("_Group"), "dia.group", NULL);
+  ctx_add_action (box, self, _("_Ungroup"), "dia.ungroup", NULL);
+
+  pop = gtk_popover_new ();
+  gtk_popover_set_has_arrow (GTK_POPOVER (pop), FALSE);
+  gtk_popover_set_child (GTK_POPOVER (pop), box);
+  gtk_widget_set_parent (pop, self->canvas);
+  gtk_popover_set_pointing_to (GTK_POPOVER (pop), &r);
+
+  /* Replace any previous popover (rebuilt per click since items vary). */
+  if (self->ctx_menu && GTK_IS_WIDGET (self->ctx_menu)) {
+    gtk_widget_unparent (self->ctx_menu);
+  }
+  self->ctx_menu = pop;
+  gtk_popover_popup (GTK_POPOVER (pop));
 }
 
 
@@ -1257,10 +1460,19 @@ on_canvas_drag_begin (GtkGestureDrag *gesture,
   self->drag_handle = NULL;
   self->drag_handle_idx = -1;
   self->rubber_band = FALSE;
+  self->panning = FALSE;
   if (self->drag_moves) {
     g_array_set_size (self->drag_moves, 0);
   } else {
     self->drag_moves = g_array_new (FALSE, FALSE, sizeof (MoveItem));
+  }
+
+  /* Scroll tool: a drag pans the view; remember where the origin started. */
+  if (g_strcmp0 (self->tool, "Scroll") == 0) {
+    self->panning = TRUE;
+    self->pan_x0 = self->origin_x;
+    self->pan_y0 = self->origin_y;
+    return;
   }
 
   if (g_strcmp0 (self->tool, "Modify") != 0 || self->page_scale <= 0.0) {
@@ -1311,6 +1523,19 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
 {
   DiaObjectChange *change;
   Point to;
+
+  if (self->panning) {
+    /* Pan: move the view with the cursor (drag right -> see further left). */
+    double pxcm = shell_pxcm (self);
+
+    self->origin_x = self->pan_x0 - offset_x / pxcm;
+    self->origin_y = self->pan_y0 - offset_y / pxcm;
+    clamp_origin_to_page (self);
+    update_transform (self);
+    update_scrollbars (self);
+    redraw_canvas_and_rulers (self);
+    return;
+  }
 
   if (g_strcmp0 (self->tool, "Modify") != 0 || self->page_scale <= 0.0) {
     return;
@@ -1380,6 +1605,11 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
 {
   DiaObjectChange *change;
   Point to;
+
+  if (self->panning) {
+    self->panning = FALSE;   /* origin already updated live during the drag */
+    return;
+  }
 
   if (g_strcmp0 (self->tool, "Modify") != 0 || self->page_scale <= 0.0) {
     return;
@@ -1506,26 +1736,23 @@ on_uitest_apply_tool (GtkButton *button, DiaShell *self)
 }
 
 
+/* Multiply the zoom by @factor, keeping the diagram point (@cx, @cy) [cm]
+ * pinned under the same pixel. */
 static void
-update_zoom (DiaShell *self, double factor)
+zoom_about (DiaShell *self, double factor, double cx, double cy)
 {
   char buf[32];
-  int cw = gtk_widget_get_width (self->canvas);
-  int ch = gtk_widget_get_height (self->canvas);
   double old_pxcm = shell_pxcm (self);
-  double cx, cy, new_pxcm;
+  double new_pxcm;
+  double px, py;   /* pixel offset of (cx,cy) from the viewport top-left */
 
-  if (cw <= 1) cw = 600;
-  if (ch <= 1) ch = 400;
-
-  /* Zoom about the centre of the viewport: keep that cm point fixed. */
-  cx = self->origin_x + (cw / old_pxcm) / 2.0;
-  cy = self->origin_y + (ch / old_pxcm) / 2.0;
+  px = (cx - self->origin_x) * old_pxcm;
+  py = (cy - self->origin_y) * old_pxcm;
 
   self->zoom = CLAMP (self->zoom * factor, 0.1, 20.0);
   new_pxcm = shell_pxcm (self);
-  self->origin_x = cx - (cw / new_pxcm) / 2.0;
-  self->origin_y = cy - (ch / new_pxcm) / 2.0;
+  self->origin_x = cx - px / new_pxcm;
+  self->origin_y = cy - py / new_pxcm;
 
   clamp_origin_to_page (self);   /* keep the page edge in view */
   update_transform (self);
@@ -1534,6 +1761,22 @@ update_zoom (DiaShell *self, double factor)
   g_snprintf (buf, sizeof (buf), "%.0f%%", self->zoom * 100.0);
   gtk_editable_set_text (GTK_EDITABLE (self->zoom_label), buf);
   redraw_canvas_and_rulers (self);
+}
+
+static void
+update_zoom (DiaShell *self, double factor)
+{
+  int cw = gtk_widget_get_width (self->canvas);
+  int ch = gtk_widget_get_height (self->canvas);
+  double pxcm = shell_pxcm (self);
+
+  if (cw <= 1) cw = 600;
+  if (ch <= 1) ch = 400;
+
+  /* Zoom about the centre of the viewport. */
+  zoom_about (self, factor,
+              self->origin_x + (cw / pxcm) / 2.0,
+              self->origin_y + (ch / pxcm) / 2.0);
 }
 
 /* --- GActions (the "dia" action group, installed on the window content) -- */
@@ -1574,6 +1817,7 @@ action_undo (GSimpleAction *a, GVariant *p, gpointer data)
     op_revert (self, g_ptr_array_index (self->undo, self->undo_pos));
     update_undo_actions (self);
     gtk_widget_queue_draw (self->canvas);
+    refresh_layers_list (self);
     gtk_label_set_text (GTK_LABEL (self->status_msg), _("Undo"));
   }
 }
@@ -1588,6 +1832,7 @@ action_redo (GSimpleAction *a, GVariant *p, gpointer data)
     self->undo_pos++;
     update_undo_actions (self);
     gtk_widget_queue_draw (self->canvas);
+    refresh_layers_list (self);
     gtk_label_set_text (GTK_LABEL (self->status_msg), _("Redo"));
   }
 }
@@ -1668,6 +1913,7 @@ action_paste (GSimpleAction *a, GVariant *p, gpointer data)
     count++;
   }
   gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
   g_snprintf (buf, sizeof (buf), _("Pasted %u object(s)"), count);
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
@@ -1719,6 +1965,7 @@ group_selected (DiaShell *self)
 
   gtk_label_set_text (GTK_LABEL (self->status_msg), _("Grouped"));
   gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
 }
 
 /* Dissolve the selected group: re-add its children to the layer and free the
@@ -1753,6 +2000,7 @@ ungroup_selected (DiaShell *self)
 
   gtk_label_set_text (GTK_LABEL (self->status_msg), _("Ungrouped"));
   gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
 }
 
 static void
@@ -1952,6 +2200,7 @@ action_new (GSimpleAction *a, GVariant *p, gpointer data)
   update_undo_actions (self);
   self->selected = NULL;
   gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
   gtk_label_set_text (GTK_LABEL (self->status_msg),
                       _("New diagram — 0 object(s)"));
 }
@@ -2166,6 +2415,54 @@ diagram_to_file (DiaShell *self, GFile *file)
 }
 
 
+/* Translate every loaded object so the diagram sits in the positive quadrant:
+ * its leftmost point ends right of the Y axis and its topmost point below the
+ * X axis (with a small margin). A uniform shift preserves all relative
+ * positions and connections. */
+static void
+shift_into_positive_quadrant (DiaShell *self)
+{
+  const double margin = 1.0;   /* cm clear of the axes */
+  double min_x = G_MAXDOUBLE, min_y = G_MAXDOUBLE, dx, dy;
+  int nl = data_layer_count (self->diagram);
+  gboolean any = FALSE;
+
+  for (int li = 0; li < nl; li++) {
+    DiaLayer *l = data_layer_get_nth (self->diagram, li);
+    int n = dia_layer_object_count (l);
+
+    for (int i = 0; i < n; i++) {
+      DiaObject *o = dia_layer_object_get_nth (l, i);
+
+      min_x = MIN (min_x, o->bounding_box.left);
+      min_y = MIN (min_y, o->bounding_box.top);
+      any = TRUE;
+    }
+  }
+  if (!any) {
+    return;
+  }
+
+  dx = (min_x < margin) ? margin - min_x : 0.0;
+  dy = (min_y < margin) ? margin - min_y : 0.0;
+  if (dx == 0.0 && dy == 0.0) {
+    return;   /* already clear of both axes */
+  }
+
+  for (int li = 0; li < nl; li++) {
+    DiaLayer *l = data_layer_get_nth (self->diagram, li);
+    int n = dia_layer_object_count (l);
+
+    for (int i = 0; i < n; i++) {
+      DiaObject *o = dia_layer_object_get_nth (l, i);
+      Point np = { o->position.x + dx, o->position.y + dy };
+      DiaObjectChange *ch = dia_object_move (o, &np);
+
+      g_clear_pointer (&ch, dia_object_change_unref);
+    }
+  }
+}
+
 static void
 diagram_from_file (DiaShell *self, GFile *file)
 {
@@ -2179,15 +2476,39 @@ diagram_from_file (DiaShell *self, GFile *file)
 
   if (doc) {
     xmlNodePtr root = xmlDocGetRootElement (doc);
-    DiaLayer *layer;
+    gboolean first_layer = TRUE;
+    DiaLayer *active = NULL;
 
     dia_shell_set_new_diagram (self);
-    layer = dia_diagram_data_get_active_layer (self->diagram);
 
+    /* Recreate the file's layer structure so the layers panel mirrors it,
+     * instead of collapsing everything into one layer. */
     for (xmlNodePtr ln = root ? root->children : NULL; ln; ln = ln->next) {
+      char *lname, *lactive;
+      DiaLayer *layer;
+
       if (xmlStrcmp (ln->name, (const xmlChar *) "layer") != 0) {
         continue;
       }
+      lname = (char *) xmlGetProp (ln, (const xmlChar *) "name");
+      lactive = (char *) xmlGetProp (ln, (const xmlChar *) "active");
+
+      if (first_layer) {
+        /* reuse the fresh diagram's default layer for the first one */
+        layer = dia_diagram_data_get_active_layer (self->diagram);
+        if (lname) {
+          g_object_set (layer, "name", lname, NULL);
+        }
+        first_layer = FALSE;
+      } else {
+        layer = dia_layer_new (lname ? lname : _("Layer"), self->diagram);
+        data_add_layer (self->diagram, layer);   /* refs the layer */
+        g_object_unref (layer);                   /* drop construction ref */
+      }
+      if (lactive && g_strcmp0 (lactive, "true") == 0) {
+        active = layer;
+      }
+
       for (xmlNodePtr on = ln->children; on; on = on->next) {
         char *type_name, *version_str;
         DiaObjectType *type;
@@ -2209,9 +2530,25 @@ diagram_from_file (DiaShell *self, GFile *file)
         if (type_name) xmlFree (type_name);
         if (version_str) xmlFree (version_str);
       }
+
+      if (lname) xmlFree (lname);
+      if (lactive) xmlFree (lactive);
+    }
+    if (active) {
+      data_set_active_layer (self->diagram, active);
     }
     xmlFreeDoc (doc);
-    gtk_widget_queue_draw (self->canvas);
+
+    /* Keep the loaded diagram in the positive quadrant and frame it near the
+     * top-left (a little negative space so the axes are visible) so it's
+     * immediately in view. */
+    shift_into_positive_quadrant (self);
+    self->origin_x = -2.0;
+    self->origin_y = -2.0;
+    update_transform (self);
+    update_scrollbars (self);
+    redraw_canvas_and_rulers (self);
+    refresh_layers_list (self);   /* show the loaded layers + their objects */
   }
 
   dia_context_release (ctx);
@@ -3395,7 +3732,8 @@ build_page_size_dropdown (DiaShell *self)
   labels[G_N_ELEMENTS (page_sizes)] = NULL;
 
   dd = gtk_drop_down_new_from_strings (labels);
-  gtk_drop_down_set_selected (GTK_DROP_DOWN (dd), 0);   /* A4 portrait */
+  /* Default to Infinite (the last entry). */
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (dd), G_N_ELEMENTS (page_sizes) - 1);
   gtk_widget_set_tooltip_text (dd, _("Page size"));
   set_a11y_label (dd, "page-size");
   g_signal_connect (dd, "notify::selected",
@@ -4028,6 +4366,7 @@ build_canvas_area (DiaShell *self)
   GtkEventController *keys;
   GtkEventController *scroll;
   GtkGesture *click;
+  GtkGesture *secondary;
   GtkGesture *drag;
 
   self->canvas = canvas;
@@ -4060,8 +4399,16 @@ build_canvas_area (DiaShell *self)
   gtk_widget_add_controller (canvas, motion);
 
   click = gtk_gesture_click_new ();
+  gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (click), GDK_BUTTON_PRIMARY);
   g_signal_connect (click, "pressed", G_CALLBACK (on_canvas_pressed), self);
   gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (click));
+
+  secondary = gtk_gesture_click_new ();
+  gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (secondary),
+                                 GDK_BUTTON_SECONDARY);
+  g_signal_connect (secondary, "pressed",
+                    G_CALLBACK (on_canvas_secondary), self);
+  gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (secondary));
 
   drag = gtk_gesture_drag_new ();
   g_signal_connect (drag, "drag-begin", G_CALLBACK (on_canvas_drag_begin), self);
@@ -4124,27 +4471,66 @@ on_layer_label_editing (GObject *labelobj, GParamSpec *ps, DiaShell *self)
 static void
 refresh_layers_list (DiaShell *self)
 {
-  GtkListBox *lb = GTK_LIST_BOX (self->layers_list);
-  DiaLayer *active = dia_diagram_data_get_active_layer (self->diagram);
+  GtkListBox *lb;
+  DiaLayer *active;
   GtkWidget *child;
-  int n = data_layer_count (self->diagram);
-  int active_idx = active ? data_layer_get_index (self->diagram, active) : -1;
+  int n, active_idx;
+
+  if (!self->layers_list) {
+    return;   /* may be called during early seeding, before the panel exists */
+  }
+  lb = GTK_LIST_BOX (self->layers_list);
+  active = dia_diagram_data_get_active_layer (self->diagram);
+  n = data_layer_count (self->diagram);
+  active_idx = active ? data_layer_get_index (self->diagram, active) : -1;
 
   self->scroll_guard++;   /* programmatic select shouldn't recurse */
   while ((child = gtk_widget_get_first_child (GTK_WIDGET (lb))) != NULL) {
     gtk_list_box_remove (lb, child);
   }
   /* Index order matches upstream: layer index 0 at the top, and data_raise_layer
-   * moves a layer toward index 0 (up the list), data_lower_layer toward n-1. */
+   * moves a layer toward index 0 (up the list), data_lower_layer toward n-1.
+   * Each row stacks the (editable) layer name over the list of objects it
+   * contains, so the panel shows which objects live in which layer. */
   for (int i = 0; i < n; i++) {
     DiaLayer *l = data_layer_get_nth (self->diagram, i);
-    GtkWidget *row = gtk_editable_label_new (dia_layer_get_name (l));
+    GtkWidget *vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 1);
+    GtkWidget *name = gtk_editable_label_new (dia_layer_get_name (l));
+    int oc = dia_layer_object_count (l);
 
-    gtk_widget_set_halign (row, GTK_ALIGN_START);
-    g_object_set_data (G_OBJECT (row), "dia-layer-index", GINT_TO_POINTER (i));
-    g_signal_connect (row, "notify::editing",
+    gtk_widget_set_halign (name, GTK_ALIGN_START);
+    /* on_layer_label_editing reads the index from the label it is connected to */
+    g_object_set_data (G_OBJECT (name), "dia-layer-index", GINT_TO_POINTER (i));
+    g_signal_connect (name, "notify::editing",
                       G_CALLBACK (on_layer_label_editing), self);
-    gtk_list_box_insert (lb, row, -1);
+    gtk_box_append (GTK_BOX (vbox), name);
+
+    for (int j = 0; j < oc; j++) {
+      DiaObject *obj = dia_layer_object_get_nth (l, j);
+      const char *tn = obj && obj->type ? obj->type->name : "?";
+      char *txt = g_strdup_printf ("\xe2\x80\xa2 %s", tn);   /* "• type" */
+      GtkWidget *ol = gtk_label_new (txt);
+
+      gtk_widget_set_halign (ol, GTK_ALIGN_START);
+      gtk_widget_set_margin_start (ol, 12);
+      gtk_widget_add_css_class (ol, "dim-label");
+      gtk_widget_add_css_class (ol, "caption");
+      gtk_box_append (GTK_BOX (vbox), ol);
+      g_free (txt);
+    }
+    if (oc == 0) {
+      GtkWidget *empty = gtk_label_new (_("(empty)"));
+
+      gtk_widget_set_halign (empty, GTK_ALIGN_START);
+      gtk_widget_set_margin_start (empty, 12);
+      gtk_widget_add_css_class (empty, "dim-label");
+      gtk_widget_add_css_class (empty, "caption");
+      gtk_box_append (GTK_BOX (vbox), empty);
+    }
+
+    /* on_layer_row_selected reads the index from the row's child (the vbox) */
+    g_object_set_data (G_OBJECT (vbox), "dia-layer-index", GINT_TO_POINTER (i));
+    gtk_list_box_insert (lb, vbox, -1);
   }
   if (active_idx >= 0) {
     GtkListBoxRow *r = gtk_list_box_get_row_at_index (lb, active_idx);
@@ -4173,18 +4559,21 @@ on_layer_row_selected (GtkListBox *lb, GtkListBoxRow *row, DiaShell *self)
   }
 }
 
-/* Double-click / Enter on a row starts an inline rename. */
+/* Double-click / Enter on a row starts an inline rename of the layer name. */
 static void
 on_layer_row_activated (GtkListBox *lb, GtkListBoxRow *row, DiaShell *self)
 {
-  GtkWidget *child;
+  GtkWidget *child, *name;
 
   if (!row) {
     return;
   }
   child = gtk_list_box_row_get_child (row);
-  if (GTK_IS_EDITABLE_LABEL (child)) {
-    gtk_editable_label_start_editing (GTK_EDITABLE_LABEL (child));
+  /* the editable name label is the row vbox's first child */
+  name = GTK_IS_EDITABLE_LABEL (child) ? child
+                                       : gtk_widget_get_first_child (child);
+  if (GTK_IS_EDITABLE_LABEL (name)) {
+    gtk_editable_label_start_editing (GTK_EDITABLE_LABEL (name));
   }
 }
 
@@ -4345,6 +4734,9 @@ dia_shell_free (gpointer data)
   g_clear_pointer (&self->undo, g_ptr_array_unref);
   g_clear_pointer (&self->drag_moves, g_array_unref);
   g_clear_pointer (&self->sheet_cats, g_list_free);   /* strings owned elsewhere */
+  if (self->ctx_menu && GTK_IS_WIDGET (self->ctx_menu)) {
+    gtk_widget_unparent (self->ctx_menu);   /* parented to the canvas */
+  }
   clear_clipboard (self);
   g_clear_object (&self->diagram);
   g_free (self);
@@ -4387,11 +4779,11 @@ dia_shell_new (void)
   self->zoom = 1.0;
   self->fg = (GdkRGBA) { 0, 0, 0, 1 };
   self->bg = (GdkRGBA) { 1, 1, 1, 1 };
-  /* Default page: A4 portrait (cm); a small margin puts it near the top-left of
-   * the zoomed-out workspace. */
+  /* Default to an infinite (unbounded) workspace; A4 is kept as the size used
+   * if the user later picks a fixed page from the dropdown. */
   self->page_w_cm = 21.0;
   self->page_h_cm = 29.7;
-  self->page_infinite = FALSE;
+  self->page_infinite = TRUE;
   self->origin_x = -2.0;
   self->origin_y = -2.0;
   self->snap_grid = TRUE;     /* on by default, like upstream Dia */
