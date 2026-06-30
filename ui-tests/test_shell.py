@@ -9,7 +9,6 @@ Run via ui-tests/run.sh. Exit 0 = all passed, 1 = some failed, 2 = app missing.
 """
 import os
 import re
-import subprocess
 import sys
 import time
 
@@ -103,29 +102,6 @@ def do_click(node):
         return False
 
 
-def ydotool_click(node):
-    """Click the centre of a widget using ydotool (uinput/compositor-level).
-
-    Unlike xdotool's XTEST (which WSLg's Xwayland does not deliver), ydotool
-    injects through the kernel/compositor so the event is treated as real
-    input. ydotool 0.1.8 mousemove is relative-only, so home the pointer to
-    (0,0) first, then move by the absolute target. The widget's screen
-    coordinates come from AT-SPI (valid because the app runs on Xwayland).
-    """
-    try:
-        x, y = node.position
-        w, h = node.size
-        cx, cy = int(x + w / 2), int(y + h / 2)
-        subprocess.run(["ydotool", "mousemove", "-10000", "-10000"], check=False)
-        subprocess.run(["ydotool", "mousemove", str(cx), str(cy)], check=False)
-        time.sleep(0.2)
-        subprocess.run(["ydotool", "click", "0xC0"], check=False)
-        return True
-    except Exception as exc:
-        print("   (ydotool_click failed:", exc, ")")
-        return False
-
-
 def dump(node, depth=0, maxdepth=8):
     interesting = states_of(node) & {
         "PRESSED", "CHECKED", "SELECTED", "ACTIVE", "FOCUSED",
@@ -216,49 +192,22 @@ def main():
     # 3b. Clicking the canvas with the Box tool creates an object (the
     #     statusbar reports the new object count). Needs a synthesized click
     #     on the drawing area -> best effort (reported, not fatal).
-    if canvas:
-        try:
-            # Per-widget AT-SPI coordinates are unreliable under WSLg (report
-            # 0,0), so maximize the window and click a point reliably inside the
-            # now-large canvas, computed from the real screen size.
-            frame = find(app, roleName='frame')
-            if frame:
-                for act in ('window.toggle-maximized', 'toggle-maximized'):
-                    try:
-                        frame.doActionNamed(act)
-                        break
-                    except Exception:
-                        continue
-            time.sleep(1.0)
-
-            screen_w, screen_h = 1280, 720
-            try:
-                out = subprocess.run(["xrandr"], capture_output=True,
-                                     text=True).stdout
-                m = re.search(r'current\s+(\d+)\s*x\s*(\d+)', out)
-                if m:
-                    screen_w, screen_h = int(m.group(1)), int(m.group(2))
-            except Exception:
-                pass
-            tx, ty = int(screen_w * 0.5), int(screen_h * 0.5)
-            print("   screen=%dx%d  click target=(%d,%d)" % (screen_w, screen_h, tx, ty))
-
-            # ydotool 0.1.8 mousemove is relative; home to (0,0) then move to
-            # the target. `--` lets the negative homing values through.
-            subprocess.run(["ydotool", "mousemove", "--", "-9000", "-9000"], check=False)
-            subprocess.run(["ydotool", "mousemove", "--", str(tx), str(ty)], check=False)
-            time.sleep(0.2)
-            subprocess.run(["ydotool", "click", "0xC0"], check=False)
-            time.sleep(0.6)
-
-            labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
-            status = [lab.name for lab in labels
-                      if lab.name and ('object(s)' in lab.name or ' at (' in lab.name)]
-            print("   statusbar after click:", status)
-            created = any('object(s)' in (lab.name or '') for lab in labels)
-            check("clicking canvas with Box tool creates an object", created)
-        except Exception as exc:
-            check("canvas click creates an object (%s)" % exc, False)
+    # WSLg delivers no synthesized input (uinput ignored, XTEST dropped), so we
+    # exercise the canvas via the DIA_UITEST trigger: it applies the current
+    # tool (Box, selected above) at a fixed page point through the SAME code a
+    # real canvas click runs. Invoked via its AT-SPI action -> no input synth.
+    trigger = find(app, name='uitest-apply-tool', roleName='push button')
+    check("DIA_UITEST trigger present (run via ui-tests/run.sh)", trigger)
+    if trigger:
+        do_click(trigger)
+        time.sleep(0.5)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        status = [lab.name for lab in labels
+                  if lab.name and 'object(s)' in lab.name]
+        if VERBOSE:
+            print("   statusbar after trigger:", status)
+        created = any('object(s)' in (lab.name or '') for lab in labels)
+        check("Box tool creates an object on the canvas", created)
 
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')

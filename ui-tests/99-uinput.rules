@@ -1,9 +1,0 @@
-# Make /dev/uinput usable without root so the dogtail UI tests can inject
-# real pointer input with ydotool (the canvas-click check).
-#
-# Install:
-#   sudo cp ui-tests/99-uinput.rules /etc/udev/rules.d/
-#   sudo udevadm control --reload && sudo udevadm trigger
-#
-# (On WSL, a `wsl --shutdown` + reopen also re-applies it.)
-KERNEL=="uinput", MODE="0666", OPTIONS+="static_node=uinput"

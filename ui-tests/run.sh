@@ -21,18 +21,14 @@ fi
 gsettings set org.gnome.desktop.interface toolkit-accessibility true 2>/dev/null || true
 
 export GTK_A11Y=atspi      # force the AT-SPI accessibility backend
-export GDK_BACKEND=x11     # Xwayland: lets AT-SPI report screen coordinates
+export GDK_BACKEND=x11     # Xwayland (native Wayland hides screen coords)
 export ADW_DISABLE_PORTAL=1
-
-# The canvas-click test injects real pointer input with ydotool (uinput),
-# which needs /dev/uinput writable. ydotool delivers through the compositor,
-# unlike xdotool's XTEST which WSLg's Xwayland drops.
-if [ ! -w /dev/uinput ]; then
-  echo "NOTE: /dev/uinput is not writable; the canvas-click check will fail." >&2
-  echo "  Quick (this session):  sudo chmod 0666 /dev/uinput" >&2
-  echo "  Persistent: sudo cp ui-tests/99-uinput.rules /etc/udev/rules.d/ &&" >&2
-  echo "              sudo udevadm control --reload && sudo udevadm trigger" >&2
-fi
+export DIA_UITEST=1        # expose the AT-SPI test trigger (see dia-shell.c)
+#
+# Note: WSLg does not deliver synthesized input (it sources input from the
+# Windows host and ignores Linux uinput; Xwayland drops XTEST), so the canvas
+# is exercised through the DIA_UITEST trigger, which runs the same tool->shape
+# code path and is invokable via its AT-SPI action.
 
 echo "Launching $DIA ..."
 "$DIA" >"$APP_LOG" 2>&1 &

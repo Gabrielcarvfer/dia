@@ -337,23 +337,14 @@ tool_to_shape_kind (const char *tool, ShapeKind *kind)
 }
 
 
+/* Apply the current tool at diagram point @p: create a shape (create tools)
+ * or just report the position. Shared by the canvas gesture and the UI-test
+ * trigger so both exercise the same code path. */
 static void
-on_canvas_pressed (GtkGestureClick *gesture,
-                   int              n_press,
-                   double           x,
-                   double           y,
-                   DiaShell        *self)
+apply_tool_at (DiaShell *self, Point p)
 {
   char buf[128];
   ShapeKind kind;
-  Point p;
-
-  /* widget pixels -> diagram cm (inverse of the page transform) */
-  if (self->page_scale <= 0.0) {
-    return;
-  }
-  p.x = (x - self->page_x) / self->page_scale;
-  p.y = (y - self->page_y) / self->page_scale;
 
   if (tool_to_shape_kind (self->tool, &kind)) {
     Color fill = colour_from_rgba (&self->bg);
@@ -395,6 +386,38 @@ on_canvas_pressed (GtkGestureClick *gesture,
   }
 
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
+static void
+on_canvas_pressed (GtkGestureClick *gesture,
+                   int              n_press,
+                   double           x,
+                   double           y,
+                   DiaShell        *self)
+{
+  Point p;
+
+  /* widget pixels -> diagram cm (inverse of the page transform) */
+  if (self->page_scale <= 0.0) {
+    return;
+  }
+  p.x = (x - self->page_x) / self->page_scale;
+  p.y = (y - self->page_y) / self->page_scale;
+
+  apply_tool_at (self, p);
+}
+
+
+/* UI-test hook: synthetic input isn't deliverable under WSLg, so when
+ * DIA_UITEST is set we expose a button that applies the current tool at a
+ * fixed page point — the same path a real canvas click takes — so the dogtail
+ * suite can verify tool->shape creation via an AT-SPI action. */
+static void
+on_uitest_apply_tool (GtkButton *button, DiaShell *self)
+{
+  apply_tool_at (self, (Point){ 8.0, 6.0 });
+  gtk_widget_queue_draw (self->canvas);
 }
 
 
@@ -507,6 +530,15 @@ build_action_toolbar (DiaShell *self)
     if (items[i].cb)
       g_signal_connect (b, "clicked", items[i].cb, self);
     gtk_box_append (GTK_BOX (bar), b);
+  }
+
+  /* UI-test-only trigger (see on_uitest_apply_tool). Absent in normal use. */
+  if (g_getenv ("DIA_UITEST")) {
+    GtkWidget *t = gtk_button_new_with_label ("uitest");
+    gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
+    set_a11y_label (t, "uitest-apply-tool");
+    g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
+    gtk_box_append (GTK_BOX (bar), t);
   }
 
   return bar;
