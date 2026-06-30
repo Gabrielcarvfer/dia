@@ -63,10 +63,22 @@ typedef struct {
   GPtrArray  *undo;       /* UndoOp* — the undo/redo history */
   int         undo_pos;   /* number of ops currently applied (undo[0..pos-1]) */
   GActionGroup *actions;  /* the "dia" group, to toggle undo/redo enabled */
-  /* page transform (diagram cm -> widget px), recomputed each draw, so the
-   * click handler can map pointer coordinates back to diagram coordinates. */
+  /* Viewport over an (optionally infinite) cm workspace. origin_{x,y} is the cm
+   * coordinate at the canvas top-left; zoom gives px-per-cm = PX_PER_CM * zoom.
+   * page_{x,y,scale} is the derived device transform (px of cm 0, and px/cm) so
+   * the click/motion handlers and rulers can map between px and cm. */
+  double     origin_x, origin_y;    /* cm at the viewport's top-left pixel */
   double     page_x, page_y, page_scale;
+  /* The drawing page, in cm. page_infinite => unbounded scrollable workspace. */
+  double     page_w_cm, page_h_cm;
+  gboolean   page_infinite;
+  GtkWidget *hscroll, *vscroll;     /* scrollbars over the workspace */
+  guint      scroll_guard;          /* >0 while we update adjustments ourselves */
 } DiaShell;
+
+/* Pixels per cm at 100% zoom. Chosen so a typical canvas shows ~80 cm across,
+ * matching upstream Dia's zoomed-out default (the page is small within it). */
+#define PX_PER_CM 10.0
 
 
 /* Standard object types (defined in objects/standard, linked via objects-port).
@@ -379,20 +391,125 @@ draw_selection_handles (cairo_t *cr, DiagramData *diagram)
 }
 
 
-/* The page rectangle (px,py = top-left in widget px; pw,ph = size in px) for a
- * canvas allocation of @width x @height at the current zoom. Single source of
- * truth so the rulers can reproduce the canvas transform without depending on
- * the canvas having drawn first. */
-static void
-page_geometry (DiaShell *self, int width, int height,
-               double *px, double *py, double *pw, double *ph)
+/* Pixels-per-cm at the current zoom. */
+static double
+shell_pxcm (DiaShell *self)
 {
-  double zoom = self ? self->zoom : 1.0;
+  return PX_PER_CM * (self ? self->zoom : 1.0);
+}
 
-  *pw = CLAMP (width * 0.7 * zoom, 20, width * 4);
-  *ph = CLAMP (height * 0.82 * zoom, 20, height * 4);
-  *px = (width - *pw) / 2.0;
-  *py = (height - *ph) / 2.0;
+/* Recompute the device transform (px of cm 0, and px/cm) from origin + zoom.
+ * Cheap and widget-size-independent, so callers update it whenever the origin
+ * or zoom changes and every consumer (canvas, rulers, click/motion) reads it. */
+static void
+update_transform (DiaShell *self)
+{
+  double pxcm = shell_pxcm (self);
+
+  self->page_scale = pxcm;
+  self->page_x = -self->origin_x * pxcm;
+  self->page_y = -self->origin_y * pxcm;
+}
+
+static void
+redraw_canvas_and_rulers (DiaShell *self)
+{
+  if (self->canvas) gtk_widget_queue_draw (self->canvas);
+  if (self->hruler) gtk_widget_queue_draw (self->hruler);
+  if (self->vruler) gtk_widget_queue_draw (self->vruler);
+}
+
+/* Reconfigure the scrollbar adjustments for the current viewport: value =
+ * origin (cm), page_size = visible cm, range = page bounds + margin (or a large
+ * span when the workspace is infinite), always covering the current view. */
+static void
+update_scrollbars (DiaShell *self)
+{
+  GtkAdjustment *ha, *va;
+  double pxcm = shell_pxcm (self);
+  double vis_w, vis_h, lo_x, hi_x, lo_y, hi_y;
+  int cw, ch;
+
+  if (!self->canvas || !self->hscroll || !self->vscroll) {
+    return;
+  }
+  cw = gtk_widget_get_width (self->canvas);
+  ch = gtk_widget_get_height (self->canvas);
+  if (cw <= 1) cw = 600;
+  if (ch <= 1) ch = 400;
+  vis_w = cw / pxcm;
+  vis_h = ch / pxcm;
+
+  if (self->page_infinite) {
+    lo_x = -200.0; hi_x = 200.0;
+    lo_y = -200.0; hi_y = 200.0;
+  } else {
+    lo_x = -5.0; hi_x = self->page_w_cm + 5.0;
+    lo_y = -5.0; hi_y = self->page_h_cm + 5.0;
+  }
+  /* Never crop the current view. */
+  lo_x = MIN (lo_x, self->origin_x);
+  hi_x = MAX (hi_x, self->origin_x + vis_w);
+  lo_y = MIN (lo_y, self->origin_y);
+  hi_y = MAX (hi_y, self->origin_y + vis_h);
+
+  ha = gtk_scrollbar_get_adjustment (GTK_SCROLLBAR (self->hscroll));
+  va = gtk_scrollbar_get_adjustment (GTK_SCROLLBAR (self->vscroll));
+
+  self->scroll_guard++;
+  gtk_adjustment_configure (ha, self->origin_x, lo_x, hi_x,
+                            vis_w / 10.0, vis_w * 0.9, vis_w);
+  gtk_adjustment_configure (va, self->origin_y, lo_y, hi_y,
+                            vis_h / 10.0, vis_h * 0.9, vis_h);
+  self->scroll_guard--;
+}
+
+static void
+on_hadj_changed (GtkAdjustment *adj, DiaShell *self)
+{
+  if (self->scroll_guard) return;
+  self->origin_x = gtk_adjustment_get_value (adj);
+  update_transform (self);
+  redraw_canvas_and_rulers (self);
+}
+
+static void
+on_vadj_changed (GtkAdjustment *adj, DiaShell *self)
+{
+  if (self->scroll_guard) return;
+  self->origin_y = gtk_adjustment_get_value (adj);
+  update_transform (self);
+  redraw_canvas_and_rulers (self);
+}
+
+/* Mouse-wheel scrolling (Shift = horizontal). */
+static gboolean
+on_canvas_scroll (GtkEventControllerScroll *ctrl,
+                  double dx, double dy, DiaShell *self)
+{
+  GdkModifierType mods = gtk_event_controller_get_current_event_state (
+                           GTK_EVENT_CONTROLLER (ctrl));
+  double step = 2.0;   /* cm per wheel notch */
+
+  if (mods & GDK_SHIFT_MASK) {
+    self->origin_x += (dy + dx) * step;
+  } else {
+    self->origin_y += dy * step;
+    self->origin_x += dx * step;
+  }
+  update_transform (self);
+  update_scrollbars (self);
+  redraw_canvas_and_rulers (self);
+  return TRUE;
+}
+
+/* Canvas resized: the visible cm span changed, so refresh the scrollbars. */
+static void
+on_canvas_resize (GtkDrawingArea *area, int width, int height, DiaShell *self)
+{
+  update_scrollbars (self);
+  if (self->hruler) gtk_widget_queue_draw (self->hruler);
+  if (self->vruler) gtk_widget_queue_draw (self->vruler);
 }
 
 
@@ -404,67 +521,76 @@ draw_canvas (GtkDrawingArea *area,
              gpointer        user_data)
 {
   DiaShell *self = user_data;
-  double page_w, page_h, px, py;
+  double pxcm, ox, oy;
+  double cm_x0, cm_y0, cm_x1, cm_y1;
 
   cairo_set_source_rgb (cr, 0.6, 0.6, 0.62);
   cairo_paint (cr);
 
-  page_geometry (self, width, height, &px, &py, &page_w, &page_h);
-
-  cairo_rectangle (cr, px + 3, py + 3, page_w, page_h);
-  cairo_set_source_rgba (cr, 0, 0, 0, 0.25);
-  cairo_fill (cr);
-
-  cairo_rectangle (cr, px, py, page_w, page_h);
-  cairo_set_source_rgb (cr, 1, 1, 1);
-  cairo_fill_preserve (cr);
-  cairo_set_source_rgb (cr, 0.4, 0.4, 0.4);
-  cairo_set_line_width (cr, 1.0);
-  cairo_stroke (cr);
-
-  /* Remember the page transform so clicks can be mapped back to cm. */
-  if (self) {
-    self->page_x = px;
-    self->page_y = py;
-    self->page_scale = page_w / 20.0;   /* a 20cm-wide virtual page */
+  if (!self) {
+    return;
   }
 
-  /* Render the diagram shapes in page coordinates (cm), clipped to the page. */
-  cairo_save (cr);
-  cairo_rectangle (cr, px, py, page_w, page_h);
-  cairo_clip (cr);
-  cairo_translate (cr, px, py);
-  cairo_scale (cr, page_w / 20.0, page_w / 20.0);
+  update_transform (self);
+  pxcm = self->page_scale;
+  ox = self->page_x;   /* device x of cm 0 */
+  oy = self->page_y;   /* device y of cm 0 */
 
-  /* Engineering-paper grid: 1 cm squares (heavier every 5 cm), aligned to the
-   * cm rulers and drawn under the diagram shapes. */
+  /* The page sheet (unless the workspace is infinite): drop shadow + white. */
+  if (!self->page_infinite) {
+    double pw = self->page_w_cm * pxcm;
+    double ph = self->page_h_cm * pxcm;
+
+    cairo_rectangle (cr, ox + 3, oy + 3, pw, ph);
+    cairo_set_source_rgba (cr, 0, 0, 0, 0.25);
+    cairo_fill (cr);
+
+    cairo_rectangle (cr, ox, oy, pw, ph);
+    cairo_set_source_rgb (cr, 1, 1, 1);
+    cairo_fill_preserve (cr);
+    cairo_set_source_rgb (cr, 0.4, 0.4, 0.4);
+    cairo_set_line_width (cr, 1.0);
+    cairo_stroke (cr);
+  }
+
+  /* Engineering-paper grid across the whole visible viewport, in cm. */
+  cm_x0 = self->origin_x;
+  cm_y0 = self->origin_y;
+  cm_x1 = self->origin_x + width / pxcm;
+  cm_y1 = self->origin_y + height / pxcm;
   {
-    double page_h_cm = page_h / (page_w / 20.0);
-    int gy_max = (int) ceil (page_h_cm);
+    int gx0 = (int) floor (cm_x0), gx1 = (int) ceil (cm_x1);
+    int gy0 = (int) floor (cm_y0), gy1 = (int) ceil (cm_y1);
 
-    for (int gx = 0; gx <= 20; gx++) {
+    for (int gx = gx0; gx <= gx1; gx++) {
       gboolean major = (gx % 5 == 0);
-      cairo_set_line_width (cr, major ? 0.06 : 0.03);
+      double dx = ox + gx * pxcm;
+      cairo_set_line_width (cr, major ? 1.0 : 0.5);
       cairo_set_source_rgb (cr, major ? 0.60 : 0.82,
                                 major ? 0.70 : 0.88,
                                 major ? 0.85 : 0.94);
-      cairo_move_to (cr, gx, 0);
-      cairo_line_to (cr, gx, page_h_cm);
+      cairo_move_to (cr, dx, 0);
+      cairo_line_to (cr, dx, height);
       cairo_stroke (cr);
     }
-    for (int gy = 0; gy <= gy_max; gy++) {
+    for (int gy = gy0; gy <= gy1; gy++) {
       gboolean major = (gy % 5 == 0);
-      cairo_set_line_width (cr, major ? 0.06 : 0.03);
+      double dy = oy + gy * pxcm;
+      cairo_set_line_width (cr, major ? 1.0 : 0.5);
       cairo_set_source_rgb (cr, major ? 0.60 : 0.82,
                                 major ? 0.70 : 0.88,
                                 major ? 0.85 : 0.94);
-      cairo_move_to (cr, 0, gy);
-      cairo_line_to (cr, 20, gy);
+      cairo_move_to (cr, 0, dy);
+      cairo_line_to (cr, width, dy);
       cairo_stroke (cr);
     }
   }
 
-  if (self && self->diagram) {
+  /* Diagram shapes in cm: scale to px/cm, then shift the origin into place. */
+  cairo_save (cr);
+  cairo_scale (cr, pxcm, pxcm);
+  cairo_translate (cr, -self->origin_x, -self->origin_y);
+  if (self->diagram) {
     draw_diagram (cr, self->diagram);
     draw_selection_handles (cr, self->diagram);
   }
@@ -483,15 +609,11 @@ draw_ruler (GtkDrawingArea *area,
   gboolean horizontal = (GTK_WIDGET (area) == self->hruler);
   int extent = horizontal ? width : height;
   int thick = horizontal ? height : width;
-  /* Reproduce the canvas transform from the canvas allocation, so the ruler is
-   * correct on the very first frame regardless of draw order (the canvas and
-   * rulers share a grid row/column, hence the same px axis). */
-  double px, py, pw, ph, scale, origin;
-
-  page_geometry (self, gtk_widget_get_width (self->canvas),
-                 gtk_widget_get_height (self->canvas), &px, &py, &pw, &ph);
-  scale = pw / 20.0;
-  origin = horizontal ? px : py;
+  /* The canvas and rulers share a grid row/column (same px axis), so the
+   * derived transform (kept up to date by update_transform) maps px<->cm. */
+  double scale = self ? self->page_scale : 0.0;
+  double origin = horizontal ? (self ? self->page_x : 0.0)
+                             : (self ? self->page_y : 0.0);
 
   cairo_set_source_rgb (cr, 0.93, 0.93, 0.93);
   cairo_paint (cr);
@@ -551,7 +673,7 @@ draw_ruler (GtkDrawingArea *area,
    * canvas-relative pointer coordinate maps straight onto the ruler). Sized to
    * most of the ruler thickness so it is easy to see. */
   if (self->cursor_valid) {
-    double hw = 6.0;            /* half-width of the triangle base */
+    double hw = 10.0;           /* half-width of the triangle base */
     double depth = thick - 2.0; /* how far it reaches across the ruler */
 
     cairo_set_source_rgb (cr, 0, 0, 0);
@@ -937,11 +1059,29 @@ static void
 update_zoom (DiaShell *self, double factor)
 {
   char buf[32];
+  int cw = gtk_widget_get_width (self->canvas);
+  int ch = gtk_widget_get_height (self->canvas);
+  double old_pxcm = shell_pxcm (self);
+  double cx, cy, new_pxcm;
+
+  if (cw <= 1) cw = 600;
+  if (ch <= 1) ch = 400;
+
+  /* Zoom about the centre of the viewport: keep that cm point fixed. */
+  cx = self->origin_x + (cw / old_pxcm) / 2.0;
+  cy = self->origin_y + (ch / old_pxcm) / 2.0;
 
   self->zoom = CLAMP (self->zoom * factor, 0.1, 20.0);
+  new_pxcm = shell_pxcm (self);
+  self->origin_x = cx - (cw / new_pxcm) / 2.0;
+  self->origin_y = cy - (ch / new_pxcm) / 2.0;
+
+  update_transform (self);
+  update_scrollbars (self);
+
   g_snprintf (buf, sizeof (buf), "%.0f%%", self->zoom * 100.0);
   gtk_label_set_text (GTK_LABEL (self->zoom_label), buf);
-  gtk_widget_queue_draw (self->canvas);
+  redraw_canvas_and_rulers (self);
 }
 
 /* --- GActions (the "dia" action group, installed on the window content) -- */
@@ -962,8 +1102,7 @@ static void
 action_zoom_reset (GSimpleAction *a, GVariant *p, gpointer data)
 {
   DiaShell *self = data;
-  self->zoom = 1.0;
-  update_zoom (self, 1.0);
+  update_zoom (self, 1.0 / self->zoom);   /* back to 100%, centred */
 }
 
 static void
@@ -1549,6 +1688,59 @@ build_primary_menu_button (void)
 }
 
 
+/* Page presets for the toolbar dropdown (cm). "Infinite" is an unbounded
+ * scrollable workspace with no page sheet. */
+typedef struct { const char *label; double w, h; gboolean infinite; } PageSize;
+static const PageSize page_sizes[] = {
+  { N_("A4 Portrait"),   21.0, 29.7, FALSE },
+  { N_("A4 Landscape"),  29.7, 21.0, FALSE },
+  { N_("A3 Portrait"),   29.7, 42.0, FALSE },
+  { N_("A3 Landscape"),  42.0, 29.7, FALSE },
+  { N_("A2 Portrait"),   42.0, 59.4, FALSE },
+  { N_("A2 Landscape"),  59.4, 42.0, FALSE },
+  { N_("A1 Portrait"),   59.4, 84.1, FALSE },
+  { N_("A1 Landscape"),  84.1, 59.4, FALSE },
+  { N_("Letter"),        21.59, 27.94, FALSE },
+  { N_("Infinite"),      0.0, 0.0, TRUE },
+};
+
+static void
+on_page_size_changed (GtkDropDown *dd, GParamSpec *ps, DiaShell *self)
+{
+  guint i = gtk_drop_down_get_selected (dd);
+
+  if (i >= G_N_ELEMENTS (page_sizes)) {
+    return;
+  }
+  self->page_infinite = page_sizes[i].infinite;
+  if (!self->page_infinite) {
+    self->page_w_cm = page_sizes[i].w;
+    self->page_h_cm = page_sizes[i].h;
+  }
+  update_scrollbars (self);
+  redraw_canvas_and_rulers (self);
+}
+
+static GtkWidget *
+build_page_size_dropdown (DiaShell *self)
+{
+  const char *labels[G_N_ELEMENTS (page_sizes) + 1];
+  GtkWidget *dd;
+
+  for (gsize i = 0; i < G_N_ELEMENTS (page_sizes); i++) {
+    labels[i] = gettext (page_sizes[i].label);
+  }
+  labels[G_N_ELEMENTS (page_sizes)] = NULL;
+
+  dd = gtk_drop_down_new_from_strings (labels);
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (dd), 0);   /* A4 portrait */
+  gtk_widget_set_tooltip_text (dd, _("Page size"));
+  set_a11y_label (dd, "page-size");
+  g_signal_connect (dd, "notify::selected",
+                    G_CALLBACK (on_page_size_changed), self);
+  return dd;
+}
+
 static GtkWidget *
 build_action_toolbar (DiaShell *self)
 {
@@ -1589,6 +1781,9 @@ build_action_toolbar (DiaShell *self)
       gtk_widget_set_sensitive (b, FALSE);   /* Undo/Redo: not wired yet */
     gtk_box_append (GTK_BOX (bar), b);
   }
+
+  gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
+  gtk_box_append (GTK_BOX (bar), build_page_size_dropdown (self));
 
   /* UI-test-only trigger (see on_uitest_apply_tool). Absent in normal use.
    * The label IS the AT-SPI name the test searches for. */
@@ -1709,10 +1904,13 @@ build_canvas_area (DiaShell *self)
   GtkWidget *hscroll = gtk_scrollbar_new (GTK_ORIENTATION_HORIZONTAL, NULL);
   GtkEventController *motion;
   GtkEventController *keys;
+  GtkEventController *scroll;
   GtkGesture *click;
   GtkGesture *drag;
 
   self->canvas = canvas;
+  self->hscroll = hscroll;
+  self->vscroll = vscroll;
 
   gtk_button_set_has_frame (GTK_BUTTON (origin), FALSE);
 
@@ -1752,6 +1950,18 @@ build_canvas_area (DiaShell *self)
   keys = gtk_event_controller_key_new ();
   g_signal_connect (keys, "key-pressed", G_CALLBACK (on_canvas_key), self);
   gtk_widget_add_controller (canvas, keys);
+
+  scroll = gtk_event_controller_scroll_new (GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);
+  g_signal_connect (scroll, "scroll", G_CALLBACK (on_canvas_scroll), self);
+  gtk_widget_add_controller (canvas, scroll);
+
+  /* Scrollbars drive the viewport origin; the canvas resize refreshes them.
+   * (GTK4: GtkScrollbar is a GtkWidget, not a GtkRange.) */
+  g_signal_connect (gtk_scrollbar_get_adjustment (GTK_SCROLLBAR (hscroll)),
+                    "value-changed", G_CALLBACK (on_hadj_changed), self);
+  g_signal_connect (gtk_scrollbar_get_adjustment (GTK_SCROLLBAR (vscroll)),
+                    "value-changed", G_CALLBACK (on_vadj_changed), self);
+  g_signal_connect (canvas, "resize", G_CALLBACK (on_canvas_resize), self);
 
   gtk_grid_attach (GTK_GRID (grid), origin, 0, 0, 1, 1);
   gtk_grid_attach (GTK_GRID (grid), hruler, 1, 0, 1, 1);
@@ -1863,6 +2073,14 @@ dia_shell_new (void)
   self->zoom = 1.0;
   self->fg = (GdkRGBA) { 0, 0, 0, 1 };
   self->bg = (GdkRGBA) { 1, 1, 1, 1 };
+  /* Default page: A4 portrait (cm); a small margin puts it near the top-left of
+   * the zoomed-out workspace. */
+  self->page_w_cm = 21.0;
+  self->page_h_cm = 29.7;
+  self->page_infinite = FALSE;
+  self->origin_x = -2.0;
+  self->origin_y = -2.0;
+  update_transform (self);
 
   /* Initialise libdia (property system, object registry, fonts) before any
    * object types are registered or objects created. */
