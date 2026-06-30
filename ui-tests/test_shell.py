@@ -7,11 +7,15 @@ buttons change the readout, and the colour area opens the async colour dialog.
 
 Run via ui-tests/run.sh. Exit 0 = all passed, 1 = some failed, 2 = app missing.
 """
+import os
 import re
 import sys
 import time
 
 from dogtail.config import config
+
+# Set UITEST_VERBOSE=1 for the accessible-tree dump and raw-state diagnostics.
+VERBOSE = bool(os.environ.get("UITEST_VERBOSE"))
 
 config.searchCutoffCount = 20
 config.searchBackoffDuration = 0.5
@@ -122,12 +126,13 @@ def main():
         return 2
 
     print("Found application:", app.name)
-    print("\n================ ACCESSIBLE TREE ================")
-    try:
-        dump(app)
-    except Exception as exc:
-        print("(tree dump error:", exc, ")")
-    print("================================================\n")
+    if VERBOSE:
+        print("\n================ ACCESSIBLE TREE ================")
+        try:
+            dump(app)
+        except Exception as exc:
+            print("(tree dump error:", exc, ")")
+        print("================================================\n")
 
     # 1. Structure.
     check("main window present", find(app, roleName='frame') is not None)
@@ -143,33 +148,23 @@ def main():
     check("layers list present",
           find(app, name='Background', roleName='label') is not None)
 
-    # --- DIAGNOSTICS: real states + drawing-area exposure -------------------
-    print("\n----- DIAGNOSTICS -----")
-    if modify:
-        print("DIAG Modify states :", all_state_names(modify))
-        print("DIAG Modify actions:", actions_of(modify))
-    if box:
-        print("DIAG Box states    :", all_state_names(box))
-    for role in ('drawing area', 'canvas', 'image', 'panel'):
-        try:
-            found = app.findChildren(predicate.GenericPredicate(roleName=role))
-            named = [n.name for n in found if n.name]
-            if role == 'drawing area' or named:
-                print("DIAG role %-12r count=%d named=%s" % (role, len(found), named[:8]))
-        except Exception as exc:
-            print("DIAG role", role, "error", exc)
-    for nm in ('diagram-canvas', 'colour-area'):
-        hits = app.findChildren(predicate.GenericPredicate(name=nm))
-        print("DIAG name %-15r hits=%d roles=%s" % (nm, len(hits), [h.roleName for h in hits]))
-    print("-----------------------\n")
+    if VERBOSE:
+        print("\n----- DIAGNOSTICS -----")
+        if modify:
+            print("DIAG Modify states :", all_state_names(modify))
+        if box:
+            print("DIAG Box states    :", all_state_names(box))
+        for nm in ('diagram-canvas', 'colour-area'):
+            hits = app.findChildren(predicate.GenericPredicate(name=nm))
+            print("DIAG name %-15r hits=%d roles=%s"
+                  % (nm, len(hits), [h.roleName for h in hits]))
+        print("-----------------------\n")
 
-    # 2. Tool palette behaves as a radio group (using PRESSED/CHECKED state).
+    # 2. Tool palette behaves as a radio group (active toggle => PRESSED state).
     if modify and box:
         check("Modify selected initially", is_selected(modify))
         do_click(box)
         time.sleep(0.6)
-        print("DIAG after click -> Box states:", all_state_names(box))
-        print("DIAG after click -> Modify states:", all_state_names(modify))
         check("Box selected after clicking it", is_selected(box))
         check("Modify deselected after Box selected", not is_selected(modify))
 
