@@ -7,3 +7,6 @@ option('doc',
 option('tests',
        type: 'boolean', value: true,
        description: 'Whether to compile unit tests')
+option('legacy_gtk3',
+       type: 'boolean', value: false,
+       description: 'Build the legacy GTK3 tree (lib/objects/app/plug-ins) instead of the GTK4/libadwaita port skeleton. The GTK4 port is the default; this is a reference escape hatch and requires GTK3 + libxml >= 2.14.')

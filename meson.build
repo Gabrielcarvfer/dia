@@ -16,13 +16,11 @@ conf.set_quoted('DIA_APPLICATION_PATH', '/org/gnome/Dia/')
 
 libglib_dep = dependency('glib-2.0',   version: '>= 2.80')
 gio_dep = dependency('gio-2.0',   version: '>= 2.80')
-libgtk_dep  = dependency('gtk+-3.0',   version: '>= 3.24')
-libxml_dep  = dependency('libxml-2.0', version: '>= 2.14.0')
-#TODO: what are the minimum versions?
 gmodule_dep = dependency('gmodule-2.0')
-libcairo_dep = dependency('cairo')
-graphene_dep = dependency('graphene-1.0', version: '>= 1.10')
-xpm_dep = dependency('xpm-pixbuf')
+# Toolkit dependencies (GTK, libadwaita, libxml, cairo, graphene, xpm) are
+# resolved per build mode in the build-mode block near the end of this file:
+#  - default          -> GTK4 + libadwaita port skeleton (subdir 'skeleton')
+#  - -Dlegacy_gtk3=true -> the legacy GTK3 tree (lib/objects/app/plug-ins/...)
 
 # Not required since not all platforms ship a separate libm.
 libm_dep = cc.find_library('m', required: false)
@@ -87,16 +85,12 @@ config_dep = declare_dependency(
     include_directories: config_inc,
 )
 
-gtk_ver = 'GDK_VERSION_3_8'
 glib_ver = 'GLIB_VERSION_2_80'
 add_project_arguments([
-  '-DGDK_VERSION_MIN_REQUIRED=@0@'.format(gtk_ver),
-#  '-DGDK_VERSION_MAX_ALLOWED=@0@'.format(gtk_ver),
   '-DGLIB_VERSION_MIN_REQUIRED=@0@'.format(glib_ver),
   '-DGLIB_VERSION_MAX_ALLOWED=@0@'.format(glib_ver),
-  '-DGSEAL_ENABLE',
-#  '-DGTK_DISABLE_DEPRECATED',
 ], language: ['c', 'cpp'])
+# The GDK version gate is toolkit-specific and set per build mode further down.
 
 
 global_c_args = []
@@ -163,43 +157,82 @@ endif
 
 meson.add_devenv(run_env)
 
-subdir('po')
-subdir('lib')
-subdir('objects')
-subdir('app')
-subdir('data')
-subdir('plug-ins')
-subdir('samples')
-subdir('sheets')
-subdir('shapes')
-if get_option('tests')
-    subdir('tests')
-endif
-if doc_feature.allowed()
-    subdir('doc')
-endif
-subdir('docs')
+# ---------------------------------------------------------------------------
+# Build mode
+#
+# The GTK4 + libadwaita port is the default. While the port is in progress the
+# legacy GTK3 tree (lib/objects/app/plug-ins/...) does not build against GTK4,
+# so it is gated behind -Dlegacy_gtk3=true and kept in-tree as a reference for
+# the migration. The default build produces the libadwaita foundation skeleton.
+# ---------------------------------------------------------------------------
+if get_option('legacy_gtk3')
+  # --- Legacy GTK3 build (reference) ---------------------------------------
+  libgtk_dep   = dependency('gtk+-3.0',   version: '>= 3.24')
+  libxml_dep   = dependency('libxml-2.0', version: '>= 2.14.0')
+  libcairo_dep = dependency('cairo')
+  graphene_dep = dependency('graphene-1.0', version: '>= 1.10')
+  xpm_dep      = dependency('xpm-pixbuf')
 
-filter_names = []
-foreach p : install_plugins_desc
-  filter_names += p.get('name')
-endforeach
+  add_project_arguments([
+    '-DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_24',
+    '-DGSEAL_ENABLE',
+  ], language: ['c', 'cpp'])
 
-object_names = []
-foreach p : dia_object_desc
-  object_names += p.get('name')
-endforeach
+  subdir('po')
+  subdir('lib')
+  subdir('objects')
+  subdir('app')
+  subdir('data')
+  subdir('plug-ins')
+  subdir('samples')
+  subdir('sheets')
+  subdir('shapes')
+  if get_option('tests')
+      subdir('tests')
+  endif
+  if doc_feature.allowed()
+      subdir('doc')
+  endif
+  subdir('docs')
 
-summary(
-  {'Filters': filter_names, 'Objects': object_names},
-  section: 'Features',
-)
+  filter_names = []
+  foreach p : install_plugins_desc
+    filter_names += p.get('name')
+  endforeach
 
-gnome.post_install(
-  gtk_update_icon_cache: true,
-  update_desktop_database: true,
-)
+  object_names = []
+  foreach p : dia_object_desc
+    object_names += p.get('name')
+  endforeach
 
-if build_machine.system() == 'windows' and get_option('buildtype') == 'release'
-    meson.add_install_script('build-aux/windows-bundler.sh')
+  summary(
+    {'Filters': filter_names, 'Objects': object_names},
+    section: 'Features',
+  )
+
+  gnome.post_install(
+    gtk_update_icon_cache: true,
+    update_desktop_database: true,
+  )
+
+  if build_machine.system() == 'windows' and get_option('buildtype') == 'release'
+      meson.add_install_script('build-aux/windows-bundler.sh')
+  endif
+else
+  # --- GTK4 + libadwaita port (default): foundation skeleton ---------------
+  libgtk_dep     = dependency('gtk4',         version: '>= 4.10')
+  libadwaita_dep = dependency('libadwaita-1', version: '>= 1.5')
+
+  add_project_arguments([
+    '-DGDK_VERSION_MIN_REQUIRED=GDK_VERSION_4_10',
+    '-DGDK_VERSION_MAX_ALLOWED=GDK_VERSION_4_10',
+  ], language: ['c', 'cpp'])
+
+  subdir('lib-port')
+  subdir('skeleton')
+
+  summary(
+    {'Toolkit': 'GTK4 + libadwaita (port skeleton)'},
+    section: 'Build mode',
+  )
 endif

@@ -1,6 +1,10 @@
 # We only need to ignore meson build directories
 build/
 build-release/
+
+# Downloaded meson subprojects (the .wrap files stay tracked)
+subprojects/*/
+
 .vscode
 *.pyc
 build-aux/flatpak/build/

@@ -29,8 +29,8 @@
 
 #include <pango/pango.h>
 #undef PANGO_DISABLE_DEPRECATED /* pango_ft_get_context */
-#include <gdk/gdk.h>
-#include <gtk/gtk.h> /* just for gtk_get_default_language() */
+#include <pango/pangocairo.h>
+#include <gdk/gdk.h> /* GDK_WINDOWING_* feature macros */
 #ifdef GDK_WINDOWING_WIN32
 /* avoid namespace clashes caused by inclusion of windows.h */
 #define WIN32_LEAN_AND_MEAN
@@ -78,7 +78,7 @@ static void
 dia_font_push_context (PangoContext *pcontext)
 {
   g_set_object (&pango_context, pcontext);
-  pango_context_set_language (pango_context, gtk_get_default_language ());
+  pango_context_set_language (pango_context, pango_language_get_default ());
 }
 
 
@@ -91,22 +91,10 @@ PangoContext *
 dia_font_get_context (void)
 {
   if (pango_context == NULL) {
-/* Maybe this one with pangocairo
-     dia_font_push_context (pango_cairo_font_map_create_context (pango_cairo_font_map_get_default()));
- * but it gives:
-     (lt-dia:30476): Pango-CRITICAL **: pango_renderer_draw_layout: assertion `PANGO_IS_RENDERER (renderer)' failed
- */
-    if (gdk_display_get_default ())
-      dia_font_push_context(gdk_pango_context_get());
-    else {
-#ifdef GDK_WINDOWING_WIN32
-      dia_font_push_context(pango_win32_get_context ());
-#elif defined(GDK_WINDOWING_QUARTZ) || defined(GDK_WINDOWING_X11)
-      dia_font_push_context (pango_font_map_create_context (pango_cairo_font_map_get_default ()));
-#else
-      g_warning ("dia_font_get_context() : not font context w/o display. Crashing soon.");
-#endif
-    }
+    /* GTK4: gdk_pango_context_get() is gone. A PangoCairo context serves as
+     * the measure context and, unlike the old GDK one, works without a
+     * display (e.g. headless export). */
+    dia_font_push_context (pango_font_map_create_context (pango_cairo_font_map_get_default ()));
   }
   return pango_context;
 }
