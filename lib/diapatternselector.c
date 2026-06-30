@@ -165,44 +165,47 @@ _pattern_activate_preset(GtkWidget *widget, gpointer data)
 
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (ps->state), ps->pattern != NULL);
   g_signal_emit (G_OBJECT (ps), dia_patternsel_signals[DIA_PATTERNSEL_VALUE_CHANGED], 0);
+
+  /* GTK4: close the preset popover after a choice. */
+  gtk_menu_button_popdown (GTK_MENU_BUTTON (ps->menu_button));
 }
 
 
-static gint
-_popup_button_press(GtkWidget *widget, GdkEventButton *event, gpointer data)
-{
-  GtkWidget *menu = gtk_menu_new();
-  guint i;
-
-  for (i = 0; i < G_N_ELEMENTS (_pattern_presets); ++i) {
-    GtkWidget *menu_item = gtk_menu_item_new_with_label(gettext(_pattern_presets[i].title));
-    g_signal_connect (G_OBJECT (menu_item), "activate",
-		      G_CALLBACK (_pattern_activate_preset), data);
-    g_object_set_data (G_OBJECT (menu_item), PRESET_KEY, GINT_TO_POINTER(i));
-    gtk_menu_shell_append (GTK_MENU_SHELL (menu), menu_item);
-    gtk_widget_show(menu_item);
-  }
-  gtk_menu_popup(GTK_MENU(menu), NULL, NULL, NULL, NULL,
-		 event->button, event->time);
-  return FALSE;
-}
 static void
 dia_pattern_selector_init (DiaPatternSelector *ps)
 {
+  GtkWidget *popover;
+  GtkWidget *box;
+  guint i;
+
   ps->state = gtk_toggle_button_new_with_label(_("No"));
   g_signal_connect(G_OBJECT(ps->state), "toggled",
                    G_CALLBACK (_pattern_toggled), ps);
-  gtk_widget_show (ps->state);
 
-  ps->menu_button = gtk_button_new();
-  gtk_container_add(GTK_CONTAINER(ps->menu_button),
-		    gtk_arrow_new(GTK_ARROW_RIGHT, GTK_SHADOW_OUT));
-  g_signal_connect(G_OBJECT(ps->menu_button), "button_press_event",
-		   G_CALLBACK(_popup_button_press), ps);
-  gtk_widget_show_all (ps->menu_button);
+  /* GTK4: GtkMenu/GtkArrow are gone -- a GtkMenuButton owns a popover whose
+   * vertical box holds one flat button per preset. */
+  ps->menu_button = gtk_menu_button_new ();
+  gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (ps->menu_button),
+                                 "pan-end-symbolic");
 
-  gtk_box_pack_start(GTK_BOX(ps), GTK_WIDGET(ps->state), TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(ps), GTK_WIDGET(ps->menu_button), FALSE, TRUE, 0);
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+  for (i = 0; i < G_N_ELEMENTS (_pattern_presets); ++i) {
+    GtkWidget *item =
+      gtk_button_new_with_label (gettext (_pattern_presets[i].title));
+    gtk_button_set_has_frame (GTK_BUTTON (item), FALSE);
+    g_signal_connect (G_OBJECT (item), "clicked",
+                      G_CALLBACK (_pattern_activate_preset), ps);
+    g_object_set_data (G_OBJECT (item), PRESET_KEY, GINT_TO_POINTER (i));
+    gtk_box_append (GTK_BOX (box), item);
+  }
+
+  popover = gtk_popover_new ();
+  gtk_popover_set_child (GTK_POPOVER (popover), box);
+  gtk_menu_button_set_popover (GTK_MENU_BUTTON (ps->menu_button), popover);
+
+  gtk_widget_set_hexpand (GTK_WIDGET (ps->state), TRUE);
+  gtk_box_append (GTK_BOX (ps), GTK_WIDGET (ps->state));
+  gtk_box_append (GTK_BOX (ps), GTK_WIDGET (ps->menu_button));
 }
 
 /*!

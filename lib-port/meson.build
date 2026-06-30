@@ -165,6 +165,9 @@ libdia_core_ported = files(
   lib_dir / 'prop_text.c',                # GtkEditable, frame set_child, key controller
   lib_dir / 'message.c',                  # dialog content-area box_append, drop container_check_resize
   lib_dir / 'persistence.c',              # window geometry: size-only (GTK4 drops positioning)
+  lib_dir / 'dia-arrow-chooser.c',        # GtkMenu -> GtkPopover, button-press -> clicked
+  lib_dir / 'dia-line-chooser.c',         # GtkMenu -> GtkPopover, button-press -> clicked
+  lib_dir / 'diapatternselector.c',       # GtkMenu/GtkArrow -> GtkMenuButton + popover
 
   # --- Still need real GTK4 widget porting (deferred) ---------------------
   # prop_geomtypes.c        -> pulls dia-unit-spinner.h (subclasses

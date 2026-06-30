@@ -44,7 +44,7 @@ struct _DiaArrowChooser {
   DiaChangeArrowCallback callback;
   gpointer user_data;
 
-  GtkWidget *menu;
+  GtkWidget *popover;
   GtkWidget *dialog;
   DiaArrowSelector *selector;
 };
@@ -57,7 +57,7 @@ dia_arrow_chooser_dispose (GObject *object)
 {
   DiaArrowChooser *chooser = DIA_ARROW_CHOOSER (object);
 
-  g_clear_object (&chooser->menu);
+  g_clear_pointer (&chooser->popover, gtk_widget_unparent);
 
   G_OBJECT_CLASS (dia_arrow_chooser_parent_class)->dispose (object);
 }
@@ -76,20 +76,15 @@ dia_arrow_chooser_dispose (GObject *object)
  *
  * Since: 0.98
  */
-static int
-dia_arrow_chooser_button_press_event (GtkWidget *widget, GdkEventButton *event)
+/* GTK4: the chooser is a GtkButton; clicking pops up the arrowhead popover. */
+static void
+dia_arrow_chooser_clicked (GtkButton *button)
 {
-  if (event->button == 1) {
-    gtk_menu_popup_at_widget (GTK_MENU (DIA_ARROW_CHOOSER (widget)->menu),
-                              widget,
-                              GDK_GRAVITY_EAST,
-                              GDK_GRAVITY_WEST,
-                              (GdkEvent*)event);
+  DiaArrowChooser *chooser = DIA_ARROW_CHOOSER (button);
 
-    return TRUE;
+  if (chooser->popover) {
+    gtk_popover_popup (GTK_POPOVER (chooser->popover));
   }
-
-  return FALSE;
 }
 
 
@@ -97,11 +92,11 @@ static void
 dia_arrow_chooser_class_init (DiaArrowChooserClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
-  GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
+  GtkButtonClass *button_class = GTK_BUTTON_CLASS (klass);
 
   object_class->dispose = dia_arrow_chooser_dispose;
 
-  widget_class->button_press_event = dia_arrow_chooser_button_press_event;
+  button_class->clicked = dia_arrow_chooser_clicked;
 }
 
 
@@ -116,8 +111,7 @@ dia_arrow_chooser_init (DiaArrowChooser *arrow)
   arrow->arrow.width = DEFAULT_ARROW_WIDTH;
 
   wid = dia_arrow_preview_new (ARROW_NONE, arrow->left);
-  gtk_container_add (GTK_CONTAINER (arrow), wid);
-  gtk_widget_show (wid);
+  gtk_button_set_child (GTK_BUTTON (arrow), wid);
   arrow->preview = DIA_ARROW_PREVIEW (wid);
 
   arrow->dialog = NULL;
@@ -181,17 +175,11 @@ dia_arrow_chooser_dialog_new (DiaArrowChooser *chooser)
                                    GTK_RESPONSE_OK);
   g_signal_connect (G_OBJECT (chooser->dialog), "response",
                     G_CALLBACK (dia_arrow_chooser_dialog_response), chooser);
-  g_signal_connect (G_OBJECT (chooser->dialog), "destroy",
-                    G_CALLBACK (gtk_widget_destroyed), &chooser->dialog);
 
   wid = dia_arrow_selector_new ();
-  gtk_container_set_border_width (GTK_CONTAINER (wid), 5);
-  gtk_box_pack_start (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG (chooser->dialog))),
-                      wid,
-                      TRUE,
-                      TRUE,
-                      0);
-  gtk_widget_show (wid);
+  gtk_widget_set_vexpand (wid, TRUE);
+  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG (chooser->dialog))),
+                  wid);
   chooser->selector = DIA_ARROW_SELECTOR (wid);
 }
 
@@ -209,6 +197,8 @@ dia_arrow_chooser_dialog_new (DiaArrowChooser *chooser)
 static void
 dia_arrow_chooser_dialog_show (GtkWidget *widget, DiaArrowChooser *chooser)
 {
+  gtk_popover_popdown (GTK_POPOVER (chooser->popover));
+
   if (chooser->dialog) {
     gtk_window_present (GTK_WINDOW (chooser->dialog));
     return;
@@ -230,15 +220,16 @@ dia_arrow_chooser_dialog_show (GtkWidget *widget, DiaArrowChooser *chooser)
  * Since: dawn-of-time
  */
 static void
-dia_arrow_chooser_change_arrow_type (GtkMenuItem     *mi,
+dia_arrow_chooser_change_arrow_type (GtkButton       *button,
                                      DiaArrowChooser *chooser)
 {
-  ArrowType atype = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (mi), "arrow-type"));
+  ArrowType atype = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (button), "arrow-type"));
   Arrow arrow;
   arrow.width = chooser->arrow.width;
   arrow.length = chooser->arrow.length;
   arrow.type = atype;
   dia_arrow_chooser_set_arrow (chooser, &arrow);
+  gtk_popover_popdown (GTK_POPOVER (chooser->popover));
 }
 
 
@@ -261,7 +252,7 @@ dia_arrow_chooser_new (gboolean               left,
                        gpointer               user_data)
 {
   DiaArrowChooser *chooser = g_object_new (DIA_TYPE_ARROW_CHOOSER, NULL);
-  GtkWidget *mi, *ar;
+  GtkWidget *mi, *ar, *box;
   int i;
 
   chooser->left = left;
@@ -271,12 +262,18 @@ dia_arrow_chooser_new (gboolean               left,
   chooser->callback = callback;
   chooser->user_data = user_data;
 
-  chooser->menu = g_object_ref_sink (gtk_menu_new ());
+  /* GTK4: GtkMenu is gone. Build a popover with a vertical list of flat
+   * buttons, each showing an arrow preview. */
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+  chooser->popover = gtk_popover_new ();
+  gtk_popover_set_child (GTK_POPOVER (chooser->popover), box);
+  gtk_widget_set_parent (chooser->popover, GTK_WIDGET (chooser));
 
   /* although from ARROW_NONE to MAX_ARROW_TYPE-1 this is sorted by *index* to keep the order consistent with earlier releases */
   for (i = ARROW_NONE; i < MAX_ARROW_TYPE; ++i) {
     ArrowType arrow_type = arrow_type_from_index (i);
-    mi = gtk_menu_item_new ();
+    mi = gtk_button_new ();
+    gtk_button_set_has_frame (GTK_BUTTON (mi), FALSE);
     g_object_set_data (G_OBJECT (mi),
                        "arrow-type",
                        GINT_TO_POINTER (arrow_type));
@@ -284,23 +281,21 @@ dia_arrow_chooser_new (gboolean               left,
                                  gettext (arrow_get_name_from_type (arrow_type)));
     ar = dia_arrow_preview_new (arrow_type, left);
 
-    gtk_container_add (GTK_CONTAINER (mi), ar);
-    gtk_widget_show (ar);
+    gtk_button_set_child (GTK_BUTTON (mi), ar);
     g_signal_connect (G_OBJECT (mi),
-                      "activate",
+                      "clicked",
                       G_CALLBACK (dia_arrow_chooser_change_arrow_type),
                       chooser);
-    gtk_menu_shell_append (GTK_MENU_SHELL (chooser->menu), mi);
-    gtk_widget_show (mi);
+    gtk_box_append (GTK_BOX (box), mi);
   }
 
-  mi = gtk_menu_item_new_with_label (_("Details…"));
+  mi = gtk_button_new_with_label (_("Details…"));
+  gtk_button_set_has_frame (GTK_BUTTON (mi), FALSE);
   g_signal_connect (G_OBJECT (mi),
-                    "activate",
+                    "clicked",
                     G_CALLBACK (dia_arrow_chooser_dialog_show),
                     chooser);
-  gtk_menu_shell_append (GTK_MENU_SHELL (chooser->menu), mi);
-  gtk_widget_show (mi);
+  gtk_box_append (GTK_BOX (box), mi);
 
   return GTK_WIDGET (chooser);
 }

@@ -35,7 +35,7 @@ struct _DiaLineChooser {
   DiaLineStyle lstyle;
   double dash_length;
 
-  GtkMenu *menu;
+  GtkWidget *popover;
 
   DiaChangeLineCallback callback;
   gpointer user_data;
@@ -52,28 +52,29 @@ dia_line_chooser_dispose (GObject *object)
 {
   DiaLineChooser *self = DIA_LINE_CHOOSER (object);
 
-  g_clear_object (&self->menu);
+  g_clear_pointer (&self->popover, gtk_widget_unparent);
 
   G_OBJECT_CLASS (dia_line_chooser_parent_class)->dispose (object);
 }
 
 
-static int
-dia_line_chooser_button_press_event (GtkWidget *widget, GdkEventButton *event)
+/* GTK4: the chooser is a GtkButton; clicking pops up the line-style popover. */
+static void
+dia_line_chooser_clicked (GtkButton *button)
 {
-  DiaLineChooser *self = DIA_LINE_CHOOSER (widget);
+  DiaLineChooser *self = DIA_LINE_CHOOSER (button);
 
-  if (event->button == 1) {
-    gtk_menu_popup_at_widget (self->menu,
-                              widget,
-                              GDK_GRAVITY_EAST,
-                              GDK_GRAVITY_WEST,
-                              (GdkEvent*)event);
-
-    return TRUE;
+  if (self->popover) {
+    gtk_popover_popup (GTK_POPOVER (self->popover));
   }
+}
 
-  return FALSE;
+
+static void
+dia_line_chooser_show_dialog (GtkButton *button, DiaLineChooser *self)
+{
+  gtk_popover_popdown (GTK_POPOVER (self->popover));
+  gtk_widget_show (self->dialog);
 }
 
 
@@ -81,11 +82,11 @@ static void
 dia_line_chooser_class_init (DiaLineChooserClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
-  GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
+  GtkButtonClass *button_class = GTK_BUTTON_CLASS (klass);
 
   object_class->dispose = dia_line_chooser_dispose;
 
-  widget_class->button_press_event = dia_line_chooser_button_press_event;
+  button_class->clicked = dia_line_chooser_clicked;
 }
 
 
@@ -121,11 +122,12 @@ dia_line_chooser_dialog_response (GtkWidget      *dialog,
 
 
 static void
-dia_line_chooser_change_line_style (GtkMenuItem *mi, DiaLineChooser *lchooser)
+dia_line_chooser_change_line_style (GtkButton *button, DiaLineChooser *lchooser)
 {
-  DiaLineStyle lstyle = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (mi), "line-style"));
+  DiaLineStyle lstyle = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (button), "line-style"));
 
   dia_line_chooser_set_line_style (lchooser, lstyle, lchooser->dash_length);
+  gtk_popover_popdown (GTK_POPOVER (lchooser->popover));
 }
 
 
@@ -155,15 +157,14 @@ static void
 dia_line_chooser_init (DiaLineChooser *lchooser)
 {
   GtkWidget *wid;
-  GtkWidget *mi, *ln;
+  GtkWidget *mi, *ln, *box;
   int i;
 
   lchooser->lstyle = DIA_LINE_STYLE_SOLID;
   lchooser->dash_length = DEFAULT_LINESTYLE_DASHLEN;
 
   wid = dia_line_preview_new (DIA_LINE_STYLE_SOLID);
-  gtk_container_add (GTK_CONTAINER (lchooser), wid);
-  gtk_widget_show (wid);
+  gtk_button_set_child (GTK_BUTTON (lchooser), wid);
   lchooser->preview = DIA_LINE_PREVIEW (wid);
 
   lchooser->dialog = gtk_dialog_new_with_buttons (_("Line Style Properties"),
@@ -179,36 +180,37 @@ dia_line_chooser_init (DiaLineChooser *lchooser)
                     lchooser);
 
   wid = dia_line_style_selector_new ();
-  gtk_container_set_border_width (GTK_CONTAINER (wid), 5);
-  gtk_box_pack_start (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG(lchooser->dialog))),
-                      wid,
-                      TRUE,
-                      TRUE,
-                      0);
-  gtk_widget_show (wid);
+  gtk_widget_set_vexpand (wid, TRUE);
+  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG(lchooser->dialog))),
+                  wid);
   lchooser->selector = DIA_LINE_STYLE_SELECTOR (wid);
 
-  lchooser->menu = GTK_MENU (g_object_ref_sink (gtk_menu_new ()));
+  /* GTK4: GtkMenu is gone. Build a popover with a vertical list of flat
+   * buttons, each showing a line-style preview. */
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+  lchooser->popover = gtk_popover_new ();
+  gtk_popover_set_child (GTK_POPOVER (lchooser->popover), box);
+  gtk_widget_set_parent (lchooser->popover, GTK_WIDGET (lchooser));
+
   for (i = 0; i <= DIA_LINE_STYLE_DOTTED; i++) {
-    mi = gtk_menu_item_new ();
+    mi = gtk_button_new ();
+    gtk_button_set_has_frame (GTK_BUTTON (mi), FALSE);
     g_object_set_data (G_OBJECT (mi),
                       "line-style",
                       GINT_TO_POINTER (i));
     ln = dia_line_preview_new (i);
-    gtk_container_add (GTK_CONTAINER (mi), ln);
-    gtk_widget_show (ln);
+    gtk_button_set_child (GTK_BUTTON (mi), ln);
     g_signal_connect (G_OBJECT (mi),
-                      "activate", G_CALLBACK (dia_line_chooser_change_line_style),
+                      "clicked", G_CALLBACK (dia_line_chooser_change_line_style),
                       lchooser);
-    gtk_menu_shell_append (GTK_MENU_SHELL (lchooser->menu), mi);
-    gtk_widget_show (mi);
+    gtk_box_append (GTK_BOX (box), mi);
   }
-  mi = gtk_menu_item_new_with_label (_("Details…"));
-  g_signal_connect_swapped (G_OBJECT (mi),
-                            "activate", G_CALLBACK (gtk_widget_show),
-                            lchooser->dialog);
-  gtk_menu_shell_append (GTK_MENU_SHELL (lchooser->menu), mi);
-  gtk_widget_show (mi);
+  mi = gtk_button_new_with_label (_("Details…"));
+  gtk_button_set_has_frame (GTK_BUTTON (mi), FALSE);
+  g_signal_connect (G_OBJECT (mi),
+                    "clicked", G_CALLBACK (dia_line_chooser_show_dialog),
+                    lchooser);
+  gtk_box_append (GTK_BOX (box), mi);
 }
 
 
