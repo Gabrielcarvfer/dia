@@ -564,6 +564,7 @@ action_save (GSimpleAction *a, GVariant *p, gpointer data)
   GtkRoot *root = gtk_widget_get_root (self->canvas);
 
   gtk_file_dialog_set_title (dialog, _("Save Diagram"));
+  gtk_file_dialog_set_modal (dialog, FALSE);   /* avoid stuck modal grabs */
   gtk_file_dialog_save (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
                         NULL, save_done, self);
   g_object_unref (dialog);
@@ -595,6 +596,7 @@ action_open (GSimpleAction *a, GVariant *p, gpointer data)
   GtkRoot *root = gtk_widget_get_root (self->canvas);
 
   gtk_file_dialog_set_title (dialog, _("Open Diagram"));
+  gtk_file_dialog_set_modal (dialog, FALSE);   /* avoid stuck modal grabs */
   gtk_file_dialog_open (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
                         NULL, open_done, self);
   g_object_unref (dialog);
