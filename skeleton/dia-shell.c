@@ -2161,6 +2161,44 @@ action_export (GSimpleAction *a, GVariant *p, gpointer data)
   g_object_unref (dialog);
 }
 
+/* Render the whole diagram onto the print page (one page), scaled cm -> points
+ * with the same DiaCairoRenderer the canvas/export use. */
+static void
+on_print_draw_page (GtkPrintOperation *op, GtkPrintContext *pctx, int page,
+                    DiaShell *self)
+{
+  cairo_t *cr = gtk_print_context_get_cairo_context (pctx);
+  DiaRenderer *renderer;
+  DiaRectangle *ext;
+
+  data_update_extents (self->diagram);
+  ext = &self->diagram->extents;
+
+  cairo_save (cr);
+  cairo_scale (cr, 72.0 / 2.54, 72.0 / 2.54);   /* the print cr is in points */
+  cairo_translate (cr, 0.5 - ext->left, 0.5 - ext->top);
+  renderer = g_object_new (DIA_CAIRO_TYPE_RENDERER, NULL);
+  DIA_CAIRO_RENDERER (renderer)->cr = cairo_reference (cr);
+  DIA_CAIRO_RENDERER (renderer)->with_alpha = FALSE;
+  data_render (self->diagram, renderer, NULL, NULL, NULL);
+  g_object_unref (renderer);
+  cairo_restore (cr);
+}
+
+static void
+action_print (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GtkPrintOperation *op = gtk_print_operation_new ();
+  GtkRoot *root = gtk_widget_get_root (self->canvas);
+
+  gtk_print_operation_set_n_pages (op, 1);
+  g_signal_connect (op, "draw-page", G_CALLBACK (on_print_draw_page), self);
+  gtk_print_operation_run (op, GTK_PRINT_OPERATION_ACTION_PRINT_DIALOG,
+                           GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL, NULL);
+  g_object_unref (op);
+}
+
 
 static void
 open_done (GObject *source, GAsyncResult *res, gpointer data)
@@ -2200,6 +2238,7 @@ static const GActionEntry dia_actions[] = {
   { "open",       action_open,       NULL, NULL, NULL },
   { "save",       action_save,       NULL, NULL, NULL },
   { "export",     action_export,     NULL, NULL, NULL },
+  { "print",      action_print,      NULL, NULL, NULL },
   { "undo",       action_undo,       NULL, NULL, NULL },
   { "redo",       action_redo,       NULL, NULL, NULL },
   { "cut",        action_cut,        NULL, NULL, NULL },
@@ -2276,6 +2315,7 @@ build_primary_menu_button (void)
   g_menu_append (file, _("_Open…"), "dia.open");
   g_menu_append (file, _("_Save…"), "dia.save");
   g_menu_append (file, _("_Export…"), "dia.export");
+  g_menu_append (file, _("_Print…"), "dia.print");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (file));
 
   g_menu_append (edit, _("_Undo"), "dia.undo");
