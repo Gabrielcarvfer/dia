@@ -17,6 +17,7 @@ executable(
     libglib_dep,
     gio_dep,
     libdia_core_dep,
+    libdia_objects_dep,
   ],
   install: true,
 )

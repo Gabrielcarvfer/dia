@@ -20,28 +20,14 @@
 #include "geometry.h"
 #include "font.h"
 #include "dia-enums.h"
+#include "object.h"
+#include "diagramdata.h"
+#include "dia-layer.h"
+#include "dialib.h"
 
 /* Shared shell state so the event handlers can reach the widgets they update.
  * Owns nothing but itself (widget pointers are borrowed); freed with the
  * window via g_object_set_data_full(). */
-/* A diagram element placed by a create tool. Drawn via the real Dia renderer.
- * (A lightweight stand-in for full DiaObjects until objects/ is ported.) */
-typedef enum {
-  SHAPE_BOX,
-  SHAPE_ELLIPSE,
-  SHAPE_LINE,
-  SHAPE_TEXT,
-} ShapeKind;
-
-typedef struct {
-  ShapeKind kind;
-  Point     a;     /* box/ellipse: top-left;   line: from;  text: baseline */
-  Point     b;     /* box/ellipse: bottom-right; line: to */
-  Color     fill;
-  Color     stroke;
-  char     *text;
-} Shape;
-
 typedef struct {
   GtkWidget *canvas;
   GtkWidget *colour_area;
@@ -53,40 +39,74 @@ typedef struct {
   GdkRGBA    bg;
   char       tool[64];
 
-  GPtrArray *shapes;      /* Shape* : the diagram contents */
+  DiagramData *diagram;   /* the real model: a DiagramData with a layer of
+                           * DiaObjects, rendered via the Dia cairo renderer */
   /* page transform (diagram cm -> widget px), recomputed each draw, so the
    * click handler can map pointer coordinates back to diagram coordinates. */
   double     page_x, page_y, page_scale;
 } DiaShell;
 
 
-static Color
-colour_from_rgba (const GdkRGBA *c)
-{
-  Color out = { c->red, c->green, c->blue, c->alpha };
-  return out;
-}
-
+/* Standard object types (defined in objects/standard, linked via objects-port).
+ * We register them directly rather than through the plugin loader. */
+extern DiaObjectType *_box_type;
+extern DiaObjectType *_ellipse_type;
+extern DiaObjectType *_line_type;
+extern DiaObjectType *_textobj_type;
+extern DiaObjectType *_polygon_type;
+extern DiaObjectType *_beziergon_type;
+extern DiaObjectType *_zigzagline_type;
+extern DiaObjectType *_polyline_type;
+extern DiaObjectType *_bezierline_type;
+extern DiaObjectType *_arc_type;
+extern DiaObjectType *_image_type;
+extern DiaObjectType *_outline_type;
 
 static void
-shape_free (gpointer data)
+register_standard_object_types (void)
 {
-  Shape *s = data;
-  g_free (s->text);
-  g_free (s);
+  object_register_type (_box_type);
+  object_register_type (_ellipse_type);
+  object_register_type (_line_type);
+  object_register_type (_textobj_type);
+  object_register_type (_polygon_type);
+  object_register_type (_beziergon_type);
+  object_register_type (_zigzagline_type);
+  object_register_type (_polyline_type);
+  object_register_type (_bezierline_type);
+  object_register_type (_arc_type);
+  object_register_type (_image_type);
+  object_register_type (_outline_type);
 }
 
 
-static Shape *
-shape_new (ShapeKind kind, Point a, Point b, Color fill, Color stroke)
+static guint
+diagram_object_count (DiaShell *self)
 {
-  Shape *s = g_new0 (Shape, 1);
-  s->kind = kind;
-  s->a = a;
-  s->b = b;
-  s->fill = fill;
-  s->stroke = stroke;
-  return s;
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  return layer ? (guint) dia_layer_object_count (layer) : 0;
+}
+
+
+/* Create a registered object at diagram point @p and add it to the active
+ * layer. Returns the object, or NULL if the type isn't registered. */
+static DiaObject *
+diagram_create_object (DiaShell *self, const char *type_name, Point p)
+{
+  DiaObjectType *type = object_get_type ((char *) type_name);
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  Handle *h1 = NULL, *h2 = NULL;
+  DiaObject *obj;
+
+  if (!type || !layer) {
+    return NULL;
+  }
+
+  obj = type->ops->create (&p, type->default_user_data, &h1, &h2);
+  if (obj) {
+    dia_layer_add_object (layer, obj);
+  }
+  return obj;
 }
 
 
@@ -129,55 +149,23 @@ set_a11y_label (GtkWidget *widget, const char *label)
 
 /* --- drawing callbacks --------------------------------------------------- */
 
-/* Render the diagram's shapes onto the page using the REAL Dia renderer, so
- * the canvas exercises the ported libdia rendering pipeline (not placeholder
- * cairo). The cairo context is already transformed into diagram (cm) space. */
+/* Render the DiagramData onto the page using the REAL Dia renderer + the real
+ * data_render() pipeline. The cairo context is already transformed into
+ * diagram (cm) space. data_render() drives begin/end for a non-interactive
+ * renderer and draws each visible layer's objects. */
 static void
-draw_shapes (cairo_t *cr, GPtrArray *shapes)
+draw_diagram (cairo_t *cr, DiagramData *diagram)
 {
   DiaRenderer *renderer;
   DiaCairoRenderer *cairo_renderer;
-  DiaFont *font;
 
   renderer = g_object_new (DIA_CAIRO_TYPE_RENDERER, NULL);
   cairo_renderer = DIA_CAIRO_RENDERER (renderer);
   cairo_renderer->cr = cairo_reference (cr);
   cairo_renderer->with_alpha = TRUE;
 
-  font = dia_font_new_from_style (DIA_FONT_SANS, 0.8);
+  data_render (diagram, renderer, NULL, NULL, NULL);
 
-  dia_renderer_begin_render (renderer, NULL);
-  dia_renderer_set_linewidth (renderer, 0.05);
-  dia_renderer_set_font (renderer, font, 0.8);
-
-  for (guint i = 0; i < shapes->len; i++) {
-    Shape *s = g_ptr_array_index (shapes, i);
-
-    switch (s->kind) {
-      case SHAPE_BOX:
-        dia_renderer_draw_rect (renderer, &s->a, &s->b, &s->fill, &s->stroke);
-        break;
-      case SHAPE_ELLIPSE: {
-        Point centre = { (s->a.x + s->b.x) / 2.0, (s->a.y + s->b.y) / 2.0 };
-        dia_renderer_draw_ellipse (renderer, &centre,
-                                   ABS (s->b.x - s->a.x), ABS (s->b.y - s->a.y),
-                                   &s->fill, &s->stroke);
-        break;
-      }
-      case SHAPE_LINE:
-        dia_renderer_draw_line (renderer, &s->a, &s->b, &s->stroke);
-        break;
-      case SHAPE_TEXT:
-        dia_renderer_draw_string (renderer, s->text ? s->text : "Text",
-                                  &s->a, DIA_ALIGN_LEFT, &s->stroke);
-        break;
-      default:
-        break;
-    }
-  }
-
-  dia_renderer_end_render (renderer);
-  g_clear_object (&font);
   g_object_unref (renderer);
 }
 
@@ -225,8 +213,8 @@ draw_canvas (GtkDrawingArea *area,
   cairo_clip (cr);
   cairo_translate (cr, px, py);
   cairo_scale (cr, page_w / 20.0, page_w / 20.0);
-  if (self && self->shapes) {
-    draw_shapes (cr, self->shapes);
+  if (self && self->diagram) {
+    draw_diagram (cr, self->diagram);
   }
   cairo_restore (cr);
 }
@@ -324,62 +312,41 @@ on_canvas_motion (GtkEventControllerMotion *controller,
 }
 
 
-/* Map the current tool name to a shape kind; returns FALSE for non-create
- * tools (Modify/Magnify/Scroll/…). */
-static gboolean
-tool_to_shape_kind (const char *tool, ShapeKind *kind)
+/* Map the current tool name to a registered DiaObjectType name; returns NULL
+ * for non-create tools (Modify/Magnify/Scroll/…). */
+static const char *
+tool_to_type_name (const char *tool)
 {
-  if (g_strcmp0 (tool, "Box") == 0)     { *kind = SHAPE_BOX;     return TRUE; }
-  if (g_strcmp0 (tool, "Ellipse") == 0) { *kind = SHAPE_ELLIPSE; return TRUE; }
-  if (g_strcmp0 (tool, "Line") == 0)    { *kind = SHAPE_LINE;    return TRUE; }
-  if (g_strcmp0 (tool, "Text") == 0)    { *kind = SHAPE_TEXT;    return TRUE; }
-  return FALSE;
+  if (g_strcmp0 (tool, "Box") == 0)      return "Standard - Box";
+  if (g_strcmp0 (tool, "Ellipse") == 0)  return "Standard - Ellipse";
+  if (g_strcmp0 (tool, "Line") == 0)     return "Standard - Line";
+  if (g_strcmp0 (tool, "Text") == 0)     return "Standard - Text";
+  if (g_strcmp0 (tool, "Polygon") == 0)  return "Standard - Polygon";
+  if (g_strcmp0 (tool, "Beziergon") == 0) return "Standard - Beziergon";
+  if (g_strcmp0 (tool, "Zigzag") == 0)   return "Standard - ZigZagLine";
+  if (g_strcmp0 (tool, "Polyline") == 0) return "Standard - PolyLine";
+  if (g_strcmp0 (tool, "Bezier") == 0)   return "Standard - BezierLine";
+  if (g_strcmp0 (tool, "Arc") == 0)      return "Standard - Arc";
+  if (g_strcmp0 (tool, "Image") == 0)    return "Standard - Image";
+  if (g_strcmp0 (tool, "Outline") == 0)  return "Standard - Outline";
+  return NULL;
 }
 
 
-/* Apply the current tool at diagram point @p: create a shape (create tools)
- * or just report the position. Shared by the canvas gesture and the UI-test
- * trigger so both exercise the same code path. */
+/* Apply the current tool at diagram point @p: create a real DiaObject (create
+ * tools) or just report the position. Shared by the canvas gesture and the
+ * UI-test trigger so both exercise the same code path. */
 static void
 apply_tool_at (DiaShell *self, Point p)
 {
   char buf[128];
-  ShapeKind kind;
+  const char *type_name = tool_to_type_name (self->tool);
 
-  if (tool_to_shape_kind (self->tool, &kind)) {
-    Color fill = colour_from_rgba (&self->bg);
-    Color stroke = colour_from_rgba (&self->fg);
-    Point a = p, b = p;
-
-    switch (kind) {
-      case SHAPE_BOX:
-      case SHAPE_ELLIPSE:
-        b.x = p.x + 4.0;   /* default 4x3 cm */
-        b.y = p.y + 3.0;
-        break;
-      case SHAPE_LINE:
-        b.x = p.x + 4.0;
-        b.y = p.y + 2.0;
-        break;
-      case SHAPE_TEXT:
-        break;
-      default:
-        break;
-    }
-
-    {
-      Shape *s = shape_new (kind, a, b, fill, stroke);
-      if (kind == SHAPE_TEXT) {
-        s->text = g_strdup (_("Text"));
-      }
-      g_ptr_array_add (self->shapes, s);
-    }
-
+  if (type_name && diagram_create_object (self, type_name, p)) {
     gtk_widget_queue_draw (self->canvas);
-
     g_snprintf (buf, sizeof (buf),
                 _("%s created at (%.1f, %.1f) — %u object(s)"),
-                self->tool, p.x, p.y, self->shapes->len);
+                self->tool, p.x, p.y, diagram_object_count (self));
   } else {
     g_snprintf (buf, sizeof (buf), _("%s at (%.1f, %.1f)"),
                 self->tool[0] ? self->tool : _("Click"), p.x, p.y);
@@ -455,42 +422,44 @@ action_zoom_reset (GSimpleAction *a, GVariant *p, gpointer data)
 }
 
 static void
+dia_shell_set_new_diagram (DiaShell *self)
+{
+  g_clear_object (&self->diagram);
+  self->diagram = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
+}
+
+static void
 action_new (GSimpleAction *a, GVariant *p, gpointer data)
 {
   DiaShell *self = data;
-  char buf[64];
 
-  g_ptr_array_set_size (self->shapes, 0);   /* frees elements via free_func */
+  dia_shell_set_new_diagram (self);
   gtk_widget_queue_draw (self->canvas);
-  g_snprintf (buf, sizeof (buf), _("New diagram — %u object(s)"),
-              self->shapes->len);
-  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_label_set_text (GTK_LABEL (self->status_msg),
+                      _("New diagram — 0 object(s)"));
 }
 
 
-/* Serialize the shape list to a GKeyFile (a stand-in diagram format until the
- * object model / real .dia I/O is wired in). */
+/* Persist the diagram's objects (type name + position) to a GKeyFile. This is
+ * a stand-in until real .dia I/O (app/load_save.c) is wired in; it captures
+ * enough to recreate each object via its registered type. */
 static void
-shapes_to_file (DiaShell *self, GFile *file)
+diagram_to_file (DiaShell *self, GFile *file)
 {
   GKeyFile *kf = g_key_file_new ();
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  int n = layer ? dia_layer_object_count (layer) : 0;
   char *path;
 
-  g_key_file_set_integer (kf, "diagram", "count", (int) self->shapes->len);
-  for (guint i = 0; i < self->shapes->len; i++) {
-    Shape *s = g_ptr_array_index (self->shapes, i);
+  g_key_file_set_integer (kf, "diagram", "count", n);
+  for (int i = 0; i < n; i++) {
+    DiaObject *obj = dia_layer_object_get_nth (layer, i);
     char grp[32];
-    double rect[4]   = { s->a.x, s->a.y, s->b.x, s->b.y };
-    double fill[4]   = { s->fill.red, s->fill.green, s->fill.blue, s->fill.alpha };
-    double stroke[4] = { s->stroke.red, s->stroke.green, s->stroke.blue, s->stroke.alpha };
+    double pos[2] = { obj->position.x, obj->position.y };
 
-    g_snprintf (grp, sizeof (grp), "shape%u", i);
-    g_key_file_set_integer (kf, grp, "kind", s->kind);
-    g_key_file_set_double_list (kf, grp, "rect", rect, 4);
-    g_key_file_set_double_list (kf, grp, "fill", fill, 4);
-    g_key_file_set_double_list (kf, grp, "stroke", stroke, 4);
-    if (s->text)
-      g_key_file_set_string (kf, grp, "text", s->text);
+    g_snprintf (grp, sizeof (grp), "object%d", i);
+    g_key_file_set_string (kf, grp, "type", obj->type->name);
+    g_key_file_set_double_list (kf, grp, "pos", pos, 2);
   }
 
   path = g_file_get_path (file);
@@ -501,7 +470,7 @@ shapes_to_file (DiaShell *self, GFile *file)
 
 
 static void
-shapes_from_file (DiaShell *self, GFile *file)
+diagram_from_file (DiaShell *self, GFile *file)
 {
   GKeyFile *kf = g_key_file_new ();
   char *path = g_file_get_path (file);
@@ -509,31 +478,22 @@ shapes_from_file (DiaShell *self, GFile *file)
   if (g_key_file_load_from_file (kf, path, G_KEY_FILE_NONE, NULL)) {
     int count = g_key_file_get_integer (kf, "diagram", "count", NULL);
 
-    g_ptr_array_set_size (self->shapes, 0);
+    dia_shell_set_new_diagram (self);
     for (int i = 0; i < count; i++) {
       char grp[32];
       gsize n = 0;
-      double *rect, *fill, *stroke;
-      Shape *s;
+      char *type;
+      double *pos;
 
-      g_snprintf (grp, sizeof (grp), "shape%d", i);
-      rect   = g_key_file_get_double_list (kf, grp, "rect", &n, NULL);
-      fill   = g_key_file_get_double_list (kf, grp, "fill", &n, NULL);
-      stroke = g_key_file_get_double_list (kf, grp, "stroke", &n, NULL);
+      g_snprintf (grp, sizeof (grp), "object%d", i);
+      type = g_key_file_get_string (kf, grp, "type", NULL);
+      pos = g_key_file_get_double_list (kf, grp, "pos", &n, NULL);
 
-      if (rect && fill && stroke) {
-        s = g_new0 (Shape, 1);
-        s->kind = g_key_file_get_integer (kf, grp, "kind", NULL);
-        s->a = (Point) { rect[0], rect[1] };
-        s->b = (Point) { rect[2], rect[3] };
-        s->fill = (Color) { fill[0], fill[1], fill[2], fill[3] };
-        s->stroke = (Color) { stroke[0], stroke[1], stroke[2], stroke[3] };
-        s->text = g_key_file_get_string (kf, grp, "text", NULL);
-        g_ptr_array_add (self->shapes, s);
+      if (type && pos && n >= 2) {
+        diagram_create_object (self, type, (Point) { pos[0], pos[1] });
       }
-      g_free (rect);
-      g_free (fill);
-      g_free (stroke);
+      g_free (type);
+      g_free (pos);
     }
     gtk_widget_queue_draw (self->canvas);
   }
@@ -550,7 +510,7 @@ save_done (GObject *source, GAsyncResult *res, gpointer data)
   GFile *file = gtk_file_dialog_save_finish (GTK_FILE_DIALOG (source), res, NULL);
 
   if (file) {
-    shapes_to_file (self, file);
+    diagram_to_file (self, file);
     gtk_label_set_text (GTK_LABEL (self->status_msg), _("Saved diagram"));
     g_object_unref (file);
   }
@@ -580,9 +540,9 @@ open_done (GObject *source, GAsyncResult *res, gpointer data)
   if (file) {
     char buf[64];
 
-    shapes_from_file (self, file);
+    diagram_from_file (self, file);
     g_snprintf (buf, sizeof (buf), _("Opened diagram — %u object(s)"),
-                self->shapes->len);
+                diagram_object_count (self));
     gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
     g_object_unref (file);
   }
@@ -930,31 +890,20 @@ static void
 dia_shell_free (gpointer data)
 {
   DiaShell *self = data;
-  g_clear_pointer (&self->shapes, g_ptr_array_unref);
+  g_clear_object (&self->diagram);
   g_free (self);
 }
 
 
-/* Seed the diagram with a couple of shapes so it isn't blank on open and so
- * the renderer is exercised before the user creates anything. */
+/* Seed the diagram with a few real objects so it isn't blank on open and the
+ * render pipeline is exercised before the user creates anything. */
 static void
 dia_shell_seed_sample (DiaShell *self)
 {
-  Color black = { 0.0, 0.0, 0.0, 1.0 };
-  Color blue  = { 0.80, 0.89, 1.0, 1.0 };
-  Color green = { 0.85, 1.0, 0.85, 1.0 };
-  Shape *txt;
-
-  g_ptr_array_add (self->shapes,
-                   shape_new (SHAPE_BOX, (Point){ 2, 2 }, (Point){ 7, 5 }, blue, black));
-  g_ptr_array_add (self->shapes,
-                   shape_new (SHAPE_ELLIPSE, (Point){ 12, 8 }, (Point){ 17, 11 }, green, black));
-  g_ptr_array_add (self->shapes,
-                   shape_new (SHAPE_LINE, (Point){ 7, 3.5 }, (Point){ 12, 9.5 }, black, black));
-
-  txt = shape_new (SHAPE_TEXT, (Point){ 2, 14 }, (Point){ 2, 14 }, black, black);
-  txt->text = g_strdup ("Dia \xc2\xb7 GTK4 port");
-  g_ptr_array_add (self->shapes, txt);
+  diagram_create_object (self, "Standard - Box",     (Point) { 2, 2 });
+  diagram_create_object (self, "Standard - Ellipse", (Point) { 12, 8 });
+  diagram_create_object (self, "Standard - Line",    (Point) { 7, 4 });
+  diagram_create_object (self, "Standard - Text",    (Point) { 2, 14 });
 }
 
 
@@ -971,7 +920,12 @@ dia_shell_new (void)
   self->zoom = 1.0;
   self->fg = (GdkRGBA) { 0, 0, 0, 1 };
   self->bg = (GdkRGBA) { 1, 1, 1, 1 };
-  self->shapes = g_ptr_array_new_with_free_func (shape_free);
+
+  /* Initialise libdia (property system, object registry, fonts) before any
+   * object types are registered or objects created. */
+  libdia_init (DIA_INTERACTIVE);
+  register_standard_object_types ();
+  self->diagram = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
   dia_shell_seed_sample (self);
 
   /* Install the "dia" action group on the content so the toolbar buttons and
