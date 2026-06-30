@@ -488,13 +488,34 @@ polyconn_load (PolyConn *poly, ObjectNode obj_node, DiaContext *ctx) /* NOTE: Do
     poly->numpoints = 0;
   }
 
+  /* Defend against broken files (#319): the handle setup below writes a start
+   * handle at index 0 and an end handle at numpoints-1, so a polyconn needs at
+   * least two points. A file that omits poly_points, or supplies too few,
+   * otherwise drives numpoints to 0 and the handles[numpoints-1] write
+   * underflows into a huge allocation. Warn and substitute a default
+   * placeholder the user can reroute by hand. */
+  if (poly->numpoints < 2) {
+    dia_context_add_message (ctx,
+        _("Broken polyline/polygon: missing or too few poly_points; "
+          "substituting a default placeholder."));
+    attr = NULL;
+    poly->numpoints = 2;
+  }
+
   object_init (obj, poly->numpoints, 0);
 
-  data = attribute_first_data (attr);
+  data = attr ? attribute_first_data (attr) : NULL;
   poly->points = g_new0 (Point, poly->numpoints);
   for (int i = 0; i < poly->numpoints; i++) {
-    data_point (data, &poly->points[i], ctx);
-    data = data_next (data);
+    if (data) {
+      data_point (data, &poly->points[i], ctx);
+      data = data_next (data);
+    }
+  }
+  if (attr == NULL) {
+    /* a unit-length placeholder: (0,0) -> (1,1) */
+    poly->points[1].x = 1.0;
+    poly->points[1].y = 1.0;
   }
 
   obj->handles[0] = g_new0 (Handle, 1);
