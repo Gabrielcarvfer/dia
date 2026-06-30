@@ -9,6 +9,7 @@ Run via ui-tests/run.sh. Exit 0 = all passed, 1 = some failed, 2 = app missing.
 """
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -90,6 +91,24 @@ def do_click(node):
         return True
     except Exception as exc:
         print("   (click failed:", exc, ")")
+        return False
+
+
+def coord_click(node):
+    """Click the centre of a widget at real screen coordinates via xdotool.
+
+    More reliable than AT-SPI mouse synthesis for drawing areas under
+    Xwayland (which the app uses when run.sh sets GDK_BACKEND=x11).
+    """
+    try:
+        x, y = node.position
+        w, h = node.size
+        cx, cy = int(x + w / 2), int(y + h / 2)
+        subprocess.run(["xdotool", "mousemove", str(cx), str(cy), "click", "1"],
+                       check=False)
+        return True
+    except Exception as exc:
+        print("   (coord_click failed:", exc, ")")
         return False
 
 
@@ -185,7 +204,7 @@ def main():
     #     on the drawing area -> best effort (reported, not fatal).
     if canvas:
         try:
-            do_click(canvas)
+            coord_click(canvas)
             time.sleep(0.6)
             labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
             created = any('object(s)' in (lab.name or '') for lab in labels)
