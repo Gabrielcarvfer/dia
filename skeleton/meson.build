@@ -18,11 +18,24 @@ skeleton_resources = gnome.compile_resources(
   c_name: 'dia_skeleton',
 )
 
+# The libdia gresource (broken-image.png + chain/path icons + colour-selector
+# UI). lib/dia_image.c loads /org/gnome/Dia/broken-image.png as the fallback
+# for an unloadable image; without this the fallback fails and an unloadable
+# image spews GdkPixbuf criticals and renders garbage. Built into the exe (not
+# the static lib) so its auto-register constructor is kept by the linker.
+libdia_resources = gnome.compile_resources(
+  'dia-lib-resources',
+  meson.project_source_root() / 'lib' / 'libdia.gresource.xml',
+  source_dir: meson.project_source_root() / 'lib',
+  c_name: 'dia_lib',
+)
+
 dia_skeleton_exe = executable(
   'dia',
   'main.c',
   'dia-shell.c',
   skeleton_resources,
+  libdia_resources,
   c_args: [
     '-DPACKAGE_VERSION="@0@"'.format(meson.project_version()),
   ],
@@ -69,6 +82,13 @@ if get_option('tests') and python3_prog.found()
     'image-relpath',
     python3_prog,
     args: [meson.project_source_root() / 'ui-tests' / 'test_image_relpath.py'],
+    env: {'DIA_BIN': dia_skeleton_exe.full_path()},
+  )
+  # An unloadable image must fall back to broken-image, not crash.
+  test(
+    'missing-image',
+    python3_prog,
+    args: [meson.project_source_root() / 'ui-tests' / 'test_missing_image.py'],
     env: {'DIA_BIN': dia_skeleton_exe.full_path()},
   )
 endif
