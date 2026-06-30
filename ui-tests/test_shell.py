@@ -7,6 +7,7 @@ buttons change the readout, and the colour area opens the async colour dialog.
 
 Run via ui-tests/run.sh. Exit 0 = all passed, 1 = some failed, 2 = app missing.
 """
+import re
 import sys
 import time
 
@@ -38,10 +39,19 @@ def find(node, **kw):
 
 
 def states_of(node):
+    """Set of short state names, e.g. {'PRESSED', 'SENSITIVE', ...}.
+
+    pyatspi prints states as '<enum ATSPI_STATE_PRESSED of type ...>', so we
+    pull the name out of the ATSPI_STATE_<NAME> token.
+    """
+    out = set()
     try:
-        return {str(s).split('.')[-1] for s in node.getState().get_states()}
+        for s in node.getState().get_states():
+            m = re.search(r'ATSPI_STATE_(\w+)', str(s))
+            out.add(m.group(1) if m else str(s))
     except Exception:
-        return set()
+        pass
+    return out
 
 
 def all_state_names(node):
@@ -127,6 +137,7 @@ def main():
     check("Box tool button present", box)
 
     canvas = (find(app, name='diagram-canvas')
+              or find(app, roleName='image')
               or find(app, roleName='drawing area'))
     check("diagram canvas present", canvas)
     check("layers list present",

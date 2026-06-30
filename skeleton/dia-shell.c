@@ -241,14 +241,10 @@ on_colour_chosen (GObject *source, GAsyncResult *result, gpointer user_data)
 
 
 static void
-on_colour_pressed (GtkGestureClick *gesture,
-                   int              n_press,
-                   double           x,
-                   double           y,
-                   DiaShell        *self)
+on_colour_clicked (GtkButton *button, DiaShell *self)
 {
   GtkColorDialog *dialog = gtk_color_dialog_new ();
-  GtkRoot *root = gtk_widget_get_root (self->colour_area);
+  GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (button));
 
   gtk_color_dialog_set_title (dialog, _("Foreground Colour"));
   gtk_color_dialog_choose_rgba (dialog,
@@ -327,7 +323,7 @@ build_toolbox (DiaShell *self)
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
   GtkWidget *grid = gtk_grid_new ();
   GtkWidget *colour;
-  GtkGesture *click;
+  GtkWidget *colour_btn;
   GtkToggleButton *first = NULL;
 
   gtk_widget_set_margin_start (box, 4);
@@ -357,18 +353,22 @@ build_toolbox (DiaShell *self)
   gtk_box_append (GTK_BOX (box),
                   gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
 
+  /* Colour area: a flat button (so AT-SPI exposes a click action and it is
+   * keyboard-operable) wrapping a drawing area that paints the fg/bg swatches. */
   colour = gtk_drawing_area_new ();
   self->colour_area = colour;
   gtk_widget_set_size_request (colour, 56, 56);
-  gtk_widget_set_halign (colour, GTK_ALIGN_CENTER);
-  set_a11y_label (colour, "colour-area");
-  gtk_widget_set_tooltip_text (colour, _("Click to pick the foreground colour"));
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (colour),
                                   draw_color_area, self, NULL);
-  click = gtk_gesture_click_new ();
-  g_signal_connect (click, "pressed", G_CALLBACK (on_colour_pressed), self);
-  gtk_widget_add_controller (colour, GTK_EVENT_CONTROLLER (click));
-  gtk_box_append (GTK_BOX (box), colour);
+
+  colour_btn = gtk_button_new ();
+  gtk_button_set_child (GTK_BUTTON (colour_btn), colour);
+  gtk_button_set_has_frame (GTK_BUTTON (colour_btn), FALSE);
+  gtk_widget_set_halign (colour_btn, GTK_ALIGN_CENTER);
+  set_a11y_label (colour_btn, "colour-area");
+  gtk_widget_set_tooltip_text (colour_btn, _("Click to pick the foreground colour"));
+  g_signal_connect (colour_btn, "clicked", G_CALLBACK (on_colour_clicked), self);
+  gtk_box_append (GTK_BOX (box), colour_btn);
 
   return box;
 }
@@ -382,7 +382,11 @@ build_canvas_area (DiaShell *self)
   GtkWidget *origin = gtk_button_new ();
   GtkWidget *hruler = gtk_drawing_area_new ();
   GtkWidget *vruler = gtk_drawing_area_new ();
-  GtkWidget *canvas = gtk_drawing_area_new ();
+  /* A bare GtkDrawingArea is invisible to AT-SPI; give it an accessible role
+   * so the UI tests (and screen readers) can find the canvas. */
+  GtkWidget *canvas = g_object_new (GTK_TYPE_DRAWING_AREA,
+                                    "accessible-role", GTK_ACCESSIBLE_ROLE_IMG,
+                                    NULL);
   GtkWidget *vscroll = gtk_scrollbar_new (GTK_ORIENTATION_VERTICAL, NULL);
   GtkWidget *hscroll = gtk_scrollbar_new (GTK_ORIENTATION_HORIZONTAL, NULL);
   GtkEventController *motion;
