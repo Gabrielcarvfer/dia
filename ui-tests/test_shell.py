@@ -180,6 +180,19 @@ def main():
         check("zoom readout becomes 150% after zoom-in",
               find(app, name='150%', roleName='label') is not None)
 
+    # 3b. Clicking the canvas with the Box tool creates an object (the
+    #     statusbar reports the new object count). Needs a synthesized click
+    #     on the drawing area -> best effort (reported, not fatal).
+    if canvas:
+        try:
+            do_click(canvas)
+            time.sleep(0.6)
+            labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+            created = any('object(s)' in (lab.name or '') for lab in labels)
+            check("clicking canvas with Box tool creates an object", created)
+        except Exception as exc:
+            check("canvas click creates an object (%s)" % exc, False)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("colour area present", colour)

@@ -24,6 +24,24 @@
 /* Shared shell state so the event handlers can reach the widgets they update.
  * Owns nothing but itself (widget pointers are borrowed); freed with the
  * window via g_object_set_data_full(). */
+/* A diagram element placed by a create tool. Drawn via the real Dia renderer.
+ * (A lightweight stand-in for full DiaObjects until objects/ is ported.) */
+typedef enum {
+  SHAPE_BOX,
+  SHAPE_ELLIPSE,
+  SHAPE_LINE,
+  SHAPE_TEXT,
+} ShapeKind;
+
+typedef struct {
+  ShapeKind kind;
+  Point     a;     /* box/ellipse: top-left;   line: from;  text: baseline */
+  Point     b;     /* box/ellipse: bottom-right; line: to */
+  Color     fill;
+  Color     stroke;
+  char     *text;
+} Shape;
+
 typedef struct {
   GtkWidget *canvas;
   GtkWidget *colour_area;
@@ -34,7 +52,42 @@ typedef struct {
   GdkRGBA    fg;
   GdkRGBA    bg;
   char       tool[64];
+
+  GPtrArray *shapes;      /* Shape* : the diagram contents */
+  /* page transform (diagram cm -> widget px), recomputed each draw, so the
+   * click handler can map pointer coordinates back to diagram coordinates. */
+  double     page_x, page_y, page_scale;
 } DiaShell;
+
+
+static Color
+colour_from_rgba (const GdkRGBA *c)
+{
+  Color out = { c->red, c->green, c->blue, c->alpha };
+  return out;
+}
+
+
+static void
+shape_free (gpointer data)
+{
+  Shape *s = data;
+  g_free (s->text);
+  g_free (s);
+}
+
+
+static Shape *
+shape_new (ShapeKind kind, Point a, Point b, Color fill, Color stroke)
+{
+  Shape *s = g_new0 (Shape, 1);
+  s->kind = kind;
+  s->a = a;
+  s->b = b;
+  s->fill = fill;
+  s->stroke = stroke;
+  return s;
+}
 
 
 /* The standard tool palette (mirrors app/toolbox.c tool_data). */
@@ -76,42 +129,55 @@ set_a11y_label (GtkWidget *widget, const char *label)
 
 /* --- drawing callbacks --------------------------------------------------- */
 
-/* Draw a small sample diagram onto the page using the REAL Dia renderer, so
+/* Render the diagram's shapes onto the page using the REAL Dia renderer, so
  * the canvas exercises the ported libdia rendering pipeline (not placeholder
- * cairo). The page maps a 20cm-wide virtual diagram to the drawn page area. */
+ * cairo). The cairo context is already transformed into diagram (cm) space. */
 static void
-draw_sample_diagram (cairo_t *cr, double scale)
+draw_shapes (cairo_t *cr, GPtrArray *shapes)
 {
   DiaRenderer *renderer;
   DiaCairoRenderer *cairo_renderer;
   DiaFont *font;
-  Color black = { 0.0, 0.0, 0.0, 1.0 };
-  Color box_a = { 0.80, 0.89, 1.0, 1.0 };
-  Color box_b = { 0.85, 1.0, 0.85, 1.0 };
-  Point a_ul = { 2.0, 2.0 },  a_lr = { 7.0, 5.0 };
-  Point b_ul = { 12.0, 8.0 }, b_lr = { 17.0, 11.0 };
-  Point l_from = { 7.0, 3.5 }, l_to = { 12.0, 9.5 };
-  Point label = { 2.0, 14.0 };
 
   renderer = g_object_new (DIA_CAIRO_TYPE_RENDERER, NULL);
   cairo_renderer = DIA_CAIRO_RENDERER (renderer);
   cairo_renderer->cr = cairo_reference (cr);
   cairo_renderer->with_alpha = TRUE;
 
+  font = dia_font_new_from_style (DIA_FONT_SANS, 0.8);
+
   dia_renderer_begin_render (renderer, NULL);
   dia_renderer_set_linewidth (renderer, 0.05);
-
-  dia_renderer_draw_rect (renderer, &a_ul, &a_lr, &box_a, &black);
-  dia_renderer_draw_rect (renderer, &b_ul, &b_lr, &box_b, &black);
-  dia_renderer_draw_line (renderer, &l_from, &l_to, &black);
-
-  font = dia_font_new_from_style (DIA_FONT_SANS, 0.8);
   dia_renderer_set_font (renderer, font, 0.8);
-  dia_renderer_draw_string (renderer, "Dia \xc2\xb7 GTK4 port",
-                            &label, DIA_ALIGN_LEFT, &black);
-  g_clear_object (&font);
+
+  for (guint i = 0; i < shapes->len; i++) {
+    Shape *s = g_ptr_array_index (shapes, i);
+
+    switch (s->kind) {
+      case SHAPE_BOX:
+        dia_renderer_draw_rect (renderer, &s->a, &s->b, &s->fill, &s->stroke);
+        break;
+      case SHAPE_ELLIPSE: {
+        Point centre = { (s->a.x + s->b.x) / 2.0, (s->a.y + s->b.y) / 2.0 };
+        dia_renderer_draw_ellipse (renderer, &centre,
+                                   ABS (s->b.x - s->a.x), ABS (s->b.y - s->a.y),
+                                   &s->fill, &s->stroke);
+        break;
+      }
+      case SHAPE_LINE:
+        dia_renderer_draw_line (renderer, &s->a, &s->b, &s->stroke);
+        break;
+      case SHAPE_TEXT:
+        dia_renderer_draw_string (renderer, s->text ? s->text : "Text",
+                                  &s->a, DIA_ALIGN_LEFT, &s->stroke);
+        break;
+      default:
+        break;
+    }
+  }
 
   dia_renderer_end_render (renderer);
+  g_clear_object (&font);
   g_object_unref (renderer);
 }
 
@@ -146,13 +212,22 @@ draw_canvas (GtkDrawingArea *area,
   cairo_set_line_width (cr, 1.0);
   cairo_stroke (cr);
 
-  /* Render the sample diagram in page coordinates (cm), clipped to the page. */
+  /* Remember the page transform so clicks can be mapped back to cm. */
+  if (self) {
+    self->page_x = px;
+    self->page_y = py;
+    self->page_scale = page_w / 20.0;   /* a 20cm-wide virtual page */
+  }
+
+  /* Render the diagram shapes in page coordinates (cm), clipped to the page. */
   cairo_save (cr);
   cairo_rectangle (cr, px, py, page_w, page_h);
   cairo_clip (cr);
   cairo_translate (cr, px, py);
   cairo_scale (cr, page_w / 20.0, page_w / 20.0);
-  draw_sample_diagram (cr, page_w / 20.0);
+  if (self && self->shapes) {
+    draw_shapes (cr, self->shapes);
+  }
   cairo_restore (cr);
 }
 
@@ -237,9 +312,28 @@ on_canvas_motion (GtkEventControllerMotion *controller,
 {
   char buf[64];
 
-  /* report "diagram" coordinates: pixels divided by the zoom factor */
-  g_snprintf (buf, sizeof (buf), "%.0f, %.0f", x / self->zoom, y / self->zoom);
+  /* report diagram (cm) coordinates: inverse of the page transform */
+  if (self->page_scale > 0.0) {
+    g_snprintf (buf, sizeof (buf), "%.1f, %.1f",
+                (x - self->page_x) / self->page_scale,
+                (y - self->page_y) / self->page_scale);
+  } else {
+    g_snprintf (buf, sizeof (buf), "%.1f, %.1f", x, y);
+  }
   gtk_label_set_text (GTK_LABEL (self->pos_label), buf);
+}
+
+
+/* Map the current tool name to a shape kind; returns FALSE for non-create
+ * tools (Modify/Magnify/Scroll/…). */
+static gboolean
+tool_to_shape_kind (const char *tool, ShapeKind *kind)
+{
+  if (g_strcmp0 (tool, "Box") == 0)     { *kind = SHAPE_BOX;     return TRUE; }
+  if (g_strcmp0 (tool, "Ellipse") == 0) { *kind = SHAPE_ELLIPSE; return TRUE; }
+  if (g_strcmp0 (tool, "Line") == 0)    { *kind = SHAPE_LINE;    return TRUE; }
+  if (g_strcmp0 (tool, "Text") == 0)    { *kind = SHAPE_TEXT;    return TRUE; }
+  return FALSE;
 }
 
 
@@ -251,10 +345,55 @@ on_canvas_pressed (GtkGestureClick *gesture,
                    DiaShell        *self)
 {
   char buf[128];
+  ShapeKind kind;
+  Point p;
 
-  g_snprintf (buf, sizeof (buf), _("%s at (%.0f, %.0f)"),
-              self->tool[0] ? self->tool : _("Click"),
-              x / self->zoom, y / self->zoom);
+  /* widget pixels -> diagram cm (inverse of the page transform) */
+  if (self->page_scale <= 0.0) {
+    return;
+  }
+  p.x = (x - self->page_x) / self->page_scale;
+  p.y = (y - self->page_y) / self->page_scale;
+
+  if (tool_to_shape_kind (self->tool, &kind)) {
+    Color fill = colour_from_rgba (&self->bg);
+    Color stroke = colour_from_rgba (&self->fg);
+    Point a = p, b = p;
+
+    switch (kind) {
+      case SHAPE_BOX:
+      case SHAPE_ELLIPSE:
+        b.x = p.x + 4.0;   /* default 4x3 cm */
+        b.y = p.y + 3.0;
+        break;
+      case SHAPE_LINE:
+        b.x = p.x + 4.0;
+        b.y = p.y + 2.0;
+        break;
+      case SHAPE_TEXT:
+        break;
+      default:
+        break;
+    }
+
+    {
+      Shape *s = shape_new (kind, a, b, fill, stroke);
+      if (kind == SHAPE_TEXT) {
+        s->text = g_strdup (_("Text"));
+      }
+      g_ptr_array_add (self->shapes, s);
+    }
+
+    gtk_widget_queue_draw (self->canvas);
+
+    g_snprintf (buf, sizeof (buf),
+                _("%s created at (%.1f, %.1f) — %u object(s)"),
+                self->tool, p.x, p.y, self->shapes->len);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("%s at (%.1f, %.1f)"),
+                self->tool[0] ? self->tool : _("Click"), p.x, p.y);
+  }
+
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
@@ -552,6 +691,38 @@ build_statusbar (DiaShell *self)
 }
 
 
+static void
+dia_shell_free (gpointer data)
+{
+  DiaShell *self = data;
+  g_clear_pointer (&self->shapes, g_ptr_array_unref);
+  g_free (self);
+}
+
+
+/* Seed the diagram with a couple of shapes so it isn't blank on open and so
+ * the renderer is exercised before the user creates anything. */
+static void
+dia_shell_seed_sample (DiaShell *self)
+{
+  Color black = { 0.0, 0.0, 0.0, 1.0 };
+  Color blue  = { 0.80, 0.89, 1.0, 1.0 };
+  Color green = { 0.85, 1.0, 0.85, 1.0 };
+  Shape *txt;
+
+  g_ptr_array_add (self->shapes,
+                   shape_new (SHAPE_BOX, (Point){ 2, 2 }, (Point){ 7, 5 }, blue, black));
+  g_ptr_array_add (self->shapes,
+                   shape_new (SHAPE_ELLIPSE, (Point){ 12, 8 }, (Point){ 17, 11 }, green, black));
+  g_ptr_array_add (self->shapes,
+                   shape_new (SHAPE_LINE, (Point){ 7, 3.5 }, (Point){ 12, 9.5 }, black, black));
+
+  txt = shape_new (SHAPE_TEXT, (Point){ 2, 14 }, (Point){ 2, 14 }, black, black);
+  txt->text = g_strdup ("Dia \xc2\xb7 GTK4 port");
+  g_ptr_array_add (self->shapes, txt);
+}
+
+
 GtkWidget *
 dia_shell_new (void)
 {
@@ -565,6 +736,8 @@ dia_shell_new (void)
   self->zoom = 1.0;
   self->fg = (GdkRGBA) { 0, 0, 0, 1 };
   self->bg = (GdkRGBA) { 1, 1, 1, 1 };
+  self->shapes = g_ptr_array_new_with_free_func (shape_free);
+  dia_shell_seed_sample (self);
 
   /* Build the statusbar first: its labels are updated by handlers that can
    * fire during construction (e.g. activating the first tool button). */
@@ -588,7 +761,7 @@ dia_shell_new (void)
   adw_toolbar_view_add_bottom_bar (ADW_TOOLBAR_VIEW (view), statusbar);
 
   /* tie the shared state lifetime to the view */
-  g_object_set_data_full (G_OBJECT (view), "dia-shell", self, g_free);
+  g_object_set_data_full (G_OBJECT (view), "dia-shell", self, dia_shell_free);
 
   return view;
 }
