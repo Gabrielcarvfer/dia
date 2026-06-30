@@ -14,16 +14,24 @@ sudo apt-get install python3-dogtail at-spi2-core gir1.2-atspi-2.0 \
 A session D-Bus and a display (X11 or Wayland) must be available. The runner
 enables accessibility automatically (`toolkit-accessibility` gsetting).
 
+Add `xvfb` for headless runs (recommended): `sudo apt-get install xvfb`.
+
 ## Run
 
 ```sh
+meson test -C build dogtail-ui  # automated, headless (recommended)
+
+# or directly:
 meson compile -C build          # build the app first
-bash ui-tests/run.sh            # launch under AT-SPI + run test_shell.py
-UITEST_VERBOSE=1 bash ui-tests/run.sh   # + accessible-tree dump & state diagnostics
-bash ui-tests/run.sh other.py   # run a different test script
+bash ui-tests/run.sh            # headless via xvfb-run + dbus-run-session
+DIA_UITEST_DISPLAY=1 bash ui-tests/run.sh   # use the current display (to watch)
+UITEST_VERBOSE=1 bash ui-tests/run.sh       # + accessible-tree dump & diagnostics
+bash ui-tests/run.sh other.py               # run a different test script
 ```
 
-Exit code 0 = all checks passed.
+By default `run.sh` re-execs itself inside `xvfb-run` (a virtual X server) and a
+private `dbus-run-session`, so it needs no real display, shows no windows, and
+runs in CI / headless sandboxes. Exit code 0 = all checks passed.
 
 ## What it checks (`test_shell.py`)
 

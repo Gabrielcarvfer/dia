@@ -88,10 +88,19 @@ shims). The whole tree builds into `libdia-core`.
 - **WSL**: defaults to the X11 backend and the native (non-portal, non-modal)
   file chooser there — see `main.c` (WSLg's native-Wayland popovers/portal hang).
 
-The shape model is a lightweight stand-in, **not real `DiaObjects`** — the next
-step is porting `objects/` (e.g. `objects/standard`) so the canvas creates
-actual Dia objects with true `.dia` load/save via `app/load_save.c`, then
-selection/Modify and undo/redo.
+**Real objects + `.dia` I/O (done):** `objects-port/` compiles `objects/standard`
+(Box/Ellipse/Line/Text/…) against GTK4 with zero code changes; the skeleton
+`libdia_init()`s, registers the standard types, and the canvas holds a real
+`DiagramData` rendered via `data_render`. Create tools instantiate real
+`DiaObjects`; Open/Save read/write genuine `.dia` XML (each object via its own
+`type->ops->save`/`load`, written through `dia-io`), upstream-compatible —
+without pulling in the app/ `Diagram`/autosave/prefs chain. The dogtail suite
+(19/19) verifies object creation, `New`, and a `.dia` save→reload round-trip.
+
+Next: object **selection + Modify** (move/resize via handles), **undo/redo**
+(lib's change system), connection points, and folding `app/main.c`/`app_procs.c`
+into the `AdwApplication`. Porting the rest of `objects/` (UML, flowchart, …)
+is mechanical now that the pattern is established.
 
 ## Building
 
