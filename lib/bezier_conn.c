@@ -1085,23 +1085,52 @@ bezierconn_load (BezierConn *bezier,
     bezier->bezier.num_points = 0;
   }
 
+  /* Defend against broken files (#319): object_init below is handed
+   * 3*num_points-2 handles, so num_points must be at least two or the count
+   * underflows into a multi-gigabyte allocation. A bezierconn needs two
+   * bezpoints (one curve segment). Warn and substitute a straight
+   * placeholder. */
+  if (bezier->bezier.num_points < 2) {
+    dia_context_add_message (ctx,
+        _("Broken bezier line: missing or too few bez_points; "
+          "substituting a default placeholder."));
+    attr = NULL;
+    bezier->bezier.num_points = 2;
+  }
+
   object_init (obj, 3 * bezier->bezier.num_points - 2, 0);
 
-  data = attribute_first_data (attr);
+  data = attr ? attribute_first_data (attr) : NULL;
   if (bezier->bezier.num_points != 0) {
     bezier->bezier.points = g_new (BezPoint, bezier->bezier.num_points);
     bezier->bezier.points[0].type = BEZ_MOVE_TO;
-    data_point (data, &bezier->bezier.points[0].p1, ctx);
-    data = data_next (data);
+    if (data) {
+      data_point (data, &bezier->bezier.points[0].p1, ctx);
+      data = data_next (data);
+    } else {
+      bezier->bezier.points[0].p1.x = 0.0;
+      bezier->bezier.points[0].p1.y = 0.0;
+    }
 
     for (i = 1; i < bezier->bezier.num_points; i++) {
       bezier->bezier.points[i].type = BEZ_CURVE_TO;
-      data_point (data, &bezier->bezier.points[i].p1, ctx);
-      data = data_next (data);
-      data_point (data, &bezier->bezier.points[i].p2, ctx);
-      data = data_next (data);
-      data_point (data, &bezier->bezier.points[i].p3, ctx);
-      data = data_next (data);
+      if (data) {
+        data_point (data, &bezier->bezier.points[i].p1, ctx);
+        data = data_next (data);
+        data_point (data, &bezier->bezier.points[i].p2, ctx);
+        data = data_next (data);
+        data_point (data, &bezier->bezier.points[i].p3, ctx);
+        data = data_next (data);
+      } else {
+        /* a straight placeholder segment from (0,0) to (1,1); control points
+         * are spaced along the line so it draws as a line */
+        bezier->bezier.points[i].p1.x = 1.0 / 3.0;
+        bezier->bezier.points[i].p1.y = 1.0 / 3.0;
+        bezier->bezier.points[i].p2.x = 2.0 / 3.0;
+        bezier->bezier.points[i].p2.y = 2.0 / 3.0;
+        bezier->bezier.points[i].p3.x = 1.0;
+        bezier->bezier.points[i].p3.y = 1.0;
+      }
     }
   }
 
