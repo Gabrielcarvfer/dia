@@ -24,6 +24,10 @@
 #include "diagramdata.h"
 #include "dia-layer.h"
 #include "dialib.h"
+#include "dia-io.h"
+#include "dia_xml.h"
+#include "diacontext.h"
+#include <libxml/tree.h>
 
 /* Shared shell state so the event handlers can reach the widgets they update.
  * Owns nothing but itself (widget pointers are borrowed); freed with the
@@ -440,66 +444,137 @@ action_new (GSimpleAction *a, GVariant *p, gpointer data)
 }
 
 
-/* Persist the diagram's objects (type name + position) to a GKeyFile. This is
- * a stand-in until real .dia I/O (app/load_save.c) is wired in; it captures
- * enough to recreate each object via its registered type. */
-static void
+/* Write the diagram to a real .dia file: a <dia:diagram> with a <dia:layer>
+ * whose <dia:object>s are serialized by each object's own save vfunc (the same
+ * primitives app/load_save.c uses), then written via dia-io (handles encoding
+ * and optional gzip). Produces files loadable by upstream Dia. */
+static gboolean
 diagram_to_file (DiaShell *self, GFile *file)
 {
-  GKeyFile *kf = g_key_file_new ();
+  DiaContext *ctx = dia_context_new ("Save Diagram");
+  xmlDocPtr doc = xmlNewDoc ((const xmlChar *) "1.0");
+  xmlNodePtr root, layer_node;
+  xmlNsPtr ns;
   DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  char *path = g_file_get_path (file);
   int n = layer ? dia_layer_object_count (layer) : 0;
-  char *path;
+  gboolean ok;
 
-  g_key_file_set_integer (kf, "diagram", "count", n);
+  doc->encoding = xmlStrdup ((const xmlChar *) "UTF-8");
+  root = xmlNewDocNode (doc, NULL, (const xmlChar *) "diagram", NULL);
+  xmlDocSetRootElement (doc, root);
+  ns = xmlNewNs (root, (const xmlChar *) DIA_XML_NAME_SPACE_BASE,
+                 (const xmlChar *) "dia");
+  xmlSetNs (root, ns);
+
+  layer_node = xmlNewChild (root, ns, (const xmlChar *) "layer", NULL);
+  xmlSetProp (layer_node, (const xmlChar *) "name", (const xmlChar *) "Background");
+  xmlSetProp (layer_node, (const xmlChar *) "visible", (const xmlChar *) "true");
+
   for (int i = 0; i < n; i++) {
     DiaObject *obj = dia_layer_object_get_nth (layer, i);
-    char grp[32];
-    double pos[2] = { obj->position.x, obj->position.y };
+    xmlNodePtr obj_node = xmlNewChild (layer_node, ns,
+                                       (const xmlChar *) "object", NULL);
+    char buf[16];
 
-    g_snprintf (grp, sizeof (grp), "object%d", i);
-    g_key_file_set_string (kf, grp, "type", obj->type->name);
-    g_key_file_set_double_list (kf, grp, "pos", pos, 2);
+    xmlSetProp (obj_node, (const xmlChar *) "type",
+                (const xmlChar *) obj->type->name);
+    g_snprintf (buf, sizeof (buf), "%d", obj->type->version);
+    xmlSetProp (obj_node, (const xmlChar *) "version", (const xmlChar *) buf);
+    g_snprintf (buf, sizeof (buf), "O%d", i);
+    xmlSetProp (obj_node, (const xmlChar *) "id", (const xmlChar *) buf);
+
+    obj->type->ops->save (obj, obj_node, ctx);
   }
 
-  path = g_file_get_path (file);
-  g_key_file_save_to_file (kf, path, NULL);
+  ok = dia_io_save_document (path, doc, FALSE, ctx);
+
+  xmlFreeDoc (doc);
+  dia_context_release (ctx);
   g_free (path);
-  g_key_file_free (kf);
+  return ok;
 }
 
 
 static void
 diagram_from_file (DiaShell *self, GFile *file)
 {
-  GKeyFile *kf = g_key_file_new ();
+  DiaContext *ctx = dia_context_new ("Load Diagram");
   char *path = g_file_get_path (file);
+  xmlDocPtr doc = dia_io_load_document (path, ctx, NULL);
 
-  if (g_key_file_load_from_file (kf, path, G_KEY_FILE_NONE, NULL)) {
-    int count = g_key_file_get_integer (kf, "diagram", "count", NULL);
+  if (doc) {
+    xmlNodePtr root = xmlDocGetRootElement (doc);
+    DiaLayer *layer;
 
     dia_shell_set_new_diagram (self);
-    for (int i = 0; i < count; i++) {
-      char grp[32];
-      gsize n = 0;
-      char *type;
-      double *pos;
+    layer = dia_diagram_data_get_active_layer (self->diagram);
 
-      g_snprintf (grp, sizeof (grp), "object%d", i);
-      type = g_key_file_get_string (kf, grp, "type", NULL);
-      pos = g_key_file_get_double_list (kf, grp, "pos", &n, NULL);
-
-      if (type && pos && n >= 2) {
-        diagram_create_object (self, type, (Point) { pos[0], pos[1] });
+    for (xmlNodePtr ln = root ? root->children : NULL; ln; ln = ln->next) {
+      if (xmlStrcmp (ln->name, (const xmlChar *) "layer") != 0) {
+        continue;
       }
-      g_free (type);
-      g_free (pos);
+      for (xmlNodePtr on = ln->children; on; on = on->next) {
+        char *type_name, *version_str;
+        DiaObjectType *type;
+        DiaObject *obj;
+
+        if (xmlStrcmp (on->name, (const xmlChar *) "object") != 0) {
+          continue;
+        }
+        type_name = (char *) xmlGetProp (on, (const xmlChar *) "type");
+        version_str = (char *) xmlGetProp (on, (const xmlChar *) "version");
+        type = type_name ? object_get_type (type_name) : NULL;
+
+        if (type && type->ops->load) {
+          obj = type->ops->load (on, version_str ? atoi (version_str) : 0, ctx);
+          if (obj) {
+            dia_layer_add_object (layer, obj);
+          }
+        }
+        if (type_name) xmlFree (type_name);
+        if (version_str) xmlFree (version_str);
+      }
     }
+    xmlFreeDoc (doc);
     gtk_widget_queue_draw (self->canvas);
   }
 
+  dia_context_release (ctx);
   g_free (path);
-  g_key_file_free (kf);
+}
+
+
+/* UI-test hook (DIA_UITEST): verify real .dia I/O without the file chooser —
+ * save the diagram, clear it, reload it, and report whether the object count
+ * survived the round-trip. */
+static void
+on_uitest_roundtrip (GtkButton *button, DiaShell *self)
+{
+  GFile *file = g_file_new_for_path ("/tmp/dia-uitest-roundtrip.dia");
+  guint before, after;
+  char buf[96];
+
+  if (diagram_object_count (self) == 0) {
+    diagram_create_object (self, "Standard - Box", (Point) { 5, 5 });
+  }
+  before = diagram_object_count (self);
+
+  diagram_to_file (self, file);
+  dia_shell_set_new_diagram (self);
+  diagram_from_file (self, file);
+  after = diagram_object_count (self);
+
+  if (before == after && after > 0) {
+    g_snprintf (buf, sizeof (buf), _("round-trip OK (%u -> %u objects)"),
+                before, after);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("round-trip FAIL (%u -> %u objects)"),
+                before, after);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+  g_object_unref (file);
 }
 
 
@@ -510,10 +585,34 @@ save_done (GObject *source, GAsyncResult *res, gpointer data)
   GFile *file = gtk_file_dialog_save_finish (GTK_FILE_DIALOG (source), res, NULL);
 
   if (file) {
-    diagram_to_file (self, file);
-    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Saved diagram"));
+    gboolean ok = diagram_to_file (self, file);
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        ok ? _("Saved diagram") : _("Save failed"));
     g_object_unref (file);
   }
+}
+
+
+/* Restrict the file dialog to *.dia (plus an all-files entry). */
+static void
+set_dia_filter (GtkFileDialog *dialog)
+{
+  GListStore *filters = g_list_store_new (GTK_TYPE_FILE_FILTER);
+  GtkFileFilter *dia = gtk_file_filter_new ();
+  GtkFileFilter *all = gtk_file_filter_new ();
+
+  gtk_file_filter_set_name (dia, _("Dia diagrams (*.dia)"));
+  gtk_file_filter_add_pattern (dia, "*.dia");
+  gtk_file_filter_set_name (all, _("All files"));
+  gtk_file_filter_add_pattern (all, "*");
+
+  g_list_store_append (filters, dia);
+  g_list_store_append (filters, all);
+  gtk_file_dialog_set_filters (dialog, G_LIST_MODEL (filters));
+
+  g_object_unref (dia);
+  g_object_unref (all);
+  g_object_unref (filters);
 }
 
 static void
@@ -525,6 +624,7 @@ action_save (GSimpleAction *a, GVariant *p, gpointer data)
 
   gtk_file_dialog_set_title (dialog, _("Save Diagram"));
   gtk_file_dialog_set_modal (dialog, FALSE);   /* avoid stuck modal grabs */
+  set_dia_filter (dialog);
   gtk_file_dialog_save (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
                         NULL, save_done, self);
   g_object_unref (dialog);
@@ -557,6 +657,7 @@ action_open (GSimpleAction *a, GVariant *p, gpointer data)
 
   gtk_file_dialog_set_title (dialog, _("Open Diagram"));
   gtk_file_dialog_set_modal (dialog, FALSE);   /* avoid stuck modal grabs */
+  set_dia_filter (dialog);
   gtk_file_dialog_open (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
                         NULL, open_done, self);
   g_object_unref (dialog);
@@ -699,9 +800,13 @@ build_action_toolbar (DiaShell *self)
    * The label IS the AT-SPI name the test searches for. */
   if (g_getenv ("DIA_UITEST")) {
     GtkWidget *t = gtk_button_new_with_label ("uitest-apply-tool");
+    GtkWidget *r = gtk_button_new_with_label ("uitest-roundtrip");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
+    g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     gtk_box_append (GTK_BOX (bar), t);
+    gtk_box_append (GTK_BOX (bar), r);
   }
 
   return bar;

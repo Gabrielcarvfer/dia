@@ -226,6 +226,18 @@ def main():
         cleared = any('0 object(s)' in (lab.name or '') for lab in labels)
         check("New action clears the diagram", cleared)
 
+    # 3d. Real .dia I/O round-trip (save -> clear -> reload) via the DIA_UITEST
+    #     trigger, so it doesn't need the file chooser. Asserts the object count
+    #     survives, i.e. objects serialize and parse through real .dia XML.
+    rt = find(app, name='uitest-roundtrip', roleName='push button')
+    check("DIA_UITEST round-trip trigger present", rt)
+    if rt:
+        do_click(rt)
+        time.sleep(0.5)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('round-trip OK' in (lab.name or '') for lab in labels)
+        check(".dia save/reload round-trip preserves objects", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("colour area present", colour)
