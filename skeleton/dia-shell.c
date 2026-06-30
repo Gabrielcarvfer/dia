@@ -2193,7 +2193,9 @@ refresh_layers_list (DiaShell *self)
   while ((child = gtk_widget_get_first_child (GTK_WIDGET (lb))) != NULL) {
     gtk_list_box_remove (lb, child);
   }
-  for (int i = n - 1; i >= 0; i--) {
+  /* Index order matches upstream: layer index 0 at the top, and data_raise_layer
+   * moves a layer toward index 0 (up the list), data_lower_layer toward n-1. */
+  for (int i = 0; i < n; i++) {
     DiaLayer *l = data_layer_get_nth (self->diagram, i);
     GtkWidget *row = gtk_editable_label_new (dia_layer_get_name (l));
 
@@ -2204,8 +2206,7 @@ refresh_layers_list (DiaShell *self)
     gtk_list_box_insert (lb, row, -1);
   }
   if (active_idx >= 0) {
-    /* listbox position of layer i is (n-1 - i) since we inserted top-first */
-    GtkListBoxRow *r = gtk_list_box_get_row_at_index (lb, n - 1 - active_idx);
+    GtkListBoxRow *r = gtk_list_box_get_row_at_index (lb, active_idx);
     if (r) {
       gtk_list_box_select_row (lb, r);
     }
@@ -2254,8 +2255,9 @@ on_layer_add (GtkButton *b, DiaShell *self)
   DiaLayer *l = dia_layer_new (name, self->diagram);
 
   g_free (name);
-  data_add_layer (self->diagram, l);          /* takes ownership */
+  data_add_layer (self->diagram, l);          /* refs the layer itself */
   data_set_active_layer (self->diagram, l);
+  g_object_unref (l);                          /* drop our construction ref */
   refresh_layers_list (self);
   gtk_label_set_text (GTK_LABEL (self->status_msg),
                       _("Added a layer (active)"));
