@@ -544,8 +544,8 @@ dia_font_selector_init (DiaFontSelector *fs)
   }
   g_clear_pointer (&families, g_free);
 
-  gtk_box_pack_start (GTK_BOX (fs), GTK_WIDGET (priv->fonts), FALSE, TRUE, 0);
-  gtk_box_pack_start (GTK_BOX (fs), GTK_WIDGET (priv->styles), FALSE, TRUE, 0);
+  gtk_box_append (GTK_BOX (fs), GTK_WIDGET (priv->fonts));
+  gtk_box_append (GTK_BOX (fs), GTK_WIDGET (priv->styles));
 }
 
 

@@ -43,10 +43,10 @@ G_DEFINE_TYPE (DiaArrowPreview, dia_arrow_preview, GTK_TYPE_WIDGET)
  *
  * Since: dawn-of-time
  */
-static int
-dia_arrow_preview_draw (GtkWidget *widget, cairo_t *ctx)
+static void
+dia_arrow_preview_snapshot (GtkWidget *widget, GtkSnapshot *snapshot)
 {
-  if (gtk_widget_is_drawable (widget)) {
+  {
     Point from, to;
     Point move_arrow, move_line, arrow_head;
     DiaCairoRenderer *renderer;
@@ -56,18 +56,13 @@ dia_arrow_preview_draw (GtkWidget *widget, cairo_t *ctx)
     int x, y;
     int linewidth = 2;
     cairo_surface_t *surface;
-    GtkAllocation alloc;
-    int xpad, ypad;
+    cairo_t *ctx;
 
-    gtk_widget_get_allocation (widget, &alloc);
-
-    xpad = gtk_widget_get_margin_start(widget) + gtk_widget_get_margin_end(widget);
-    ypad = gtk_widget_get_margin_top(widget) + gtk_widget_get_margin_bottom(widget);
-
-    width = alloc.width - xpad;
-    height = alloc.height - ypad;
-    x = xpad;
-    y = ypad;
+    /* GTK4: snapshot coords are widget-local; size already excludes margins. */
+    width = gtk_widget_get_width (widget);
+    height = gtk_widget_get_height (widget);
+    x = 0;
+    y = 0;
 
     to.y = from.y = height / 2;
     if (arrow->left) {
@@ -108,11 +103,10 @@ dia_arrow_preview_draw (GtkWidget *widget, cairo_t *ctx)
       Color colour_bg, colour_fg;
       GtkStyleContext *style = gtk_widget_get_style_context (widget);
       /* the text colors are the best approximation to what we had */
-      GtkStateFlags state = gtk_widget_get_state_flags (widget);
-      GdkRGBA bg;
+      /* GTK4: get_background_color is gone; approximate with opaque white. */
+      GdkRGBA bg = { 1.0, 1.0, 1.0, 1.0 };
       GdkRGBA fg;
-      gtk_style_context_get_background_color(style, state, &bg);
-      gtk_style_context_get_color(style, state, &fg);
+      gtk_style_context_get_color (style, &fg);
 
       dia_colour_from_gdk (&colour_bg, &bg);
       dia_colour_from_gdk (&colour_fg, &fg);
@@ -129,12 +123,14 @@ dia_arrow_preview_draw (GtkWidget *widget, cairo_t *ctx)
     dia_renderer_end_render (DIA_RENDERER (renderer));
     g_clear_object (&renderer);
 
+    /* GTK4: draw (cairo_t) -> snapshot. */
+    ctx = gtk_snapshot_append_cairo (snapshot,
+                                     &GRAPHENE_RECT_INIT (0, 0, width, height));
     cairo_set_source_surface (ctx, surface, x, y);
     cairo_paint (ctx);
     cairo_surface_destroy (surface);
+    cairo_destroy (ctx);
   }
-
-  return TRUE;
 }
 
 
@@ -143,25 +139,15 @@ dia_arrow_preview_class_init (DiaArrowPreviewClass *class)
 {
   GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (class);
 
-  widget_class->draw = dia_arrow_preview_draw;
+  widget_class->snapshot = dia_arrow_preview_snapshot;
 }
 
 
 static void
 dia_arrow_preview_init (DiaArrowPreview *arrow)
 {
-  int xpad, ypad;
-
-  gtk_widget_set_has_window (GTK_WIDGET (arrow), FALSE);
-
-  xpad = gtk_widget_get_margin_start (GTK_WIDGET (arrow)) +
-    gtk_widget_get_margin_end (GTK_WIDGET (arrow));
-  ypad = gtk_widget_get_margin_top (GTK_WIDGET (arrow)) +
-    gtk_widget_get_margin_bottom (GTK_WIDGET (arrow));
-
-  gtk_widget_set_size_request (GTK_WIDGET (arrow),
-                               40 + xpad,
-                               20 + ypad);
+  /* GTK4: widgets are windowless; margins are handled by the framework. */
+  gtk_widget_set_size_request (GTK_WIDGET (arrow), 40, 20);
 
   arrow->atype = ARROW_NONE;
   arrow->left = TRUE;

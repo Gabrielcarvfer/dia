@@ -30,16 +30,32 @@ A growing GTK4 core library, **`lib-port/`** (builds `libdia-core`), recompiles
 build is unaffected); `lib-port/meson.build` lists the files verified to
 compile under GTK4. Grow that list as porting continues.
 
-**71 of 100 `lib/*.c` files compile against GTK4** — the entire object/model
-layer. The vast majority needed *no code changes*: GTK4 still ships `gtk.h`,
-`GtkWidget`, `GdkPixbuf`, `GdkRGBA`, `GtkTreeView`/`GtkCellRenderer`, etc., so
-headers that merely declare such types port as-is. Only files that *use removed
-GTK3 APIs* need real work. `font.c` is the first such hand-port done
-(`gtk_get_default_language()` → `pango_language_get_default()`,
-`gdk_pango_context_get()` → a PangoCairo measure context).
+**87 of 100 `lib/*.c` files compile against GTK4.** The whole object/model
+layer needed *no code changes*: GTK4 still ships `gtk.h`, `GtkWidget`,
+`GdkPixbuf`, `GdkRGBA`, `GtkTreeView`/`GtkCellRenderer`, etc., so headers that
+merely declare such types port as-is. The rest were hand-ported widgets. Real
+migrations done so far:
 
-The ~29 remaining `lib/` files are the genuinely GTK-coupled widgets/dialogs
-(see the ranked list at the bottom).
+- `font.c` — `gtk_get_default_language()` → `pango_language_get_default()`;
+  `gdk_pango_context_get()` → a PangoCairo measure context.
+- Cell renderers (`dia-{line,arrow,colour}-cell-renderer.c`) — GTK3 `render`
+  (cairo) / `get_size` vfuncs → `snapshot` (via `gtk_snapshot_append_cairo`)
+  and `get_preferred_width`/`_height`; dropped the state-flags arg from
+  `gtk_style_context_get_color`; `get_background_color` is gone (approximated).
+- `dia-unit-spinner.c` — `GtkSpinButton` is final in GTK4, so `DiaUnitSpinner`
+  is re-based as a `GtkWidget` composing a `GtkSpinButton` (public API intact).
+- Preview widgets (`dia-line-preview.c`, `dia-arrow-preview.c`) — `GtkWidget`
+  `draw` vfunc → `snapshot`; dropped `get_allocation`/`set_has_window`/
+  `is_drawable`.
+- `prop_inttypes.c` — `gtk_entry_get/set_text` → `GtkEditable`.
+- `prop_matrix.c` — `gtk_box_pack_start` → `gtk_box_append` (+ `set_hexpand`);
+  `gtk_container_get_children` → `gtk_widget_get_first_child`/`get_next_sibling`.
+- `prop_dict.c` — `gtk_scrolled_window_new()` arg drop / `set_child`; removed
+  `set_shadow_type` and `gtk_widget_show_all`.
+- `dia-font-selector.c` — `gtk_box_pack_start` → `gtk_box_append`.
+
+The 13 remaining `lib/` files are the heavier widgets/dialogs (see the ranked
+list at the bottom); `dia-io.c` is blocked only by libxml < 2.14, not GTK.
 
 ## Building
 
@@ -66,7 +82,7 @@ link set.
 1. **Core model (`lib/`) — non-GTK first.** Object model, properties, geometry,
    and the `DiaRenderer` hierarchy are mostly GLib/cairo and port cheaply.
    Detach them from `gtk.h` where they don't truly need it.
-   **Status: largely done** — 71/100 `lib/*.c` compile via `lib-port/`.
+   **Status: largely done** — 87/100 `lib/*.c` compile via `lib-port/`.
 2. **Canvas drawing model.** `app/dia-canvas.c` is a `GtkDrawingArea`. GTK4:
    - `configure-event` / `GdkEventConfigure` → `GtkDrawingArea::resize` and
      `gtk_widget_get_width/height()`.
@@ -90,18 +106,11 @@ link set.
 
 ### Remaining `lib/` files, ranked by removed-API count
 
-These are the GTK-coupled files not yet in `lib-port`. The number is how many
-*removed-in-GTK4* API references each contains (a rough difficulty proxy):
+These are the 13 GTK-coupled files not yet in `lib-port`. The number is how
+many *removed-in-GTK4* API references each contains (a rough difficulty proxy):
 
 ```
- 0  object.c*                (* done — was only blocked by xpm-pixbuf subproject)
- 1  dia-colour-selector.c, dia-line-cell-renderer.c, dia_image.c,
-    diainteractiverenderer.c (GdkWindow -> GdkSurface)
- 2  dia-arrow-preview.c, dia-line-preview.c, dia-unit-spinner.c, prop_dict.c
- 3  dia-arrow-cell-renderer.c, prop_inttypes.c
- 4  dia-font-selector.c, prop_pixbuf.c
- 5  prop_text.c
- 6  prop_matrix.c
+ 5  prop_text.c              (also a GdkEventKey handler -> GtkEventControllerKey)
  8  dia-arrow-selector.c, dia-line-style-selector.c
 11  diapatternselector.c
 12  dia-arrow-chooser.c, dia-line-chooser.c, widgets.c

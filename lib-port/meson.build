@@ -146,6 +146,15 @@ libdia_core_ported = files(
   lib_dir / 'dia-arrow-cell-renderer.c',  # render->snapshot; get_background_color removed
   lib_dir / 'dia-colour-cell-renderer.c', # render->snapshot, chains to parent ->snapshot
   lib_dir / 'diacellrendererenum.c',      # compiles as-is (no render override)
+  lib_dir / 'dia-line-preview.c',         # GtkWidget draw vfunc -> snapshot
+  lib_dir / 'dia-arrow-preview.c',        # draw -> snapshot; get_background_color removed
+  lib_dir / 'prop_inttypes.c',            # gtk_entry_get/set_text -> GtkEditable
+  lib_dir / 'dia_image.c',                # gdk-pixbuf only, compiles as-is
+  lib_dir / 'dia-colour-selector.c',      # gtk_widget_show (deprecated, present)
+  lib_dir / 'prop_dict.c',                # scrolled-window ctor/set_child, drop show_all
+  lib_dir / 'prop_matrix.c',              # box_pack_start->append, container_get_children->walk
+  lib_dir / 'dia-font-selector.c',        # box_pack_start->append
+  lib_dir / 'prop_pixbuf.c',              # gdk-pixbuf only
 
   # --- Still need real GTK4 widget porting (deferred) ---------------------
   # prop_geomtypes.c        -> pulls dia-unit-spinner.h (subclasses

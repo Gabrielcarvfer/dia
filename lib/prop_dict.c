@@ -231,9 +231,9 @@ _create_view (GtkTreeModel *model)
   GtkTreeViewColumn *col;
   GtkCellRenderer *renderer;
 
-  widget = gtk_scrolled_window_new (NULL, NULL);
+  /* GTK4: scrolled-window ctor takes no args; set_shadow_type is gone. */
+  widget = gtk_scrolled_window_new ();
   gtk_widget_set_vexpand (widget, TRUE);
-  gtk_scrolled_window_set_shadow_type (GTK_SCROLLED_WINDOW (widget), GTK_SHADOW_ETCHED_IN);
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (widget), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
 
   tree_view = gtk_tree_view_new_with_model (model);
@@ -257,7 +257,7 @@ _create_view (GtkTreeModel *model)
   gtk_tree_view_append_column (GTK_TREE_VIEW (tree_view), col);
   gtk_tree_view_column_set_sort_column_id (col, VALUE_COLUMN);
 
-  gtk_container_add (GTK_CONTAINER (widget), tree_view);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (widget), tree_view);
 
   g_object_set_data (G_OBJECT (widget), TREE_MODEL_KEY, model);
 
@@ -268,7 +268,7 @@ dictprop_get_widget (DictProperty *prop, PropDialog *dialog)
 {
   GtkWidget *ret;
   ret = _create_view (_create_model (prop));
-  gtk_widget_show_all (ret);
+  /* GTK4: widgets are visible by default; gtk_widget_show_all is gone. */
   /* prophandler_connect(&prop->common, G_OBJECT(ret), "value_changed");
    * It's not so easy, we are maintaining our own changed state via edited signal
    */

@@ -74,7 +74,7 @@ charprop_reset_widget(CharProperty *prop, WIDGET *widget)
   gchar ch[7];
   int unilen = g_unichar_to_utf8 (prop->char_data, ch);
   ch[unilen] = 0;
-  gtk_entry_set_text(GTK_ENTRY(widget), ch);
+  gtk_editable_set_text(GTK_EDITABLE(widget), ch);
 }
 
 static void
@@ -521,7 +521,7 @@ enumprop_reset_widget(EnumProperty *prop, WIDGET *widget)
   } else {
     char buf[16];
     g_snprintf(buf, sizeof(buf), "%d", prop->enum_data);
-    gtk_entry_set_text(GTK_ENTRY(widget), buf);
+    gtk_editable_set_text(GTK_EDITABLE(widget), buf);
   }
 }
 
@@ -536,7 +536,7 @@ enumprop_set_from_widget(EnumProperty *prop, WIDGET *widget)
 
     prop->enum_data = enumdata[pos].enumv;
   } else {
-    prop->enum_data = strtol(gtk_entry_get_text(GTK_ENTRY(widget)), NULL, 0);
+    prop->enum_data = strtol(gtk_editable_get_text(GTK_EDITABLE(widget)), NULL, 0);
   }
 }
 

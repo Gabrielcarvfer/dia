@@ -178,7 +178,8 @@ matrixprop_get_widget (MatrixProperty *prop, PropDialog *dialog)
   gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(sb),TRUE);
   prophandler_connect(&prop->common, G_OBJECT(sb), "changed");
   gtk_widget_show(sb);
-  gtk_box_pack_start(GTK_BOX(ret), sb, TRUE, TRUE, 0);
+  gtk_widget_set_hexpand (sb, TRUE);
+  gtk_box_append (GTK_BOX(ret), sb);
   /* sx, sy */
   for (i = 0; i < 2; ++i) {
     adj = GTK_ADJUSTMENT (gtk_adjustment_new(0.0, 0.01, 100.0, 0.01, 1.0, 0));
@@ -186,7 +187,8 @@ matrixprop_get_widget (MatrixProperty *prop, PropDialog *dialog)
     gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(sb),TRUE);
     prophandler_connect(&prop->common, G_OBJECT(sb), "changed");
     gtk_widget_show(sb);
-    gtk_box_pack_start(GTK_BOX(ret), sb, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand (sb, TRUE);
+  gtk_box_append (GTK_BOX(ret), sb);
   }
 
   return ret;
@@ -195,7 +197,6 @@ matrixprop_get_widget (MatrixProperty *prop, PropDialog *dialog)
 static void
 matrixprop_reset_widget(MatrixProperty *prop, GtkWidget *widget)
 {
-  GList *children, *child;
   GtkWidget *sb;
   real angle, sx, sy;
   int i = 0;
@@ -211,10 +212,11 @@ matrixprop_reset_widget(MatrixProperty *prop, GtkWidget *widget)
     angle = -a*180/G_PI;
   }
 
-  children = gtk_container_get_children (GTK_CONTAINER (widget));
-  for (child = children; child != NULL; child = g_list_next (child)) {
+  /* GTK4: gtk_container_get_children is gone; walk the child widgets. */
+  for (sb = gtk_widget_get_first_child (widget);
+       sb != NULL;
+       sb = gtk_widget_get_next_sibling (sb)) {
     GtkAdjustment *adj;
-    sb = child->data;
     adj = gtk_spin_button_get_adjustment (GTK_SPIN_BUTTON(sb));
     if (i == 0)
       gtk_adjustment_configure (adj, angle, -180.0, 180.0, 1.0, 15.0, 0);
@@ -231,14 +233,14 @@ matrixprop_reset_widget(MatrixProperty *prop, GtkWidget *widget)
 static void
 matrixprop_set_from_widget(MatrixProperty *prop, GtkWidget *widget)
 {
-  GList *children, *child;
   GtkWidget *sb;
   real angle = 0.0, sx = 1.0, sy = 1.0;
   int i = 0;
 
-  children = gtk_container_get_children (GTK_CONTAINER (widget));
-  for (child = children; child != NULL; child = g_list_next (child)) {
-    sb = child->data;
+  /* GTK4: gtk_container_get_children is gone; walk the child widgets. */
+  for (sb = gtk_widget_get_first_child (widget);
+       sb != NULL;
+       sb = gtk_widget_get_next_sibling (sb)) {
     if (i == 0)
       angle = gtk_spin_button_get_value(GTK_SPIN_BUTTON(sb));
     else if (i == 1)
