@@ -92,40 +92,44 @@ dia_line_cell_renderer_set_property (GObject      *object,
 }
 
 
+/* GTK4: the single get_size vfunc is gone; provide preferred width/height. */
 static void
-dia_line_cell_renderer_get_size (GtkCellRenderer *cell,
-                                 GtkWidget       *widget,
-                                 const GdkRectangle *cell_area,
-                                 gint            *x_offset,
-                                 gint            *y_offset,
-                                 gint            *width,
-                                 gint            *height)
+dia_line_cell_renderer_get_preferred_width (GtkCellRenderer *cell,
+                                            GtkWidget       *widget,
+                                            gint            *minimum,
+                                            gint            *natural)
 {
-  gint calc_width;
-  gint calc_height;
-  int  xpad;
-  int  ypad;
+  int xpad, ypad;
 
   gtk_cell_renderer_get_padding (cell, &xpad, &ypad);
 
-  calc_width  = (gint) xpad * 2 + 40;
-  calc_height = (gint) ypad * 2 + 20;
-
-  if (x_offset) *x_offset = 0;
-  if (y_offset) *y_offset = 0;
-
-  if (width)  *width  = calc_width;
-  if (height) *height = calc_height;
+  if (minimum) *minimum = xpad * 2 + 40;
+  if (natural) *natural = xpad * 2 + 40;
 }
 
 
 static void
-dia_line_cell_renderer_render (GtkCellRenderer      *cell,
-                               cairo_t              *ctx,
-                               GtkWidget            *widget,
-                               const GdkRectangle   *background_area,
-                               const GdkRectangle   *cell_area,
-                               GtkCellRendererState  flags)
+dia_line_cell_renderer_get_preferred_height (GtkCellRenderer *cell,
+                                             GtkWidget       *widget,
+                                             gint            *minimum,
+                                             gint            *natural)
+{
+  int xpad, ypad;
+
+  gtk_cell_renderer_get_padding (cell, &xpad, &ypad);
+
+  if (minimum) *minimum = ypad * 2 + 20;
+  if (natural) *natural = ypad * 2 + 20;
+}
+
+
+static void
+dia_line_cell_renderer_snapshot (GtkCellRenderer      *cell,
+                                 GtkSnapshot          *snapshot,
+                                 GtkWidget            *widget,
+                                 const GdkRectangle   *background_area,
+                                 const GdkRectangle   *cell_area,
+                                 GtkCellRendererState  flags)
 {
   DiaLineCellRenderer *self;
   DiaLineCellRendererPrivate *priv;
@@ -134,11 +138,11 @@ dia_line_cell_renderer_render (GtkCellRenderer      *cell,
   DiaColour colour_fg;
   GtkStyleContext *style = gtk_widget_get_style_context (widget);
   GdkRGBA fg;
+  cairo_t *ctx;
   int x, y, width, height, xpad, ypad;
 
-  gtk_style_context_get_color (style,
-                               gtk_widget_get_state_flags (widget),
-                               &fg);
+  /* GTK4: get_color no longer takes a state-flags argument. */
+  gtk_style_context_get_color (style, &fg);
 
   g_return_if_fail (DIA_IS_LINE_CELL_RENDERER (cell));
 
@@ -157,6 +161,13 @@ dia_line_cell_renderer_render (GtkCellRenderer      *cell,
   to.y = from.y = y + (height / 2);
   from.x = x;
   to.x = x + width - LINEWIDTH;
+
+  /* GTK4: render (cairo_t) -> snapshot. Get a cairo context for the cell. */
+  ctx = gtk_snapshot_append_cairo (snapshot,
+                                   &GRAPHENE_RECT_INIT (background_area->x,
+                                                        background_area->y,
+                                                        background_area->width,
+                                                        background_area->height));
 
   renderer = g_object_new (DIA_CAIRO_TYPE_RENDERER, NULL);
 
@@ -178,6 +189,7 @@ dia_line_cell_renderer_render (GtkCellRenderer      *cell,
   dia_renderer_end_render (DIA_RENDERER (renderer));
 
   g_clear_object (&renderer);
+  cairo_destroy (ctx);
 }
 
 
@@ -190,8 +202,9 @@ dia_line_cell_renderer_class_init (DiaLineCellRendererClass *klass)
   object_class->set_property = dia_line_cell_renderer_set_property;
   object_class->get_property = dia_line_cell_renderer_get_property;
 
-  cell_class->get_size = dia_line_cell_renderer_get_size;
-  cell_class->render = dia_line_cell_renderer_render;
+  cell_class->get_preferred_width = dia_line_cell_renderer_get_preferred_width;
+  cell_class->get_preferred_height = dia_line_cell_renderer_get_preferred_height;
+  cell_class->snapshot = dia_line_cell_renderer_snapshot;
 
   /**
    * DiaLineCellRenderer:line:

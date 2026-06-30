@@ -139,6 +139,13 @@ libdia_core_ported = files(
 
   # Tier 3: ported by hand (removed GTK3 APIs migrated to GTK4 equivalents).
   lib_dir / 'font.c',   # gtk_get_default_language/gdk_pango_context_get -> Pango/PangoCairo
+  lib_dir / 'dia-unit-spinner.c',  # GtkSpinButton final in GTK4 -> compose instead of subclass
+  lib_dir / 'prop_geomtypes.c',    # unblocked by dia-unit-spinner.h
+  lib_dir / 'diainteractiverenderer.c',  # only GdkWindow ref was a doc comment
+  lib_dir / 'dia-line-cell-renderer.c',   # GtkCellRenderer render->snapshot, get_size->get_preferred_*
+  lib_dir / 'dia-arrow-cell-renderer.c',  # render->snapshot; get_background_color removed
+  lib_dir / 'dia-colour-cell-renderer.c', # render->snapshot, chains to parent ->snapshot
+  lib_dir / 'diacellrendererenum.c',      # compiles as-is (no render override)
 
   # --- Still need real GTK4 widget porting (deferred) ---------------------
   # prop_geomtypes.c        -> pulls dia-unit-spinner.h (subclasses

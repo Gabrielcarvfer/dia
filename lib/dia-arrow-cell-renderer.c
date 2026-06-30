@@ -115,38 +115,44 @@ dia_arrow_cell_renderer_finalize (GObject *object)
 }
 
 
+/* GTK4: the single get_size vfunc is gone; provide preferred width/height. */
 static void
-dia_arrow_cell_renderer_get_size (GtkCellRenderer *cell,
-                                  GtkWidget       *widget,
-                                  const GdkRectangle *cell_area,
-                                  int             *x_offset,
-                                  int             *y_offset,
-                                  int             *width,
-                                  int             *height)
+dia_arrow_cell_renderer_get_preferred_width (GtkCellRenderer *cell,
+                                             GtkWidget       *widget,
+                                             int             *minimum,
+                                             int             *natural)
 {
-  int calc_width, calc_height;
   int xpad, ypad;
 
   gtk_cell_renderer_get_padding (cell, &xpad, &ypad);
 
-  calc_width  = (int) xpad * 2 + 40;
-  calc_height = (int) ypad * 2 + 20;
-
-  if (x_offset) *x_offset = 0;
-  if (y_offset) *y_offset = 0;
-
-  if (width)  *width  = calc_width;
-  if (height) *height = calc_height;
+  if (minimum) *minimum = xpad * 2 + 40;
+  if (natural) *natural = xpad * 2 + 40;
 }
 
 
 static void
-dia_arrow_cell_renderer_render (GtkCellRenderer      *cell,
-                                cairo_t              *ctx,
-                                GtkWidget            *widget,
-                                const GdkRectangle   *background_area,
-                                const GdkRectangle   *cell_area,
-                                GtkCellRendererState  flags)
+dia_arrow_cell_renderer_get_preferred_height (GtkCellRenderer *cell,
+                                              GtkWidget       *widget,
+                                              int             *minimum,
+                                              int             *natural)
+{
+  int xpad, ypad;
+
+  gtk_cell_renderer_get_padding (cell, &xpad, &ypad);
+
+  if (minimum) *minimum = ypad * 2 + 20;
+  if (natural) *natural = ypad * 2 + 20;
+}
+
+
+static void
+dia_arrow_cell_renderer_snapshot (GtkCellRenderer      *cell,
+                                  GtkSnapshot          *snapshot,
+                                  GtkWidget            *widget,
+                                  const GdkRectangle   *background_area,
+                                  const GdkRectangle   *cell_area,
+                                  GtkCellRendererState  flags)
 {
   DiaArrowCellRenderer *self;
   DiaArrowCellRendererPrivate *priv;
@@ -155,16 +161,20 @@ dia_arrow_cell_renderer_render (GtkCellRenderer      *cell,
   Arrow tmp_arrow;
   Color colour_fg, colour_bg;
   GtkStyleContext *style = gtk_widget_get_style_context (widget);
-  GtkStateFlags state = gtk_widget_get_state_flags (widget);
-  GdkRGBA bg;
+  /* GTK4: gtk_style_context_get_background_color() is gone (backgrounds are
+   * CSS-drawn). Approximate the hollow-arrow fill with an opaque white; the
+   * cell renderers will be replaced wholesale when the tree/list views move
+   * to GtkColumnView. */
+  GdkRGBA bg = { 1.0, 1.0, 1.0, 1.0 };
   GdkRGBA fg;
   GdkRectangle rect;
+  cairo_t *ctx;
   int xpad, ypad;
   DiaCairoRenderer *renderer;
   cairo_surface_t *surface;
 
-  gtk_style_context_get_background_color(style, state, &bg);
-  gtk_style_context_get_color(style, state, &fg);
+  /* GTK4: get_color no longer takes a state-flags argument. */
+  gtk_style_context_get_color (style, &fg);
 
   g_return_if_fail (DIA_IS_ARROW_CELL_RENDERER (cell));
 
@@ -234,9 +244,18 @@ dia_arrow_cell_renderer_render (GtkCellRenderer      *cell,
 
   dia_renderer_end_render (DIA_RENDERER (renderer));
 
+  /* GTK4: render (cairo_t) -> snapshot. Get a cairo context for the cell. */
+  ctx = gtk_snapshot_append_cairo (snapshot,
+                                   &GRAPHENE_RECT_INIT (background_area->x,
+                                                        background_area->y,
+                                                        background_area->width,
+                                                        background_area->height));
+
   cairo_set_source_surface (ctx, surface, rect.x, rect.y);
   gdk_cairo_rectangle (ctx, &rect);
   cairo_paint (ctx);
+
+  cairo_destroy (ctx);
 }
 
 
@@ -250,8 +269,9 @@ dia_arrow_cell_renderer_class_init (DiaArrowCellRendererClass *klass)
   object_class->get_property = dia_arrow_cell_renderer_get_property;
   object_class->finalize = dia_arrow_cell_renderer_finalize;
 
-  cell_class->get_size = dia_arrow_cell_renderer_get_size;
-  cell_class->render = dia_arrow_cell_renderer_render;
+  cell_class->get_preferred_width = dia_arrow_cell_renderer_get_preferred_width;
+  cell_class->get_preferred_height = dia_arrow_cell_renderer_get_preferred_height;
+  cell_class->snapshot = dia_arrow_cell_renderer_snapshot;
 
   /**
    * DiaArrowCellRenderer:arrow:

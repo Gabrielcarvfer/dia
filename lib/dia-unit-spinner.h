@@ -26,8 +26,11 @@
 
 G_BEGIN_DECLS
 
+/* GTK4: GtkSpinButton is final and cannot be subclassed, so DiaUnitSpinner is
+ * now a GtkWidget that composes a GtkSpinButton internally. The public API
+ * (new/get_value/set_value/set_upper, all in cm) is unchanged. */
 #define DIA_TYPE_UNIT_SPINNER dia_unit_spinner_get_type ()
-G_DECLARE_FINAL_TYPE (DiaUnitSpinner, dia_unit_spinner, DIA, UNIT_SPINNER, GtkSpinButton)
+G_DECLARE_FINAL_TYPE (DiaUnitSpinner, dia_unit_spinner, DIA, UNIT_SPINNER, GtkWidget)
 
 
 GtkWidget *dia_unit_spinner_new                (GtkAdjustment  *adjustment,

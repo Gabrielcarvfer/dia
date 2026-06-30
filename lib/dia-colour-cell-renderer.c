@@ -154,27 +154,28 @@ get_checkered_pattern (void)
 
 
 static void
-dia_colour_cell_renderer_render (GtkCellRenderer      *cell,
-                                 cairo_t              *ctx,
-                                 GtkWidget            *widget,
-                                 const GdkRectangle   *background_area,
-                                 const GdkRectangle   *cell_area,
-                                 GtkCellRendererState  flags)
+dia_colour_cell_renderer_snapshot (GtkCellRenderer      *cell,
+                                   GtkSnapshot          *snapshot,
+                                   GtkWidget            *widget,
+                                   const GdkRectangle   *background_area,
+                                   const GdkRectangle   *cell_area,
+                                   GtkCellRendererState  flags)
 {
   DiaColourCellRenderer *self = DIA_COLOUR_CELL_RENDERER (cell);
   DiaColourCellRendererPrivate *priv = dia_colour_cell_renderer_get_instance_private (self);
+  cairo_t *ctx;
   int width, height;
   int x, y;
   int xpad, ypad;
 
   // Ugly hack for the "More" and "Reset" rows
   if (!priv->colour) {
-    GTK_CELL_RENDERER_CLASS (dia_colour_cell_renderer_parent_class)->render (cell,
-                                                                             ctx,
-                                                                             widget,
-                                                                             background_area,
-                                                                             cell_area,
-                                                                             flags);
+    GTK_CELL_RENDERER_CLASS (dia_colour_cell_renderer_parent_class)->snapshot (cell,
+                                                                               snapshot,
+                                                                               widget,
+                                                                               background_area,
+                                                                               cell_area,
+                                                                               flags);
 
     return;
   }
@@ -185,6 +186,14 @@ dia_colour_cell_renderer_render (GtkCellRenderer      *cell,
   height = cell_area->height - ypad * 2;
   x = (cell_area->x + xpad);
   y = (cell_area->y + ypad);
+
+  /* GTK4: render (cairo_t) -> snapshot. Draw the swatch via a cairo node,
+   * then let the parent (text) renderer snapshot on top. */
+  ctx = gtk_snapshot_append_cairo (snapshot,
+                                   &GRAPHENE_RECT_INIT (background_area->x,
+                                                        background_area->y,
+                                                        background_area->width,
+                                                        background_area->height));
 
   cairo_rectangle (ctx, x, y, width, height);
 
@@ -218,12 +227,14 @@ dia_colour_cell_renderer_render (GtkCellRenderer      *cell,
                          priv->colour->alpha);
   cairo_fill (ctx);
 
-  GTK_CELL_RENDERER_CLASS (dia_colour_cell_renderer_parent_class)->render (cell,
-                                                                           ctx,
-                                                                           widget,
-                                                                           background_area,
-                                                                           cell_area,
-                                                                           flags);
+  cairo_destroy (ctx);
+
+  GTK_CELL_RENDERER_CLASS (dia_colour_cell_renderer_parent_class)->snapshot (cell,
+                                                                             snapshot,
+                                                                             widget,
+                                                                             background_area,
+                                                                             cell_area,
+                                                                             flags);
 }
 
 
@@ -237,7 +248,7 @@ dia_colour_cell_renderer_class_init (DiaColourCellRendererClass *klass)
   object_class->get_property = dia_colour_cell_renderer_get_property;
   object_class->finalize = dia_colour_cell_renderer_finalize;
 
-  cell_class->render = dia_colour_cell_renderer_render;
+  cell_class->snapshot = dia_colour_cell_renderer_snapshot;
 
   /**
    * DiaColourCellRenderer:colour:

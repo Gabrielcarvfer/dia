@@ -31,41 +31,55 @@
  * Since: dawn-of-time
  */
 struct _DiaUnitSpinner {
-  GtkSpinButton parent;
+  GtkWidget parent_instance;
 
-  DiaUnit unit_num;
+  GtkSpinButton *spin;
+  DiaUnit        unit_num;
 };
 
-G_DEFINE_TYPE (DiaUnitSpinner, dia_unit_spinner, GTK_TYPE_SPIN_BUTTON)
+G_DEFINE_FINAL_TYPE (DiaUnitSpinner, dia_unit_spinner, GTK_TYPE_WIDGET)
+
+
+static void
+dia_unit_spinner_dispose (GObject *object)
+{
+  DiaUnitSpinner *self = DIA_UNIT_SPINNER (object);
+
+  g_clear_pointer ((GtkWidget **) &self->spin, gtk_widget_unparent);
+
+  G_OBJECT_CLASS (dia_unit_spinner_parent_class)->dispose (object);
+}
 
 
 static void
 dia_unit_spinner_class_init (DiaUnitSpinnerClass *klass)
 {
-}
+  GObjectClass   *object_class = G_OBJECT_CLASS (klass);
+  GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
 
+  object_class->dispose = dia_unit_spinner_dispose;
 
-static void
-dia_unit_spinner_init (DiaUnitSpinner *self)
-{
-  self->unit_num = DIA_UNIT_CENTIMETER;
+  /* Single child filling the whole widget. */
+  gtk_widget_class_set_layout_manager_type (widget_class, GTK_TYPE_BIN_LAYOUT);
 }
 
 
 /*
-  Callback functions for the "input" and "output" signals emitted by
-  GtkSpinButton. All the normal work is done by the spin button, we
-  simply modify how the text in the GtkEntry is treated.
+  Callback functions for the "input" and "output" signals emitted by the
+  embedded GtkSpinButton. All the normal work is done by the spin button, we
+  simply modify how the text in its entry is treated.
 */
 
 
-static gboolean
-dia_unit_spinner_input (DiaUnitSpinner *self, double *value)
+static int
+dia_unit_spinner_input (GtkSpinButton  *spin,
+                        double         *value,
+                        DiaUnitSpinner *self)
 {
   double val, factor = 1.0;
   char *extra = NULL;
 
-  val = g_strtod (gtk_entry_get_text (GTK_ENTRY (self)), &extra);
+  val = g_strtod (gtk_editable_get_text (GTK_EDITABLE (spin)), &extra);
 
   /* get rid of extra white space after number */
   while (*extra && g_ascii_isspace (*extra)) {
@@ -94,22 +108,39 @@ dia_unit_spinner_input (DiaUnitSpinner *self, double *value)
 
 
 static gboolean
-dia_unit_spinner_output (DiaUnitSpinner *self)
+dia_unit_spinner_output (GtkSpinButton  *spin,
+                         DiaUnitSpinner *self)
 {
   char buf[256];
-  GtkSpinButton *sbutton = GTK_SPIN_BUTTON (self);
-  GtkAdjustment *adjustment = gtk_spin_button_get_adjustment (sbutton);
+  GtkAdjustment *adjustment = gtk_spin_button_get_adjustment (spin);
 
   g_snprintf (buf,
               sizeof(buf),
               "%0.*f %s",
-              gtk_spin_button_get_digits(sbutton),
+              gtk_spin_button_get_digits(spin),
               gtk_adjustment_get_value(adjustment),
               dia_unit_get_symbol (self->unit_num));
-  gtk_entry_set_text (GTK_ENTRY(self), buf);
+  gtk_editable_set_text (GTK_EDITABLE (spin), buf);
 
   /* Return true, so that the default output function is not invoked. */
   return TRUE;
+}
+
+
+static void
+dia_unit_spinner_init (DiaUnitSpinner *self)
+{
+  self->unit_num = DIA_UNIT_CENTIMETER;
+
+  self->spin = GTK_SPIN_BUTTON (gtk_spin_button_new (NULL, 0.0, 0));
+  gtk_widget_set_parent (GTK_WIDGET (self->spin), GTK_WIDGET (self));
+
+  g_signal_connect (self->spin, "output",
+                    G_CALLBACK (dia_unit_spinner_output),
+                    self);
+  g_signal_connect (self->spin, "input",
+                    G_CALLBACK (dia_unit_spinner_input),
+                    self);
 }
 
 
@@ -123,18 +154,11 @@ dia_unit_spinner_new (GtkAdjustment *adjustment, DiaUnit adj_unit)
   }
 
   self = g_object_new (DIA_TYPE_UNIT_SPINNER, NULL);
-  gtk_entry_set_activates_default (GTK_ENTRY (self), TRUE);
   self->unit_num = adj_unit;
 
-  gtk_spin_button_configure (GTK_SPIN_BUTTON (self),
+  gtk_spin_button_set_activates_default (self->spin, TRUE);
+  gtk_spin_button_configure (self->spin,
                              adjustment, 0.0, dia_unit_get_digits (adj_unit));
-
-  g_signal_connect (GTK_SPIN_BUTTON (self), "output",
-                    G_CALLBACK (dia_unit_spinner_output),
-                    NULL);
-  g_signal_connect (GTK_SPIN_BUTTON (self), "input",
-                    G_CALLBACK (dia_unit_spinner_input),
-                    NULL);
 
   return GTK_WIDGET (self);
 }
@@ -152,7 +176,7 @@ dia_unit_spinner_new (GtkAdjustment *adjustment, DiaUnit adj_unit)
 void
 dia_unit_spinner_set_value (DiaUnitSpinner *self, double val)
 {
-  GtkSpinButton *sbutton = GTK_SPIN_BUTTON(self);
+  GtkSpinButton *sbutton = self->spin;
 
   gtk_spin_button_set_value (sbutton,
                              val /
@@ -174,7 +198,7 @@ dia_unit_spinner_set_value (DiaUnitSpinner *self, double val)
 double
 dia_unit_spinner_get_value (DiaUnitSpinner *self)
 {
-  GtkSpinButton *sbutton = GTK_SPIN_BUTTON(self);
+  GtkSpinButton *sbutton = self->spin;
 
   return gtk_spin_button_get_value (sbutton) *
                     (dia_unit_get_factor (self->unit_num) /
@@ -200,6 +224,6 @@ dia_unit_spinner_set_upper (DiaUnitSpinner *self, double val)
           dia_unit_get_factor (DIA_UNIT_CENTIMETER));
 
   gtk_adjustment_set_upper (
-    gtk_spin_button_get_adjustment (GTK_SPIN_BUTTON (self)), val);
+    gtk_spin_button_get_adjustment (self->spin), val);
 }
 
