@@ -11,6 +11,7 @@
 #include <glib.h>
 #include <glib-object.h>
 #include <libxml/tree.h>
+#include <math.h>
 
 #include "object.h"
 #include "handle.h"
@@ -81,7 +82,17 @@ exercise_type (gconstpointer user_data)
     type->ops->save (o, node, ctx);
     if (type->ops->load) {
       DiaObject *loaded = type->ops->load (node, type->version, ctx);
+
       g_assert_nonnull (loaded);
+      /* save -> load must preserve the geometry (bounding box) */
+      g_assert_cmpfloat (fabs (loaded->bounding_box.left - o->bounding_box.left),
+                         <, 1e-3);
+      g_assert_cmpfloat (fabs (loaded->bounding_box.top - o->bounding_box.top),
+                         <, 1e-3);
+      g_assert_cmpfloat (fabs (loaded->bounding_box.right - o->bounding_box.right),
+                         <, 1e-3);
+      g_assert_cmpfloat (fabs (loaded->bounding_box.bottom - o->bounding_box.bottom),
+                         <, 1e-3);
       dia_object_destroy (loaded);
     }
     xmlFreeDoc (doc);
