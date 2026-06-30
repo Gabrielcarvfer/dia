@@ -45,13 +45,17 @@ jobs:
             xvfb xauth dbus-x11 at-spi2-core \
             python3-dogtail python3-pyatspi gir1.2-atspi-2.0
 
-      - name: Configure (GTK4 skeleton)
+      # Sanitizers (-fsanitize=address,undefined) are ON by default for every
+      # build via meson.build's default_options, including the release packaging
+      # jobs below. run.sh sets ASAN/UBSAN_OPTIONS (LeakSanitizer off — GTK
+      # caches; memory-error + UB detection on).
+      - name: Configure (GTK4 skeleton, sanitized)
         run: meson setup build
 
       - name: Build
         run: meson compile -C build
 
-      - name: Run headless UI test suite
+      - name: Run headless UI test suite (ASan/UBSan)
         run: meson test -C build --print-errorlogs
 
       - name: Upload test logs on failure

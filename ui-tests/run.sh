@@ -45,6 +45,14 @@ export GTK_USE_PORTAL=0     # native dialogs, no portal
 export ADW_DISABLE_PORTAL=1
 export DIA_UITEST=1         # expose the AT-SPI test triggers (see dia-shell.c)
 
+# Builds carry -fsanitize=address,undefined. Keep ASan's memory-error and
+# UBSan's UB detection (these abort on a real bug), but turn OFF LeakSanitizer:
+# GTK/GLib keep many caches alive until exit, which would otherwise drown real
+# findings in noise. detect_leaks can be re-enabled with suppressions later.
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1:halt_on_error=1}"
+export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
+# ASan must be the first loaded library; let the app pull it in normally.
+
 echo "Launching $DIA (headless: ${DIA_UITEST_INNER:+yes}${DIA_UITEST_INNER:-no}) ..."
 "$DIA" >"$APP_LOG" 2>&1 &
 APP_PID=$!

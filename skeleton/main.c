@@ -25,6 +25,24 @@
 
 #define DIA_APP_ID "org.gnome.Dia"
 
+/* Builds carry -fsanitize=address,undefined (see meson.build). Bake the runtime
+ * defaults into the binary so even shipped artifacts behave sanely: keep the
+ * valuable checks (heap overflow, use-after-free, undefined behaviour) aborting
+ * on a real bug, but disable LeakSanitizer — GTK/GLib hold caches until exit,
+ * which would otherwise spam every run. The sanitizer runtime looks these weak
+ * symbols up by name; they are harmless no-ops if a sanitizer isn't linked. */
+const char *__asan_default_options (void);
+const char *__asan_default_options (void)
+{
+  return "detect_leaks=0:halt_on_error=1:abort_on_error=1";
+}
+
+const char *__ubsan_default_options (void);
+const char *__ubsan_default_options (void)
+{
+  return "halt_on_error=1:print_stacktrace=1";
+}
+
 static void
 on_about_action (GSimpleAction *action,
                  GVariant      *parameter,

@@ -7,6 +7,12 @@ project('dia',
                              'buildtype=debugoptimized',
                              'c_std=gnu17',
                              'cpp_std=gnu++20',
+                             # Sanitizers on by default for ALL builds (incl. CI
+                             # release artifacts): a silent bug is the worst kind.
+                             # b_lundef=false so the xpm-pixbuf shared subproject
+                             # can resolve the sanitizer runtime at load time.
+                             'b_sanitize=address,undefined',
+                             'b_lundef=false',
                          ],
 )
 
