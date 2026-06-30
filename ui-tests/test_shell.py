@@ -281,6 +281,17 @@ def main():
         ok = any('resize OK' in (lab.name or '') for lab in labels)
         check("Modify tool resizes an object by its handle", ok)
 
+    # 3i. Delete removes the selected object (create -> delete -> undo) via the
+    #     DIA_UITEST trigger; the same delete_selected() the Delete key calls.
+    dl = find(app, name='uitest-delete', roleName='push button')
+    check("DIA_UITEST delete trigger present", dl)
+    if dl:
+        do_click(dl)
+        time.sleep(0.5)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('delete OK' in (lab.name or '') for lab in labels)
+        check("Delete removes the selected object (and undo restores it)", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

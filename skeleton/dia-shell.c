@@ -10,6 +10,7 @@
  */
 
 #include <glib/gi18n.h>
+#include <gdk/gdkkeysyms.h>
 
 #include "dia-shell.h"
 
@@ -157,7 +158,7 @@ diagram_create_object (DiaShell *self, const char *type_name, Point p)
  * A small history of create/move ops. Removing an object from a layer only
  * unlinks it (it isn't destroyed), so undo/redo can move objects in and out.
  */
-typedef enum { OP_CREATE, OP_MOVE, OP_HANDLE } OpKind;
+typedef enum { OP_CREATE, OP_DELETE, OP_MOVE, OP_HANDLE } OpKind;
 
 typedef struct {
   OpKind     kind;
@@ -239,6 +240,13 @@ op_apply (DiaShell *self, UndoOp *op)   /* redo direction */
     case OP_CREATE:
       dia_layer_add_object (layer, op->obj);
       break;
+    case OP_DELETE:
+      if (self->selected == op->obj) {
+        self->selected = NULL;
+      }
+      data_unselect (self->diagram, op->obj);
+      dia_layer_remove_object (layer, op->obj);
+      break;
     case OP_MOVE:
       change = dia_object_move (op->obj, &op->to);
       g_clear_pointer (&change, dia_object_change_unref);
@@ -264,6 +272,9 @@ op_revert (DiaShell *self, UndoOp *op)  /* undo direction */
       }
       data_unselect (self->diagram, op->obj);
       dia_layer_remove_object (layer, op->obj);
+      break;
+    case OP_DELETE:
+      dia_layer_add_object (layer, op->obj);
       break;
     case OP_MOVE:
       change = dia_object_move (op->obj, &op->from);
@@ -605,6 +616,33 @@ select_at (DiaShell *self, Point p)
 }
 
 
+/* Remove the current selection from its layer (undoable). The object is only
+ * unlinked, not destroyed, so undo can put it back. */
+static void
+delete_selected (DiaShell *self)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  DiaObject *obj = self->selected;
+  char buf[96];
+
+  if (!obj) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Nothing to delete"));
+    return;
+  }
+
+  /* Record before unlinking (the op is considered already applied). */
+  push_op (self, OP_DELETE, obj, obj->position, obj->position);
+  data_unselect (self->diagram, obj);
+  self->selected = NULL;
+  dia_layer_remove_object (layer, obj);
+
+  g_snprintf (buf, sizeof (buf), _("Deleted %s — %u object(s)"),
+              obj->type->name, diagram_object_count (self));
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 /* Return the index of @obj's handle within @tol cm of @p, or -1 if none. The
  * handles are the small squares draw_selection_handles() paints; grabbing one
  * lets the user resize/stretch/bend the object. */
@@ -641,6 +679,9 @@ on_canvas_pressed (GtkGestureClick *gesture,
 {
   Point p;
 
+  /* Focus the canvas so it receives key events (Delete, Escape, …). */
+  gtk_widget_grab_focus (self->canvas);
+
   /* widget pixels -> diagram cm (inverse of the page transform) */
   if (self->page_scale <= 0.0) {
     return;
@@ -649,18 +690,7 @@ on_canvas_pressed (GtkGestureClick *gesture,
   p.y = (y - self->page_y) / self->page_scale;
 
   if (g_strcmp0 (self->tool, "Modify") == 0) {
-    /* If the press is on a handle of the current selection, grab it for a
-     * resize/stretch/bend drag; otherwise (re)select the object under it. */
-    int hi = handle_at (self->selected, p, 0.3);
-
-    if (hi >= 0) {
-      self->drag_handle = self->selected->handles[hi];
-      self->drag_handle_idx = hi;
-    } else {
-      self->drag_handle = NULL;
-      self->drag_handle_idx = -1;
-      select_at (self, p);
-    }
+    select_at (self, p);
   } else {
     apply_tool_at (self, p);
   }
@@ -668,17 +698,37 @@ on_canvas_pressed (GtkGestureClick *gesture,
 
 
 /* Drag with the Modify tool: move the grabbed handle (resize/stretch/bend) if
- * the press landed on one, otherwise move the whole selected object. */
+ * the press landed on a selection handle, otherwise move the whole object.
+ *
+ * The handle hit-test is done HERE, not in the click 'pressed' handler: the
+ * click and drag gestures both fire on press, and their relative order is not
+ * guaranteed (the drag controller, added last, can fire first). The selection
+ * already persists from the earlier click that revealed the handles, so testing
+ * against self->selected here is reliable regardless of gesture order. */
 static void
 on_canvas_drag_begin (GtkGestureDrag *gesture,
                       double          start_x,
                       double          start_y,
                       DiaShell       *self)
 {
-  if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected) {
+  Point p;
+  int hi;
+
+  self->drag_handle = NULL;
+  self->drag_handle_idx = -1;
+
+  if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected ||
+      self->page_scale <= 0.0) {
     return;
   }
-  if (self->drag_handle) {
+
+  p.x = (start_x - self->page_x) / self->page_scale;
+  p.y = (start_y - self->page_y) / self->page_scale;
+
+  hi = handle_at (self->selected, p, 0.4);
+  if (hi >= 0) {
+    self->drag_handle = self->selected->handles[hi];
+    self->drag_handle_idx = hi;
     self->drag_handle_start = self->drag_handle->pos;
   } else {
     self->drag_origin = self->selected->position;
@@ -751,6 +801,31 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
   to.y = self->drag_origin.y + offset_y / self->page_scale;
   if (to.x != self->drag_origin.x || to.y != self->drag_origin.y) {
     push_op (self, OP_MOVE, self->selected, self->drag_origin, to);
+  }
+}
+
+
+/* Canvas key bindings: Delete/BackSpace remove the selection, Escape clears it. */
+static gboolean
+on_canvas_key (GtkEventControllerKey *controller,
+               guint                  keyval,
+               guint                  keycode,
+               GdkModifierType        state,
+               DiaShell              *self)
+{
+  switch (keyval) {
+    case GDK_KEY_Delete:
+    case GDK_KEY_BackSpace:
+      delete_selected (self);
+      return TRUE;
+    case GDK_KEY_Escape:
+      data_remove_all_selected (self->diagram);
+      self->selected = NULL;
+      gtk_widget_queue_draw (self->canvas);
+      gtk_label_set_text (GTK_LABEL (self->status_msg), _("Selection cleared"));
+      return TRUE;
+    default:
+      return FALSE;
   }
 }
 
@@ -833,6 +908,12 @@ action_redo (GSimpleAction *a, GVariant *p, gpointer data)
     gtk_widget_queue_draw (self->canvas);
     gtk_label_set_text (GTK_LABEL (self->status_msg), _("Redo"));
   }
+}
+
+static void
+action_delete (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  delete_selected (data);
 }
 
 static void
@@ -1148,6 +1229,45 @@ on_uitest_resize (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): create -> delete -> undo, verifying the object
+ * count goes N -> N+1 -> N -> N+1 (delete removes, undo restores). */
+static void
+on_uitest_delete (GtkButton *button, DiaShell *self)
+{
+  guint c0, c1, c2, c3;
+  DiaObject *obj;
+  char buf[96];
+
+  c0 = diagram_object_count (self);
+  obj = diagram_create_object (self, "Standard - Box", (Point) { 7, 7 });
+  if (obj) {
+    push_op (self, OP_CREATE, obj, (Point) { 7, 7 }, (Point) { 7, 7 });
+  }
+  c1 = diagram_object_count (self);
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+  delete_selected (self);
+  c2 = diagram_object_count (self);
+
+  if (self->undo_pos > 0) {
+    self->undo_pos--;
+    op_revert (self, g_ptr_array_index (self->undo, self->undo_pos));
+    update_undo_actions (self);
+  }
+  c3 = diagram_object_count (self);
+
+  if (c1 == c0 + 1 && c2 == c0 && c3 == c1) {
+    g_snprintf (buf, sizeof (buf), _("delete OK (%u/%u/%u/%u)"), c0, c1, c2, c3);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("delete FAIL (%u/%u/%u/%u)"), c0, c1, c2, c3);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -1240,6 +1360,7 @@ static const GActionEntry dia_actions[] = {
   { "save",       action_save,       NULL, NULL, NULL },
   { "undo",       action_undo,       NULL, NULL, NULL },
   { "redo",       action_redo,       NULL, NULL, NULL },
+  { "delete",     action_delete,     NULL, NULL, NULL },
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
   { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
   { "zoom-reset", action_zoom_reset, NULL, NULL, NULL },
@@ -1301,6 +1422,7 @@ build_primary_menu_button (void)
   GtkWidget *button = gtk_menu_button_new ();
   GMenu *menu = g_menu_new ();
   GMenu *file = g_menu_new ();
+  GMenu *edit = g_menu_new ();
   GMenu *view = g_menu_new ();
   GMenu *app = g_menu_new ();
 
@@ -1308,6 +1430,11 @@ build_primary_menu_button (void)
   g_menu_append (file, _("_Open…"), "dia.open");
   g_menu_append (file, _("_Save…"), "dia.save");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (file));
+
+  g_menu_append (edit, _("_Undo"), "dia.undo");
+  g_menu_append (edit, _("_Redo"), "dia.redo");
+  g_menu_append (edit, _("_Delete"), "dia.delete");
+  g_menu_append_section (menu, NULL, G_MENU_MODEL (edit));
 
   g_menu_append (view, _("Zoom _In"), "dia.zoom-in");
   g_menu_append (view, _("Zoom _Out"), "dia.zoom-out");
@@ -1323,6 +1450,7 @@ build_primary_menu_button (void)
 
   g_object_unref (menu);
   g_object_unref (file);
+  g_object_unref (edit);
   g_object_unref (view);
   g_object_unref (app);
 
@@ -1380,24 +1508,28 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *u = gtk_button_new_with_label ("uitest-undo-redo");
     GtkWidget *x = gtk_button_new_with_label ("uitest-extra-objects");
     GtkWidget *z = gtk_button_new_with_label ("uitest-resize");
+    GtkWidget *d = gtk_button_new_with_label ("uitest-delete");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (u), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (x), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (z), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (d), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
     g_signal_connect (u, "clicked", G_CALLBACK (on_uitest_undo_redo), self);
     g_signal_connect (x, "clicked", G_CALLBACK (on_uitest_extra_objects), self);
     g_signal_connect (z, "clicked", G_CALLBACK (on_uitest_resize), self);
+    g_signal_connect (d, "clicked", G_CALLBACK (on_uitest_delete), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
     gtk_box_append (GTK_BOX (bar), u);
     gtk_box_append (GTK_BOX (bar), x);
     gtk_box_append (GTK_BOX (bar), z);
+    gtk_box_append (GTK_BOX (bar), d);
   }
 
   return bar;
@@ -1485,6 +1617,7 @@ build_canvas_area (DiaShell *self)
   GtkWidget *vscroll = gtk_scrollbar_new (GTK_ORIENTATION_VERTICAL, NULL);
   GtkWidget *hscroll = gtk_scrollbar_new (GTK_ORIENTATION_HORIZONTAL, NULL);
   GtkEventController *motion;
+  GtkEventController *keys;
   GtkGesture *click;
   GtkGesture *drag;
 
@@ -1524,6 +1657,10 @@ build_canvas_area (DiaShell *self)
   g_signal_connect (drag, "drag-update", G_CALLBACK (on_canvas_drag_update), self);
   g_signal_connect (drag, "drag-end", G_CALLBACK (on_canvas_drag_end), self);
   gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (drag));
+
+  keys = gtk_event_controller_key_new ();
+  g_signal_connect (keys, "key-pressed", G_CALLBACK (on_canvas_key), self);
+  gtk_widget_add_controller (canvas, keys);
 
   gtk_grid_attach (GTK_GRID (grid), origin, 0, 0, 1, 1);
   gtk_grid_attach (GTK_GRID (grid), hruler, 1, 0, 1, 1);
