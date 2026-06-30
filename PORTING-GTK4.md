@@ -30,8 +30,10 @@ A growing GTK4 core library, **`lib-port/`** (builds `libdia-core`), recompiles
 build is unaffected); `lib-port/meson.build` lists the files verified to
 compile under GTK4. Grow that list as porting continues.
 
-**87 of 100 `lib/*.c` files compile against GTK4.** The whole object/model
-layer needed *no code changes*: GTK4 still ships `gtk.h`, `GtkWidget`,
+**99 of 100 `lib/*.c` files compile against GTK4** — the entire model + widget
+layer. The only holdout is `dia-io.c`, blocked by libxml < 2.14 (not a GTK
+issue). The whole object/model layer needed *no code changes*: GTK4 still ships
+`gtk.h`, `GtkWidget`,
 `GdkPixbuf`, `GdkRGBA`, `GtkTreeView`/`GtkCellRenderer`, etc., so headers that
 merely declare such types port as-is. The rest were hand-ported widgets. Real
 migrations done so far:
@@ -53,9 +55,22 @@ migrations done so far:
 - `prop_dict.c` — `gtk_scrolled_window_new()` arg drop / `set_child`; removed
   `set_shadow_type` and `gtk_widget_show_all`.
 - `dia-font-selector.c` — `gtk_box_pack_start` → `gtk_box_append`.
+- Container/box sweep (`widgets.c`, `prop_widgets.c`, `prop_sdarray_widget.c`,
+  `propdialogs.c`, the selectors) — `gtk_box_pack_start`/`gtk_container_add` →
+  `gtk_box_append`/`set_child`; `gtk_button_set_relief` → `set_has_frame`;
+  `gtk_misc_*` dropped; `*_new_from_icon_name` lose the size arg;
+  `gtk_misc_set_alignment` → `gtk_label_set_x/yalign`.
+- `message.c` — dialog content-area `gtk_container_add` → `gtk_box_append`.
+- `persistence.c` — GTK4 drops window positioning; persist size only
+  (`gtk_window_get/set_default_size`); `GdkScreen` monitor enumeration →
+  `GdkDisplay`/`GdkMonitor`/`GListModel`; opaque `GdkEvent`.
+- The menu choosers (`dia-arrow-chooser.c`, `dia-line-chooser.c`,
+  `diapatternselector.c`) — `GtkMenu`/`GtkMenuItem`/`GtkArrow` (all removed) →
+  `GtkPopover`/`GtkMenuButton` holding flat preview buttons; the
+  `button-press-event` vfunc → `GtkButton::clicked`.
 
-The 13 remaining `lib/` files are the heavier widgets/dialogs (see the ranked
-list at the bottom); `dia-io.c` is blocked only by libxml < 2.14, not GTK.
+`lib/` is essentially done. `dia-io.c` is the only file left, blocked by
+libxml < 2.14 (re-add once the system libxml satisfies the >= 2.14 pin).
 
 ## Building
 
@@ -82,7 +97,8 @@ link set.
 1. **Core model (`lib/`) — non-GTK first.** Object model, properties, geometry,
    and the `DiaRenderer` hierarchy are mostly GLib/cairo and port cheaply.
    Detach them from `gtk.h` where they don't truly need it.
-   **Status: largely done** — 87/100 `lib/*.c` compile via `lib-port/`.
+   **Status: DONE** — 99/100 `lib/*.c` compile via `lib-port/` (only the
+   libxml-blocked `dia-io.c` remains). Next phase is the `app/` UI layer.
 2. **Canvas drawing model.** `app/dia-canvas.c` is a `GtkDrawingArea`. GTK4:
    - `configure-event` / `GdkEventConfigure` → `GtkDrawingArea::resize` and
      `gtk_widget_get_width/height()`.
@@ -104,36 +120,34 @@ link set.
    `AdwApplication` in `skeleton/main.c`.
 8. **Plug-ins / objects** that touch GTK (property dialogs, etc.) last.
 
-### Remaining `lib/` files, ranked by removed-API count
+### `lib/` porting patterns (reference for the `app/` phase)
 
-These are the 13 GTK-coupled files not yet in `lib-port`. The number is how
-many *removed-in-GTK4* API references each contains (a rough difficulty proxy):
+The recurring GTK3→GTK4 migrations established while porting `lib/` — reuse
+these in `app/`:
+- Custom-widget drawing: `GtkWidget`/`GtkCellRenderer` `draw`/`render` (cairo)
+  vfunc → `snapshot` (draw via `gtk_snapshot_append_cairo`); `get_size` →
+  `get_preferred_width`/`_height`.
+- Final parent classes (`GtkSpinButton`): can't subclass → compose inside a
+  `GtkWidget` (`GtkBinLayout`).
+- Containers: `gtk_container_add`/`gtk_box_pack_start` → `gtk_box_append` /
+  `gtk_*_set_child`; drop `gtk_widget_show_all` / `set_border_width` /
+  `gtk_misc_*`; `gtk_button_set_relief` → `set_has_frame`.
+- Text entries: `gtk_entry_get/set_text` → `GtkEditable`.
+- Events: `button-press-event` vfunc / `GdkEventButton` → `GtkGestureClick` or
+  `GtkButton::clicked`; key events → `GtkEventControllerKey`; opaque `GdkEvent`
+  (`event->type` → `gdk_event_get_event_type`).
+- Menus: `GtkMenu`/`GtkMenuItem`/`GtkArrow` (removed) → `GtkPopover` /
+  `GtkMenuButton` holding ordinary widgets.
+- Windows: positioning is gone — size-only via `get/set_default_size`;
+  `GdkScreen` monitor APIs → `GdkDisplay`/`GdkMonitor`/`GListModel`.
+- Dialogs: `gtk_dialog_run` (removed) → async `AdwDialog`/`AdwMessageDialog` /
+  `GtkFileDialog` with response callbacks.
+- Misc: `*_new_from_icon_name` lose the `GtkIconSize` arg;
+  `gtk_misc_set_alignment` → `gtk_label_set_x/yalign`; scrolled-window
+  `new()`/`set_child`, no shadow type.
 
-```
- 5  prop_text.c              (also a GdkEventKey handler -> GtkEventControllerKey)
- 8  dia-arrow-selector.c, dia-line-style-selector.c
-11  diapatternselector.c
-12  dia-arrow-chooser.c, dia-line-chooser.c, widgets.c
-13  dia-size-selector.c, prop_widgets.c
-14  prop_sdarray_widget.c, propdialogs.c
-18  persistence.c
-19  message.c
-   (dia-io.c is libxml-version-blocked, not GTK: needs XML_SAVE_EMPTY / libxml 2.14)
-```
-
-Recurring porting patterns for these:
-- `GtkCellRenderer::render` (cairo) → `GtkCellRenderer::snapshot` (the colour/
-  line/arrow cell renderers).
-- Subclassing `GtkSpinButton`/etc. → those `*Class` structs are private in
-  GTK4; `dia-unit-spinner` must be re-based or wrapped (unblocks
-  `prop_geomtypes.c`).
-- `GdkWindow` → `GdkSurface` (`diainteractiverenderer.c`).
-- `gtk_dialog_run`/`gtk_container_add`/`gtk_box_pack_start`/`gtk_widget_show_all`
-  → async dialogs, `gtk_box_append`, visible-by-default (`message.c`,
-  `propdialogs.c`, the selectors/choosers).
-- Window geometry (`gtk_window_get_size`/`get_position`/`resize`) and
-  `gtk_entry_get_text`/`set_text` → `GtkEditable` + surface APIs
-  (`persistence.c`).
+`dia-io.c` stays out until the system libxml satisfies the `>= 2.14` pin
+(`XML_SAVE_EMPTY`).
 
 ### App-layer hard spots (from an API survey of `app/`)
 
