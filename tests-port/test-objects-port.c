@@ -107,7 +107,15 @@ static void
 add_type (gpointer key, gpointer value, gpointer user_data)
 {
   const char *name = key;
+  DiaObjectType *type = value;
   GString *path = g_string_new ("/dia-port/objects/");
+
+  /* Skip types that aren't created from a point (e.g. Group, built via
+   * group_create from a list, has no point-based creator). */
+  if (!type->ops || !type->ops->create) {
+    g_string_free (path, TRUE);
+    return;
+  }
 
   /* g_test paths can't contain spaces; sanitise the type name. */
   for (const char *c = name; *c; c++) {

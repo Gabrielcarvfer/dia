@@ -27,6 +27,7 @@
 #include "dia-enums.h"
 #include "object.h"
 #include "connectionpoint.h"
+#include "group.h"
 #include "diagramdata.h"
 #include "dia-layer.h"
 #include "dia-object-change.h"
@@ -1444,6 +1445,10 @@ on_canvas_key (GtkEventControllerKey *controller,
       case GDK_KEY_a: case GDK_KEY_A: act = "select-all"; break;
       case GDK_KEY_z: case GDK_KEY_Z: act = "undo";       break;
       case GDK_KEY_y: case GDK_KEY_Y: act = "redo";       break;
+      /* Ctrl+G groups, Ctrl+Shift+G ungroups. */
+      case GDK_KEY_g: case GDK_KEY_G:
+        act = (state & GDK_SHIFT_MASK) ? "ungroup" : "group";
+        break;
       default: break;
     }
     if (act) {
@@ -1646,6 +1651,82 @@ action_select_all (GSimpleAction *a, GVariant *p, gpointer data)
   gtk_widget_queue_draw (self->canvas);
   g_snprintf (buf, sizeof (buf), _("Selected all (%d)"), n);
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+/* Combine the selected objects into a Group (unlink them from the layer, wrap
+ * in a group, re-add the group). Not undoable yet. */
+static void
+group_selected (DiaShell *self)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  GList *group_list;
+  DiaObject *group;
+  guint n = g_list_length (self->diagram->selected);
+
+  if (n < 2) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Select two or more objects to group"));
+    return;
+  }
+  group_list = g_list_copy (self->diagram->selected);   /* group takes ownership */
+  data_remove_all_selected (self->diagram);
+
+  group = group_create (group_list);
+  for (GList *l = group_objects (group); l; l = l->next) {
+    dia_layer_remove_object (layer, l->data);   /* unlink children; group holds them */
+  }
+  dia_layer_add_object (layer, group);
+  data_select (self->diagram, group);
+  self->selected = group;
+
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Grouped"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
+/* Dissolve the selected group: re-add its children to the layer and free the
+ * (shallow) group. */
+static void
+ungroup_selected (DiaShell *self)
+{
+  DiaObject *group = self->selected;
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  GList *children;
+
+  if (!group || group->type != &group_type) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Select a group to ungroup"));
+    return;
+  }
+  children = g_list_copy (group_objects (group));
+  for (GList *l = children; l; l = l->next) {
+    dia_layer_add_object (layer, l->data);
+  }
+  data_unselect (self->diagram, group);
+  dia_layer_remove_object (layer, group);
+  group_destroy_shallow (group);   /* frees the group, keeps the children */
+
+  data_remove_all_selected (self->diagram);
+  self->selected = NULL;
+  for (GList *l = children; l; l = l->next) {
+    data_select (self->diagram, l->data);
+    self->selected = l->data;
+  }
+  g_list_free (children);
+
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Ungrouped"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
+static void
+action_group (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  group_selected (data);
+}
+
+static void
+action_ungroup (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  ungroup_selected (data);
 }
 
 static void
@@ -2486,6 +2567,42 @@ on_uitest_multiselect (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): group two boxes (count N+2 -> N+1), then ungroup
+ * (-> N+2 again). */
+static void
+on_uitest_group (GtkButton *button, DiaShell *self)
+{
+  guint c0 = diagram_object_count (self);
+  DiaObject *a, *b;
+  guint c2, cg, cu;
+  char buf[96];
+
+  a = diagram_create_object (self, "Standard - Box", (Point) { 60, 60 });
+  b = diagram_create_object (self, "Standard - Box", (Point) { 63, 60 });
+  if (a) push_op (self, OP_CREATE, a, (Point) { 60, 60 }, (Point) { 60, 60 });
+  if (b) push_op (self, OP_CREATE, b, (Point) { 63, 60 }, (Point) { 63, 60 });
+  c2 = diagram_object_count (self);
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, a);
+  data_select (self->diagram, b);
+  self->selected = b;
+  group_selected (self);
+  cg = diagram_object_count (self);   /* group replaces the two boxes */
+
+  ungroup_selected (self);
+  cu = diagram_object_count (self);
+
+  if (c2 == c0 + 2 && cg == c0 + 1 && cu == c0 + 2) {
+    g_snprintf (buf, sizeof (buf), _("group OK (%u/%u/%u/%u)"), c0, c2, cg, cu);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("group FAIL (%u/%u/%u/%u)"), c0, c2, cg, cu);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -2669,6 +2786,8 @@ static const GActionEntry dia_actions[] = {
   { "copy",       action_copy,       NULL, NULL, NULL },
   { "paste",      action_paste,      NULL, NULL, NULL },
   { "select-all", action_select_all, NULL, NULL, NULL },
+  { "group",      action_group,      NULL, NULL, NULL },
+  { "ungroup",    action_ungroup,    NULL, NULL, NULL },
   { "delete",     action_delete,     NULL, NULL, NULL },
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
   { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
@@ -2748,6 +2867,8 @@ build_primary_menu_button (void)
   g_menu_append (edit, _("_Copy"), "dia.copy");
   g_menu_append (edit, _("_Paste"), "dia.paste");
   g_menu_append (edit, _("Select _All"), "dia.select-all");
+  g_menu_append (edit, _("_Group"), "dia.group");
+  g_menu_append (edit, _("_Ungroup"), "dia.ungroup");
   g_menu_append (edit, _("_Delete"), "dia.delete");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (edit));
 
@@ -2949,6 +3070,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *cn = gtk_button_new_with_label ("uitest-connect");
     GtkWidget *tx = gtk_button_new_with_label ("uitest-text");
     GtkWidget *ms = gtk_button_new_with_label ("uitest-multiselect");
+    GtkWidget *gr = gtk_button_new_with_label ("uitest-group");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -2966,6 +3088,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (cn), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (tx), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ms), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (gr), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -2983,6 +3106,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (cn, "clicked", G_CALLBACK (on_uitest_connect), self);
     g_signal_connect (tx, "clicked", G_CALLBACK (on_uitest_text), self);
     g_signal_connect (ms, "clicked", G_CALLBACK (on_uitest_multiselect), self);
+    g_signal_connect (gr, "clicked", G_CALLBACK (on_uitest_group), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -3000,6 +3124,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), cn);
     gtk_box_append (GTK_BOX (bar), tx);
     gtk_box_append (GTK_BOX (bar), ms);
+    gtk_box_append (GTK_BOX (bar), gr);
   }
 
   return bar;

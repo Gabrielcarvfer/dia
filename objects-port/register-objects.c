@@ -10,6 +10,7 @@
 #include "config.h"
 
 #include "object.h"
+#include "group.h"
 #include "register-objects.h"
 
 /* standard */
@@ -61,4 +62,6 @@ dia_port_register_objects (void)
   object_register_type (&entity_type);
   object_register_type (&participation_type);
   object_register_type (&relationship_type);
+
+  object_register_type (&group_type);   /* so groups can be saved/loaded */
 }

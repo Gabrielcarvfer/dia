@@ -391,6 +391,16 @@ def main():
         ok = any('multiselect OK' in (lab.name or '') for lab in labels)
         check("Rubber-band selects and deletes multiple objects", ok)
 
+    # 3t. Group/ungroup the selection.
+    gr = find(app, name='uitest-group', roleName='push button')
+    check("DIA_UITEST group trigger present", gr)
+    if gr:
+        do_click(gr)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('group OK' in (lab.name or '') for lab in labels)
+        check("Group then ungroup restores the objects", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
