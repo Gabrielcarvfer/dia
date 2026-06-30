@@ -349,6 +349,16 @@ def main():
         ok = any('clipboard OK' in (lab.name or '') for lab in labels)
         check("Copy/paste clones the selected object", ok)
 
+    # 3p. Shapes drawer: a sheet shape becomes the tool and creates its object.
+    sh = find(app, name='uitest-sheet', roleName='push button')
+    check("DIA_UITEST sheet trigger present", sh)
+    if sh:
+        do_click(sh)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('sheet OK' in (lab.name or '') for lab in labels)
+        check("Sheet shape creates its object type", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

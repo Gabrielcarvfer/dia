@@ -88,6 +88,8 @@ typedef struct {
   gboolean   snap_grid, snap_object, snap_guide;
   GtkWidget *layers_panel;          /* right sidebar, hideable to free space */
   GtkWidget *layers_list;           /* GtkListBox of the diagram's layers */
+  GtkWidget *sheet_box;             /* FlowBox of the current sheet's shapes */
+  int        sheet_index;           /* selected sheet (see sheets[]) */
   /* Line attributes applied to new objects (and the current selection). */
   double       line_width;          /* cm */
   DiaLineStyle line_style;
@@ -939,6 +941,10 @@ apply_tool_at (DiaShell *self, Point p)
 
   snap_to_grid (self, &p);
   type_name = tool_to_type_name (self->tool);
+  /* Sheet shapes set self->tool directly to a registered type name. */
+  if (!type_name && object_get_type (self->tool) != NULL) {
+    type_name = self->tool;
+  }
   obj = type_name ? diagram_create_object (self, type_name, p) : NULL;
 
   if (obj) {
@@ -2062,6 +2068,35 @@ on_uitest_clipboard (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): pick a sheet shape as the tool and create it,
+ * confirming a sheet object type instantiates from the drawer path. */
+static void
+on_uitest_sheet (GtkButton *button, DiaShell *self)
+{
+  guint c0 = diagram_object_count (self);
+  DiaLayer *layer;
+  DiaObject *obj;
+  int n;
+  char buf[96];
+
+  g_strlcpy (self->tool, "Flowchart - Diamond", sizeof (self->tool));
+  apply_tool_at (self, (Point) { 11, 11 });
+
+  layer = dia_diagram_data_get_active_layer (self->diagram);
+  n = dia_layer_object_count (layer);
+  obj = n > 0 ? dia_layer_object_get_nth (layer, n - 1) : NULL;
+
+  if (diagram_object_count (self) == c0 + 1 && obj && obj->type &&
+      g_strcmp0 (obj->type->name, "Flowchart - Diamond") == 0) {
+    g_snprintf (buf, sizeof (buf), _("sheet OK (%s)"), obj->type->name);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("sheet FAIL"));
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -2521,6 +2556,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *la = gtk_button_new_with_label ("uitest-lineattr");
     GtkWidget *ex = gtk_button_new_with_label ("uitest-export");
     GtkWidget *cb = gtk_button_new_with_label ("uitest-clipboard");
+    GtkWidget *sh = gtk_button_new_with_label ("uitest-sheet");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -2534,6 +2570,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (la), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ex), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (cb), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (sh), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -2547,6 +2584,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (la, "clicked", G_CALLBACK (on_uitest_lineattr), self);
     g_signal_connect (ex, "clicked", G_CALLBACK (on_uitest_export), self);
     g_signal_connect (cb, "clicked", G_CALLBACK (on_uitest_clipboard), self);
+    g_signal_connect (sh, "clicked", G_CALLBACK (on_uitest_sheet), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -2560,6 +2598,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), la);
     gtk_box_append (GTK_BOX (bar), ex);
     gtk_box_append (GTK_BOX (bar), cb);
+    gtk_box_append (GTK_BOX (bar), sh);
   }
 
   return bar;
@@ -2715,6 +2754,115 @@ make_preview_dropdown (const char * const *labels, gpointer draw_func,
   return dd;
 }
 
+
+/* --- shapes drawer (object sheets) -------------------------------------- */
+
+/* The object sheets shown below the toolbox. The standard set is the palette;
+ * these are the extra registered sets (flowchart/network/ER). */
+static const struct {
+  const char *sheet;
+  const char *types[6];   /* NULL-terminated */
+} sheets[] = {
+  { N_("Flowchart"), { "Flowchart - Box", "Flowchart - Diamond",
+                       "Flowchart - Ellipse", "Flowchart - Parallelogram", NULL } },
+  { N_("Network"),   { "Network - Bus", "Network - Base Station",
+                       "Network - Radio Cell", "Network - WAN Link", NULL } },
+  { N_("ER"),        { "ER - Entity", "ER - Relationship",
+                       "ER - Attribute", "ER - Participation", NULL } },
+};
+
+/* Clicking a shape makes it the active create tool (apply_tool_at falls back to
+ * a registered type name when it isn't a palette tool). */
+static void
+on_sheet_shape_clicked (GtkButton *btn, DiaShell *self)
+{
+  const char *tn = g_object_get_data (G_OBJECT (btn), "type-name");
+  char buf[96];
+
+  if (!tn) {
+    return;
+  }
+  g_strlcpy (self->tool, tn, sizeof (self->tool));
+  g_snprintf (buf, sizeof (buf), _("Tool: %s"), tn);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+/* Rebuild the shape buttons for the currently selected sheet. */
+static void
+rebuild_sheet_shapes (DiaShell *self)
+{
+  GtkFlowBox *fb = GTK_FLOW_BOX (self->sheet_box);
+  const char * const *types;
+  GtkWidget *child;
+
+  while ((child = gtk_widget_get_first_child (GTK_WIDGET (fb))) != NULL) {
+    gtk_flow_box_remove (fb, child);
+  }
+  if (self->sheet_index < 0 || self->sheet_index >= (int) G_N_ELEMENTS (sheets)) {
+    return;
+  }
+  types = sheets[self->sheet_index].types;
+  for (int i = 0; types[i]; i++) {
+    DiaObjectType *t = object_get_type ((char *) types[i]);
+    GtkWidget *btn = gtk_button_new ();
+    GtkWidget *img;
+
+    if (t && t->pixmap) {
+      GdkPixbuf *pb = gdk_pixbuf_new_from_xpm_data (t->pixmap);
+      img = gtk_image_new_from_pixbuf (pb);
+      g_clear_object (&pb);
+    } else {
+      img = gtk_image_new_from_icon_name ("image-x-generic-symbolic");
+    }
+    gtk_image_set_pixel_size (GTK_IMAGE (img), 22);
+    gtk_button_set_child (GTK_BUTTON (btn), img);
+    gtk_button_set_has_frame (GTK_BUTTON (btn), FALSE);
+    gtk_widget_set_tooltip_text (btn, types[i]);
+    set_a11y_label (btn, types[i]);
+    g_object_set_data_full (G_OBJECT (btn), "type-name",
+                            g_strdup (types[i]), g_free);
+    g_signal_connect (btn, "clicked",
+                      G_CALLBACK (on_sheet_shape_clicked), self);
+    gtk_flow_box_insert (fb, btn, -1);
+  }
+}
+
+static void
+on_sheet_changed (GtkDropDown *dd, GParamSpec *ps, DiaShell *self)
+{
+  self->sheet_index = gtk_drop_down_get_selected (dd);
+  rebuild_sheet_shapes (self);
+}
+
+static GtkWidget *
+build_sheets (DiaShell *self)
+{
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+  const char *names[G_N_ELEMENTS (sheets) + 1];
+  GtkWidget *dd;
+
+  for (gsize i = 0; i < G_N_ELEMENTS (sheets); i++) {
+    names[i] = gettext (sheets[i].sheet);
+  }
+  names[G_N_ELEMENTS (sheets)] = NULL;
+
+  dd = gtk_drop_down_new_from_strings (names);
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (dd), 0);
+  set_a11y_label (dd, "sheet");
+  g_signal_connect (dd, "notify::selected", G_CALLBACK (on_sheet_changed), self);
+
+  self->sheet_box = gtk_flow_box_new ();
+  gtk_flow_box_set_selection_mode (GTK_FLOW_BOX (self->sheet_box),
+                                   GTK_SELECTION_NONE);
+  gtk_flow_box_set_max_children_per_line (GTK_FLOW_BOX (self->sheet_box), 4);
+  self->sheet_index = 0;
+  rebuild_sheet_shapes (self);
+
+  gtk_box_append (GTK_BOX (box), dd);
+  gtk_box_append (GTK_BOX (box), self->sheet_box);
+  return box;
+}
+
 static GtkWidget *
 build_toolbox (DiaShell *self)
 {
@@ -2827,6 +2975,12 @@ build_toolbox (DiaShell *self)
     gtk_box_append (GTK_BOX (drow), ea);
     gtk_box_append (GTK_BOX (box), drow);
   }
+
+  /* Shapes drawer: pick a sheet (flowchart/network/ER) and click a shape to
+   * make it the active create tool. */
+  gtk_box_append (GTK_BOX (box),
+                  gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
+  gtk_box_append (GTK_BOX (box), build_sheets (self));
 
   return box;
 }
