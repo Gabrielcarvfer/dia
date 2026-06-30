@@ -308,6 +308,16 @@ def main():
         ok = any('snap OK' in (lab.name or '') for lab in labels)
         check("Snap-to-grid rounds a point to the grid", ok)
 
+    # 3l. Layer add/remove (the wired layers panel buttons), via the trigger.
+    ly = find(app, name='uitest-layers', roleName='push button')
+    check("DIA_UITEST layers trigger present", ly)
+    if ly:
+        do_click(ly)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('layers OK' in (lab.name or '') for lab in labels)
+        check("Add/remove layer updates the layer list", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

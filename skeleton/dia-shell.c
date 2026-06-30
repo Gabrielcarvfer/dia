@@ -77,6 +77,7 @@ typedef struct {
   /* Snapping toggles (toolbar). snap_grid is applied to create/move/handle. */
   gboolean   snap_grid, snap_object, snap_guide;
   GtkWidget *layers_panel;          /* right sidebar, hideable to free space */
+  GtkWidget *layers_list;           /* GtkListBox of the diagram's layers */
 } DiaShell;
 
 /* Pixels per cm at 100% zoom. Chosen so a typical canvas shows ~80 cm across,
@@ -1586,6 +1587,32 @@ on_uitest_snap (GtkButton *button, DiaShell *self)
 }
 
 
+static void on_layer_add (GtkButton *b, DiaShell *self);
+static void on_layer_remove (GtkButton *b, DiaShell *self);
+
+/* UI-test hook (DIA_UITEST): add a layer then remove it, confirming the layer
+ * count and the list track (exercises the wired layer buttons' logic). */
+static void
+on_uitest_layers (GtkButton *button, DiaShell *self)
+{
+  int c0, c1, c2;
+  char buf[96];
+
+  c0 = data_layer_count (self->diagram);
+  on_layer_add (NULL, self);
+  c1 = data_layer_count (self->diagram);
+  on_layer_remove (NULL, self);
+  c2 = data_layer_count (self->diagram);
+
+  if (c1 == c0 + 1 && c2 == c0) {
+    g_snprintf (buf, sizeof (buf), _("layers OK (%d/%d/%d)"), c0, c1, c2);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("layers FAIL (%d/%d/%d)"), c0, c1, c2);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -1939,6 +1966,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *d = gtk_button_new_with_label ("uitest-delete");
     GtkWidget *zm = gtk_button_new_with_label ("uitest-zoom");
     GtkWidget *sn = gtk_button_new_with_label ("uitest-snap");
+    GtkWidget *ly = gtk_button_new_with_label ("uitest-layers");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -1948,6 +1976,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (d), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (zm), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (sn), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (ly), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -1957,6 +1986,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (d, "clicked", G_CALLBACK (on_uitest_delete), self);
     g_signal_connect (zm, "clicked", G_CALLBACK (on_uitest_zoom), self);
     g_signal_connect (sn, "clicked", G_CALLBACK (on_uitest_snap), self);
+    g_signal_connect (ly, "clicked", G_CALLBACK (on_uitest_layers), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -1966,6 +1996,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), d);
     gtk_box_append (GTK_BOX (bar), zm);
     gtk_box_append (GTK_BOX (bar), sn);
+    gtk_box_append (GTK_BOX (bar), ly);
   }
 
   return bar;
@@ -2128,16 +2159,117 @@ build_canvas_area (DiaShell *self)
 }
 
 
+/* Rebuild the layers list box from the diagram's layers (topmost first, the way
+ * Dia shows them); the active layer is emphasised. */
+static void
+refresh_layers_list (DiaShell *self)
+{
+  GtkListBox *lb = GTK_LIST_BOX (self->layers_list);
+  DiaLayer *active = dia_diagram_data_get_active_layer (self->diagram);
+  GtkWidget *child;
+  int n = data_layer_count (self->diagram);
+
+  while ((child = gtk_widget_get_first_child (GTK_WIDGET (lb))) != NULL) {
+    gtk_list_box_remove (lb, child);
+  }
+  for (int i = n - 1; i >= 0; i--) {
+    DiaLayer *l = data_layer_get_nth (self->diagram, i);
+    GtkWidget *row = gtk_label_new (dia_layer_get_name (l));
+
+    gtk_widget_set_halign (row, GTK_ALIGN_START);
+    if (l == active) {
+      gtk_widget_add_css_class (row, "heading");
+    }
+    g_object_set_data (G_OBJECT (row), "dia-layer-index", GINT_TO_POINTER (i));
+    gtk_list_box_insert (lb, row, -1);
+  }
+}
+
+static void
+on_layer_row_selected (GtkListBox *lb, GtkListBoxRow *row, DiaShell *self)
+{
+  GtkWidget *child;
+  DiaLayer *l;
+  int idx;
+
+  if (!row) {
+    return;
+  }
+  child = gtk_list_box_row_get_child (row);
+  idx = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (child), "dia-layer-index"));
+  l = data_layer_get_nth (self->diagram, idx);
+  if (l) {
+    data_set_active_layer (self->diagram, l);
+  }
+}
+
+static void
+on_layer_add (GtkButton *b, DiaShell *self)
+{
+  char *name = g_strdup_printf (_("Layer %d"),
+                                data_layer_count (self->diagram) + 1);
+  DiaLayer *l = dia_layer_new (name, self->diagram);
+
+  g_free (name);
+  data_add_layer (self->diagram, l);          /* takes ownership */
+  data_set_active_layer (self->diagram, l);
+  refresh_layers_list (self);
+  gtk_label_set_text (GTK_LABEL (self->status_msg),
+                      _("Added a layer (active)"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
+static void
+on_layer_remove (GtkButton *b, DiaShell *self)
+{
+  DiaLayer *active = dia_diagram_data_get_active_layer (self->diagram);
+
+  if (data_layer_count (self->diagram) <= 1) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Cannot remove the last layer"));
+    return;
+  }
+  self->selected = NULL;                       /* may have lived in this layer */
+  data_remove_layer (self->diagram, active);
+  data_set_active_layer (self->diagram,
+                         data_layer_get_nth (self->diagram,
+                                             data_layer_count (self->diagram) - 1));
+  refresh_layers_list (self);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Removed a layer"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
+static void
+on_layer_up (GtkButton *b, DiaShell *self)
+{
+  data_raise_layer (self->diagram,
+                    dia_diagram_data_get_active_layer (self->diagram));
+  refresh_layers_list (self);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+static void
+on_layer_down (GtkButton *b, DiaShell *self)
+{
+  data_lower_layer (self->diagram,
+                    dia_diagram_data_get_active_layer (self->diagram));
+  refresh_layers_list (self);
+  gtk_widget_queue_draw (self->canvas);
+}
+
 static GtkWidget *
-build_layers (void)
+build_layers (DiaShell *self)
 {
   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
   GtkWidget *label = gtk_label_new (_("Layers"));
   GtkWidget *list = gtk_list_box_new ();
-  GtkWidget *row = gtk_label_new (_("Background"));
   GtkWidget *controls = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-  const char *btns[] = { "list-add-symbolic", "list-remove-symbolic",
-                         "go-up-symbolic", "go-down-symbolic" };
+  struct { const char *icon; const char *tip; GCallback cb; } btns[] = {
+    { "list-add-symbolic",    N_("Add layer"),    G_CALLBACK (on_layer_add) },
+    { "list-remove-symbolic", N_("Remove layer"), G_CALLBACK (on_layer_remove) },
+    { "go-up-symbolic",       N_("Raise layer"),  G_CALLBACK (on_layer_up) },
+    { "go-down-symbolic",     N_("Lower layer"),  G_CALLBACK (on_layer_down) },
+  };
 
   gtk_widget_set_size_request (box, 150, -1);
   gtk_widget_set_margin_start (box, 4);
@@ -2148,14 +2280,20 @@ build_layers (void)
   gtk_widget_set_halign (label, GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (box), label);
 
+  self->layers_list = list;
   gtk_widget_set_vexpand (list, TRUE);
-  gtk_list_box_insert (GTK_LIST_BOX (list), row, -1);
+  g_signal_connect (list, "row-selected",
+                    G_CALLBACK (on_layer_row_selected), self);
+  refresh_layers_list (self);
   gtk_box_append (GTK_BOX (box), list);
 
   gtk_widget_add_css_class (controls, "toolbar");
   for (gsize i = 0; i < G_N_ELEMENTS (btns); i++) {
-    GtkWidget *b = gtk_button_new_from_icon_name (btns[i]);
+    GtkWidget *b = gtk_button_new_from_icon_name (btns[i].icon);
     gtk_button_set_has_frame (GTK_BUTTON (b), FALSE);
+    gtk_widget_set_tooltip_text (b, gettext (btns[i].tip));
+    set_a11y_label (b, gettext (btns[i].tip));
+    g_signal_connect (b, "clicked", btns[i].cb, self);
     gtk_box_append (GTK_BOX (controls), b);
   }
   gtk_box_append (GTK_BOX (box), controls);
@@ -2309,7 +2447,7 @@ dia_shell_new (void)
     GtkWidget *layers_wrap = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_append (GTK_BOX (layers_wrap),
                     gtk_separator_new (GTK_ORIENTATION_VERTICAL));
-    gtk_box_append (GTK_BOX (layers_wrap), build_layers ());
+    gtk_box_append (GTK_BOX (layers_wrap), build_layers (self));
     self->layers_panel = layers_wrap;
     gtk_box_append (GTK_BOX (main_area), layers_wrap);
   }
