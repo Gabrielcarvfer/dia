@@ -555,8 +555,9 @@ persistence_store_window_info (GtkWindow        *window,
 {
   /* Drawable means visible & mapped, what we usually think of as open. */
   if (!isclosed) {
-    gtk_window_get_position (window, &wininfo->x, &wininfo->y);
-    gtk_window_get_size (window, &wininfo->width, &wininfo->height);
+    /* GTK4: window position is compositor-managed and can't be queried. */
+    wininfo->x = wininfo->y = 0;
+    gtk_window_get_default_size (window, &wininfo->width, &wininfo->height);
     wininfo->isopen = TRUE;
   } else {
     wininfo->isopen = FALSE;
@@ -625,7 +626,6 @@ persistence_window_configure (GtkWindow *window,
                               GdkEvent  *event,
                               gpointer   data)
 {
-  g_return_val_if_fail (event->type == GDK_CONFIGURE, FALSE);
 
   dia_log_message ("configure (%s)", persistence_get_window_name (window));
 
@@ -642,7 +642,6 @@ persistence_window_map (GtkWindow *window,
                         GdkEvent  *event,
                         gpointer   data)
 {
-  g_return_val_if_fail (event->type == GDK_MAP, FALSE);
 
   dia_log_message ("map (%s)", persistence_get_window_name (window));
 
@@ -659,7 +658,6 @@ persistence_window_unmap (GtkWindow *window,
                           GdkEvent  *event,
                           gpointer   data)
 {
-  g_return_val_if_fail (event->type == GDK_UNMAP, FALSE);
 
   dia_log_message ("unmap (%s)", persistence_get_window_name (window));
 
@@ -703,29 +701,40 @@ persistence_hide_show_window (GtkWindow *window, gpointer data)
 static gboolean
 wininfo_in_range (const PersistentWindow *wininfo)
 {
-  GdkScreen *screen = gdk_screen_get_default ();
-  gint num_monitors = gdk_screen_get_n_monitors (screen), i;
+  /* GTK4: GdkScreen is gone; enumerate the display's monitors instead. */
+  GdkDisplay *display = gdk_display_get_default ();
+  GListModel *monitors;
   GdkRectangle rwin = {
     wininfo->x,
     wininfo->y,
     wininfo->width,
     wininfo->height
   };
-  GdkRectangle rres = { 0, 0, 0, 0 };
+  guint n, i;
 
-  for (i = 0; i < num_monitors; ++i) {
+  if (display == NULL) {
+    return TRUE;
+  }
+
+  monitors = gdk_display_get_monitors (display);
+  n = g_list_model_get_n_items (monitors);
+
+  for (i = 0; i < n; ++i) {
+    GdkMonitor *monitor = g_list_model_get_item (monitors, i);
     GdkRectangle rmon;
+    GdkRectangle rres = { 0, 0, 0, 0 };
 
-    gdk_screen_get_monitor_geometry (screen, i, &rmon);
+    gdk_monitor_get_geometry (monitor, &rmon);
+    g_object_unref (monitor);
 
     gdk_rectangle_intersect (&rwin, &rmon, &rres);
 
     if (rres.width * rres.height > 0) {
-      break;
+      return TRUE;
     }
   }
 
-  return (rres.width * rres.height > 0);
+  return FALSE;
 }
 
 
@@ -755,9 +764,8 @@ persistence_register_window (GtkWindow *window)
                                                       name);
   if (wininfo != NULL) {
     if (wininfo_in_range (wininfo)) {
-      /* only restore position if partially visible */
-      gtk_window_move (window, wininfo->x, wininfo->y);
-      gtk_window_resize (window, wininfo->width, wininfo->height);
+      /* GTK4: only the size persists; positioning is compositor-managed. */
+      gtk_window_set_default_size (window, wininfo->width, wininfo->height);
     }
 
     if (wininfo->isopen) {
@@ -765,10 +773,10 @@ persistence_register_window (GtkWindow *window)
     }
   } else {
     wininfo = g_new0 (PersistentWindow, 1);
-    gtk_window_get_position (window, &wininfo->x, &wininfo->y);
-    gtk_window_get_size (window, &wininfo->width, &wininfo->height);
-    /* Drawable means visible & mapped, what we usually think of as open. */
-    wininfo->isopen = gtk_widget_is_drawable (GTK_WIDGET(window));
+    wininfo->x = wininfo->y = 0;
+    gtk_window_get_default_size (window, &wininfo->width, &wininfo->height);
+    /* Visible means what we usually think of as open. */
+    wininfo->isopen = gtk_widget_get_visible (GTK_WIDGET(window));
     g_hash_table_insert (persistent_windows, (gchar *) name, wininfo);
   }
 
@@ -832,10 +840,10 @@ persistence_update_string_entry (GtkWidget *widget,
 {
   char *role = (char*) userdata;
 
-  if (event->type == GDK_FOCUS_CHANGE) {
+  if (gdk_event_get_event_type (event) == GDK_FOCUS_CHANGE) {
     char *string = (char *) g_hash_table_lookup (persistent_entrystrings,
                                                  role);
-    const char *entrystring = gtk_entry_get_text (GTK_ENTRY (widget));
+    const char *entrystring = gtk_editable_get_text (GTK_EDITABLE (widget));
     if (string == NULL || g_strcmp0 (string, entrystring) != 0) {
       g_hash_table_insert (persistent_entrystrings,
                            role,
@@ -874,7 +882,7 @@ persistence_change_string_entry (char      *role,
 
   if (old_string != NULL) {
     if (widget != NULL) {
-      gtk_entry_set_text (GTK_ENTRY (widget), string);
+      gtk_editable_set_text (GTK_EDITABLE (widget), string);
     }
     g_hash_table_insert (persistent_entrystrings, role, g_strdup(string));
   }
@@ -910,9 +918,9 @@ persistence_register_string_entry (char *role, GtkWidget *entry)
 
   string = (char *) g_hash_table_lookup (persistent_entrystrings, role);
   if (string != NULL) {
-    gtk_entry_set_text (GTK_ENTRY (entry), string);
+    gtk_editable_set_text (GTK_EDITABLE (entry), string);
   } else {
-    string = g_strdup (gtk_entry_get_text (GTK_ENTRY (entry)));
+    string = g_strdup (gtk_editable_get_text (GTK_EDITABLE (entry)));
     g_hash_table_insert (persistent_entrystrings, role, string);
   }
 

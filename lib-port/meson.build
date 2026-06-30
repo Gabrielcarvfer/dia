@@ -163,6 +163,8 @@ libdia_core_ported = files(
   lib_dir / 'prop_sdarray_widget.c',      # box_pack->append, scrolled set_child, drop show_all
   lib_dir / 'propdialogs.c',              # box_append, label align, scrolled set_child, misc removed
   lib_dir / 'prop_text.c',                # GtkEditable, frame set_child, key controller
+  lib_dir / 'message.c',                  # dialog content-area box_append, drop container_check_resize
+  lib_dir / 'persistence.c',              # window geometry: size-only (GTK4 drops positioning)
 
   # --- Still need real GTK4 widget porting (deferred) ---------------------
   # prop_geomtypes.c        -> pulls dia-unit-spinner.h (subclasses

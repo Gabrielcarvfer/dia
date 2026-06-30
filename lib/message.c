@@ -51,7 +51,6 @@ gtk_message_toggle_repeats(GtkWidget *button, gpointer *userdata)
     gtk_widget_show(msginfo->repeat_view);
   else {
     gtk_widget_hide(msginfo->repeat_view);
-    gtk_container_check_resize(GTK_CONTAINER(msginfo->dialog));
   }
 }
 
@@ -125,18 +124,18 @@ message_create_dialog(const gchar *title, DiaMessageInfo *msginfo, gchar *buf)
                     msginfo);
 
   msginfo->repeat_label = gtk_label_new (_("There is one similar message."));
-  gtk_container_add (GTK_CONTAINER (gtk_dialog_get_content_area (GTK_DIALOG (msginfo->dialog))),
+  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG (msginfo->dialog))),
                      msginfo->repeat_label);
 
   msginfo->show_repeats =
     gtk_check_button_new_with_label (_("Show repeated messages"));
-  gtk_container_add (GTK_CONTAINER (gtk_dialog_get_content_area (GTK_DIALOG (msginfo->dialog))),
+  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG (msginfo->dialog))),
                      msginfo->show_repeats);
   g_signal_connect (G_OBJECT (msginfo->show_repeats), "toggled",
                     G_CALLBACK (gtk_message_toggle_repeats), msginfo);
 
   msginfo->repeat_view = gtk_text_view_new();
-  gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(msginfo->dialog))),
+  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area(GTK_DIALOG(msginfo->dialog))),
 		    msginfo->repeat_view);
   gtk_text_view_set_editable(GTK_TEXT_VIEW(msginfo->repeat_view), FALSE);
 
@@ -151,7 +150,7 @@ message_create_dialog(const gchar *title, DiaMessageInfo *msginfo, gchar *buf)
 
   msginfo->no_show_again =
     gtk_check_button_new_with_label(_("Don't show this message again"));
-  gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(msginfo->dialog))),
+  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area(GTK_DIALOG(msginfo->dialog))),
 		    msginfo->no_show_again);
   g_signal_connect(G_OBJECT(msginfo->no_show_again), "toggled",
 		   G_CALLBACK(gtk_message_toggle_show_again), msginfo);
