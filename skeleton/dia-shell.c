@@ -3878,14 +3878,16 @@ build_toolbox (DiaShell *self)
 
   gtk_grid_set_row_homogeneous (GTK_GRID (grid), TRUE);
   gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
-  gtk_widget_set_halign (grid, GTK_ALIGN_CENTER);
+  /* Fill the column width (no centred empty margins) with larger icons. */
+  gtk_widget_set_halign (grid, GTK_ALIGN_FILL);
 
   for (gsize i = 0; i < G_N_ELEMENTS (tool_entries); i++) {
     GtkWidget *btn = gtk_toggle_button_new ();
     GtkWidget *img = gtk_image_new_from_resource (tool_entries[i].icon);
     const char *name = gettext (tool_entries[i].name);
 
-    gtk_image_set_pixel_size (GTK_IMAGE (img), 22);
+    gtk_image_set_pixel_size (GTK_IMAGE (img), 28);
+    gtk_widget_set_hexpand (btn, TRUE);
     gtk_button_set_child (GTK_BUTTON (btn), img);
     gtk_widget_set_tooltip_text (btn, gettext (tool_entries[i].tooltip));
     /* No text label now, so set the accessible name (for the tests/readers)
