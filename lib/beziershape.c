@@ -1103,27 +1103,58 @@ beziershape_load (BezierShape *bezier,
     bezier->bezier.num_points = 0;
   }
 
+  /* Defend against broken files (#319): object_init below is handed
+   * 3*(num_points-1) handles and 2*(num_points-1)+1 connections, so num_points
+   * must be at least two or both counts underflow into a multi-gigabyte
+   * allocation. A beziershape needs two bezpoints. Warn and substitute a
+   * default placeholder loop. */
+  if (bezier->bezier.num_points < 2) {
+    dia_context_add_message (ctx,
+        _("Broken beziergon: missing or too few bez_points; "
+          "substituting a default placeholder."));
+    attr = NULL;
+    bezier->bezier.num_points = 2;
+  }
+
   object_init (obj,
                3 * (bezier->bezier.num_points - 1),
                2 * (bezier->bezier.num_points - 1) + 1);
 
-  data = attribute_first_data (attr);
+  data = attr ? attribute_first_data (attr) : NULL;
   if (bezier->bezier.num_points != 0) {
     bezier->bezier.points = g_new (BezPoint, bezier->bezier.num_points);
     bezier->bezier.points[0].type = BEZ_MOVE_TO;
-    data_point (data, &bezier->bezier.points[0].p1, ctx);
+    if (data) {
+      data_point (data, &bezier->bezier.points[0].p1, ctx);
+      data = data_next (data);
+    } else {
+      bezier->bezier.points[0].p1.x = 0.0;
+      bezier->bezier.points[0].p1.y = 0.0;
+    }
     bezier->bezier.points[0].p3 = bezier->bezier.points[0].p1;
-    data = data_next (data);
 
     for (i = 1; i < bezier->bezier.num_points; i++) {
       bezier->bezier.points[i].type = BEZ_CURVE_TO;
-      data_point (data, &bezier->bezier.points[i].p1, ctx);
-      data = data_next (data);
-      data_point (data, &bezier->bezier.points[i].p2, ctx);
-      data = data_next (data);
-      if (i < bezier->bezier.num_points - 1) {
-        data_point (data, &bezier->bezier.points[i].p3, ctx);
+      if (data) {
+        data_point (data, &bezier->bezier.points[i].p1, ctx);
         data = data_next (data);
+        data_point (data, &bezier->bezier.points[i].p2, ctx);
+        data = data_next (data);
+      } else {
+        /* placeholder control points bulging out into a small closed loop */
+        bezier->bezier.points[i].p1.x = 1.0;
+        bezier->bezier.points[i].p1.y = 0.0;
+        bezier->bezier.points[i].p2.x = 1.0;
+        bezier->bezier.points[i].p2.y = 1.0;
+      }
+      if (i < bezier->bezier.num_points - 1) {
+        if (data) {
+          data_point (data, &bezier->bezier.points[i].p3, ctx);
+          data = data_next (data);
+        } else {
+          bezier->bezier.points[i].p3.x = 0.0;
+          bezier->bezier.points[i].p3.y = 0.0;
+        }
       } else {
         bezier->bezier.points[i].p3 = bezier->bezier.points[0].p1;
       }
