@@ -55,6 +55,17 @@ static const ToolEntry tool_entries[] = {
 };
 
 
+/* Give a widget a stable accessible name so the dogtail UI tests can find it
+ * (GTK4 exposes this over AT-SPI). */
+static void
+set_a11y_label (GtkWidget *widget, const char *label)
+{
+  gtk_accessible_update_property (GTK_ACCESSIBLE (widget),
+                                  GTK_ACCESSIBLE_PROPERTY_LABEL, label,
+                                  -1);
+}
+
+
 /* --- drawing callbacks --------------------------------------------------- */
 
 static void
@@ -300,6 +311,7 @@ build_action_toolbar (DiaShell *self)
     b = gtk_button_new_from_icon_name (items[i].icon);
     gtk_button_set_has_frame (GTK_BUTTON (b), FALSE);
     gtk_widget_set_tooltip_text (b, gettext (items[i].tip));
+    set_a11y_label (b, gettext (items[i].tip));
     if (items[i].cb)
       g_signal_connect (b, "clicked", items[i].cb, self);
     gtk_box_append (GTK_BOX (bar), b);
@@ -349,6 +361,7 @@ build_toolbox (DiaShell *self)
   self->colour_area = colour;
   gtk_widget_set_size_request (colour, 56, 56);
   gtk_widget_set_halign (colour, GTK_ALIGN_CENTER);
+  set_a11y_label (colour, "colour-area");
   gtk_widget_set_tooltip_text (colour, _("Click to pick the foreground colour"));
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (colour),
                                   draw_color_area, self, NULL);
@@ -389,6 +402,7 @@ build_canvas_area (DiaShell *self)
 
   gtk_widget_set_hexpand (canvas, TRUE);
   gtk_widget_set_vexpand (canvas, TRUE);
+  set_a11y_label (canvas, "diagram-canvas");
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (canvas),
                                   draw_canvas, self, NULL);
 
