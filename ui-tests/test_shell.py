@@ -218,15 +218,45 @@ def main():
     #     on the drawing area -> best effort (reported, not fatal).
     if canvas:
         try:
-            print("   canvas screen pos=%s size=%s" % (canvas.position, canvas.size))
-            ydotool_click(canvas)
+            # Per-widget AT-SPI coordinates are unreliable under WSLg (report
+            # 0,0), so maximize the window and click a point reliably inside the
+            # now-large canvas, computed from the real screen size.
+            frame = find(app, roleName='frame')
+            if frame:
+                for act in ('window.toggle-maximized', 'toggle-maximized'):
+                    try:
+                        frame.doActionNamed(act)
+                        break
+                    except Exception:
+                        continue
+            time.sleep(1.0)
+
+            screen_w, screen_h = 1280, 720
+            try:
+                out = subprocess.run(["xrandr"], capture_output=True,
+                                     text=True).stdout
+                m = re.search(r'current\s+(\d+)\s*x\s*(\d+)', out)
+                if m:
+                    screen_w, screen_h = int(m.group(1)), int(m.group(2))
+            except Exception:
+                pass
+            tx, ty = int(screen_w * 0.5), int(screen_h * 0.5)
+            print("   screen=%dx%d  click target=(%d,%d)" % (screen_w, screen_h, tx, ty))
+
+            # ydotool 0.1.8 mousemove is relative; home to (0,0) then move to
+            # the target. `--` lets the negative homing values through.
+            subprocess.run(["ydotool", "mousemove", "--", "-9000", "-9000"], check=False)
+            subprocess.run(["ydotool", "mousemove", "--", str(tx), str(ty)], check=False)
+            time.sleep(0.2)
+            subprocess.run(["ydotool", "click", "0xC0"], check=False)
             time.sleep(0.6)
+
             labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
-            hits = [lab.name for lab in labels
-                    if lab.name and ('object(s)' in lab.name or 'created' in lab.name)]
-            if VERBOSE:
-                print("   statusbar after click:", hits)
-            check("clicking canvas with Box tool creates an object", bool(hits))
+            status = [lab.name for lab in labels
+                      if lab.name and ('object(s)' in lab.name or ' at (' in lab.name)]
+            print("   statusbar after click:", status)
+            created = any('object(s)' in (lab.name or '') for lab in labels)
+            check("clicking canvas with Box tool creates an object", created)
         except Exception as exc:
             check("canvas click creates an object (%s)" % exc, False)
 
