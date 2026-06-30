@@ -401,6 +401,16 @@ def main():
         ok = any('group OK' in (lab.name or '') for lab in labels)
         check("Group then ungroup restores the objects", ok)
 
+    # 3u. Z-order: bring to front / send to back.
+    zo = find(app, name='uitest-zorder', roleName='push button')
+    check("DIA_UITEST z-order trigger present", zo)
+    if zo:
+        do_click(zo)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('zorder OK' in (lab.name or '') for lab in labels)
+        check("Bring-to-front / send-to-back reorders objects", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

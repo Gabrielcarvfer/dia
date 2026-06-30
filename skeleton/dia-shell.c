@@ -1729,6 +1729,50 @@ action_ungroup (GSimpleAction *a, GVariant *p, gpointer data)
   ungroup_selected (data);
 }
 
+/* Move the selected objects to the front (drawn last) or back (drawn first) of
+ * the active layer's z-order, keeping their relative order. Not undoable yet. */
+static void
+restack_selected (DiaShell *self, gboolean to_front)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  GList *sel = self->diagram->selected;
+  GList *orig, *picked = NULL, *rest = NULL, *new_list;
+
+  if (!sel || !layer) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Nothing selected"));
+    return;
+  }
+  orig = g_list_copy (dia_layer_get_object_list (layer));
+  for (GList *l = orig; l; l = l->next) {
+    if (g_list_find (sel, l->data)) {
+      picked = g_list_append (picked, l->data);
+    } else {
+      rest = g_list_append (rest, l->data);
+    }
+  }
+  /* front => others first then selected (selected drawn last/on top) */
+  new_list = to_front ? g_list_concat (rest, picked)
+                      : g_list_concat (picked, rest);
+  dia_layer_set_object_list (layer, new_list);   /* takes ownership; frees old */
+  g_list_free (orig);
+
+  gtk_label_set_text (GTK_LABEL (self->status_msg),
+                      to_front ? _("Brought to front") : _("Sent to back"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
+static void
+action_to_front (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  restack_selected (data, TRUE);
+}
+
+static void
+action_to_back (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  restack_selected (data, FALSE);
+}
+
 static void
 action_new (GSimpleAction *a, GVariant *p, gpointer data)
 {
@@ -2603,6 +2647,47 @@ on_uitest_group (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): bring a box to front (last in z-order) then send
+ * it to back (first), checking the layer order. */
+static void
+on_uitest_zorder (GtkButton *button, DiaShell *self)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  DiaObject *a, *b, *c;
+  gboolean front_ok, back_ok;
+  int n;
+  char buf[96];
+
+  a = diagram_create_object (self, "Standard - Box", (Point) { 40, 40 });
+  b = diagram_create_object (self, "Standard - Box", (Point) { 42, 40 });
+  c = diagram_create_object (self, "Standard - Box", (Point) { 44, 40 });
+  if (a) push_op (self, OP_CREATE, a, (Point) { 40, 40 }, (Point) { 40, 40 });
+  if (b) push_op (self, OP_CREATE, b, (Point) { 42, 40 }, (Point) { 42, 40 });
+  if (c) push_op (self, OP_CREATE, c, (Point) { 44, 40 }, (Point) { 44, 40 });
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, a);
+  self->selected = a;
+
+  restack_selected (self, TRUE);    /* a -> front (drawn last) */
+  n = dia_layer_object_count (layer);
+  front_ok = (dia_layer_object_get_nth (layer, n - 1) == a);
+
+  restack_selected (self, FALSE);   /* a -> back (drawn first) */
+  back_ok = (dia_layer_object_get_nth (layer, 0) == a);
+
+  (void) b; (void) c;
+  if (front_ok && back_ok) {
+    g_snprintf (buf, sizeof (buf), _("zorder OK"));
+  } else {
+    g_snprintf (buf, sizeof (buf), _("zorder FAIL (front=%d back=%d)"),
+                front_ok, back_ok);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -2788,6 +2873,8 @@ static const GActionEntry dia_actions[] = {
   { "select-all", action_select_all, NULL, NULL, NULL },
   { "group",      action_group,      NULL, NULL, NULL },
   { "ungroup",    action_ungroup,    NULL, NULL, NULL },
+  { "to-front",   action_to_front,   NULL, NULL, NULL },
+  { "to-back",    action_to_back,    NULL, NULL, NULL },
   { "delete",     action_delete,     NULL, NULL, NULL },
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
   { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
@@ -2869,6 +2956,8 @@ build_primary_menu_button (void)
   g_menu_append (edit, _("Select _All"), "dia.select-all");
   g_menu_append (edit, _("_Group"), "dia.group");
   g_menu_append (edit, _("_Ungroup"), "dia.ungroup");
+  g_menu_append (edit, _("Bring to _Front"), "dia.to-front");
+  g_menu_append (edit, _("Send to _Back"), "dia.to-back");
   g_menu_append (edit, _("_Delete"), "dia.delete");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (edit));
 
@@ -3071,6 +3160,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *tx = gtk_button_new_with_label ("uitest-text");
     GtkWidget *ms = gtk_button_new_with_label ("uitest-multiselect");
     GtkWidget *gr = gtk_button_new_with_label ("uitest-group");
+    GtkWidget *zo = gtk_button_new_with_label ("uitest-zorder");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -3089,6 +3179,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (tx), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ms), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (gr), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (zo), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -3107,6 +3198,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (tx, "clicked", G_CALLBACK (on_uitest_text), self);
     g_signal_connect (ms, "clicked", G_CALLBACK (on_uitest_multiselect), self);
     g_signal_connect (gr, "clicked", G_CALLBACK (on_uitest_group), self);
+    g_signal_connect (zo, "clicked", G_CALLBACK (on_uitest_zorder), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -3125,6 +3217,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), tx);
     gtk_box_append (GTK_BOX (bar), ms);
     gtk_box_append (GTK_BOX (bar), gr);
+    gtk_box_append (GTK_BOX (bar), zo);
   }
 
   return bar;
