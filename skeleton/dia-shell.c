@@ -402,6 +402,7 @@ build_canvas_area (DiaShell *self)
 
   gtk_widget_set_hexpand (canvas, TRUE);
   gtk_widget_set_vexpand (canvas, TRUE);
+  gtk_widget_set_focusable (canvas, TRUE);   /* keyboard input + a11y exposure */
   set_a11y_label (canvas, "diagram-canvas");
   gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (canvas),
                                   draw_canvas, self, NULL);

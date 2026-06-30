@@ -34,7 +34,7 @@ trap cleanup EXIT
 # Give it a moment to register on the a11y bus.
 sleep 2
 
-python3 "$HERE/test_shell.py"
+python3 "$HERE/${1:-test_shell.py}"
 RC=$?
 
 echo "--- app log (filtered) ---"

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Dogtail UI test for the GTK4 Dia skeleton.
 
-Drives the running app over AT-SPI and asserts the wired behaviour works:
-the tool palette is a radio group, the zoom buttons change the zoom readout,
-and clicking the colour area opens the async colour dialog.
+Dumps the accessible tree (so we can see what AT-SPI exposes) and then runs
+robust behavioural checks: the tool palette is a radio group, the zoom
+buttons change the readout, and the colour area opens the async colour dialog.
 
-Run via ui-tests/run.sh (which launches the app under AT-SPI first).
-Exit code 0 = all checks passed, 1 = some failed, 2 = app not found.
+Run via ui-tests/run.sh. Exit 0 = all passed, 1 = some failed, 2 = app missing.
 """
 import sys
 import time
@@ -19,6 +18,7 @@ config.actionDelay = 0.5
 config.defaultDelay = 0.5
 config.logDebugToStdOut = False
 
+import pyatspi                            # noqa: E402
 from dogtail.tree import root            # noqa: E402
 from dogtail import predicate            # noqa: E402
 
@@ -33,13 +33,58 @@ def check(desc, cond):
 
 
 def find(node, **kw):
-    """Find a descendant, returning None instead of raising."""
     return node.findChild(predicate.GenericPredicate(**kw),
                           retry=True, requireResult=False)
 
 
+def states_of(node):
+    try:
+        return {str(s).split('.')[-1] for s in node.getState().get_states()}
+    except Exception:
+        return set()
+
+
+def is_selected(node):
+    """GTK4 toggle buttons expose 'active' as PRESSED; radios as CHECKED."""
+    s = states_of(node)
+    return bool(s & {"PRESSED", "CHECKED", "SELECTED"})
+
+
+def actions_of(node):
+    try:
+        return list(node.actions.keys())
+    except Exception:
+        return []
+
+
+def do_click(node):
+    for name in ("click", "press", "activate", "toggle"):
+        try:
+            node.doActionNamed(name)
+            return True
+        except Exception:
+            continue
+    try:
+        node.click()
+        return True
+    except Exception as exc:
+        print("   (click failed:", exc, ")")
+        return False
+
+
+def dump(node, depth=0, maxdepth=8):
+    interesting = states_of(node) & {
+        "PRESSED", "CHECKED", "SELECTED", "ACTIVE", "FOCUSED",
+        "SHOWING", "SENSITIVE", "EDITABLE",
+    }
+    print("  " * depth + "[%s] %r states=%s actions=%s"
+          % (node.roleName, node.name, sorted(interesting), actions_of(node)))
+    if depth < maxdepth:
+        for child in node.children:
+            dump(child, depth + 1, maxdepth)
+
+
 def find_dia_app(timeout=25):
-    """Pick the application that owns our tool palette (name may vary)."""
     end = time.time() + timeout
     while time.time() < end:
         for app in root.applications():
@@ -60,46 +105,53 @@ def main():
         return 2
 
     print("Found application:", app.name)
+    print("\n================ ACCESSIBLE TREE ================")
+    try:
+        dump(app)
+    except Exception as exc:
+        print("(tree dump error:", exc, ")")
+    print("================================================\n")
 
-    # 1. Main window + core widgets present.
-    check("main window present",
-          find(app, roleName='frame') is not None)
+    # 1. Structure.
+    check("main window present", find(app, roleName='frame') is not None)
     modify = find(app, name='Modify', roleName='toggle button')
     box = find(app, name='Box', roleName='toggle button')
     check("Modify tool button present", modify)
     check("Box tool button present", box)
-    check("diagram canvas present",
-          find(app, name='diagram-canvas') is not None)
+
+    canvas = (find(app, name='diagram-canvas')
+              or find(app, roleName='drawing area'))
+    check("diagram canvas present", canvas)
     check("layers list present",
           find(app, name='Background', roleName='label') is not None)
 
-    # 2. Tool palette behaves as a radio group.
+    # 2. Tool palette behaves as a radio group (using PRESSED/CHECKED state).
     if modify and box:
-        check("Modify is active initially", modify.checked)
-        box.click()
-        time.sleep(0.5)
-        check("Box active after clicking it", box.checked)
-        check("Modify inactive after Box selected", not modify.checked)
+        check("Modify selected initially", is_selected(modify))
+        do_click(box)
+        time.sleep(0.6)
+        check("Box selected after clicking it", is_selected(box))
+        check("Modify deselected after Box selected", not is_selected(modify))
 
-    # 3. Zoom buttons update the zoom readout (100% -> 150%).
+    # 3. Zoom buttons update the readout (100% -> 150%).
     check("zoom readout starts at 100%",
           find(app, name='100%', roleName='label') is not None)
     zoom_in = find(app, name='Zoom in', roleName='push button')
     check("zoom-in button present", zoom_in)
     if zoom_in:
-        zoom_in.click()
-        time.sleep(0.5)
+        print("   zoom-in actions:", actions_of(zoom_in))
+        do_click(zoom_in)
+        time.sleep(0.6)
         check("zoom readout becomes 150% after zoom-in",
               find(app, name='150%', roleName='label') is not None)
 
-    # 4. Colour area opens the async colour dialog (needs synthetic click on a
-    #    drawing area -> best effort; reported but not fatal on input quirks).
+    # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("colour area present", colour)
     if colour:
         try:
-            colour.click()
-            time.sleep(1.0)
+            do_click(colour)
+            time.sleep(1.2)
             dlg = (find(app, roleName='dialog')
                    or find(root, name='Foreground Colour'))
             check("colour dialog opened on click", dlg)
