@@ -2256,7 +2256,7 @@ preview_setup (GtkSignalListItemFactory *f, GtkListItem *item, gpointer draw_fun
 {
   GtkWidget *area = gtk_drawing_area_new ();
 
-  gtk_widget_set_size_request (area, 56, 16);
+  gtk_widget_set_size_request (area, 40, 16);
   gtk_list_item_set_child (item, area);
 }
 
@@ -2296,18 +2296,6 @@ make_preview_dropdown (const char * const *labels, gpointer draw_func,
   return dd;
 }
 
-/* A "label: widget" row in the line-attributes grid. */
-static void
-attr_row (GtkGrid *grid, int row, const char *text, GtkWidget *w)
-{
-  GtkWidget *l = gtk_label_new (text);
-
-  gtk_widget_set_halign (l, GTK_ALIGN_START);
-  gtk_widget_set_hexpand (w, TRUE);
-  gtk_grid_attach (grid, l, 0, row, 1, 1);
-  gtk_grid_attach (grid, w, 1, row, 1, 1);
-}
-
 static GtkWidget *
 build_toolbox (DiaShell *self)
 {
@@ -2325,7 +2313,8 @@ build_toolbox (DiaShell *self)
   gtk_widget_set_hexpand (box, FALSE);
 
   gtk_grid_set_row_homogeneous (GTK_GRID (grid), TRUE);
-  gtk_widget_set_halign (grid, GTK_ALIGN_CENTER);   /* centre the icon column */
+  gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
+  gtk_widget_set_halign (grid, GTK_ALIGN_CENTER);
 
   for (gsize i = 0; i < G_N_ELEMENTS (tool_entries); i++) {
     GtkWidget *btn = gtk_toggle_button_new ();
@@ -2347,8 +2336,8 @@ build_toolbox (DiaShell *self)
       gtk_toggle_button_set_group (GTK_TOGGLE_BUTTON (btn), first);
     }
     g_signal_connect (btn, "toggled", G_CALLBACK (on_tool_toggled), self);
-    /* Single column: one tool per row. */
-    gtk_grid_attach (GTK_GRID (grid), btn, 0, i, 1, 1);
+    /* Four tools per row. */
+    gtk_grid_attach (GTK_GRID (grid), btn, i % 4, i / 4, 1, 1);
   }
   gtk_box_append (GTK_BOX (box), grid);
 
@@ -2382,7 +2371,9 @@ build_toolbox (DiaShell *self)
     static const char * const styles[] = { "Solid", "Dashed", "Dash-dot",
                                             "Dash-dot-dot", "Dotted", NULL };
     static const char * const arrows[] = { "None", "Lines", "Filled", NULL };
-    GtkWidget *attrs = gtk_grid_new ();
+    GtkWidget *wrow = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+    GtkWidget *drow = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 2);
+    GtkWidget *wl = gtk_label_new (_("Width"));
     GtkWidget *lw = gtk_spin_button_new_with_range (0.0, 5.0, 0.05);
     GtkWidget *ls = make_preview_dropdown (styles, draw_linestyle_item,
                                            self->line_style, "line-style",
@@ -2396,9 +2387,6 @@ build_toolbox (DiaShell *self)
                                            G_CALLBACK (on_end_arrow_changed),
                                            self);
 
-    gtk_grid_set_row_spacing (GTK_GRID (attrs), 3);
-    gtk_grid_set_column_spacing (GTK_GRID (attrs), 4);
-
     gtk_spin_button_set_digits (GTK_SPIN_BUTTON (lw), 2);
     gtk_spin_button_set_value (GTK_SPIN_BUTTON (lw), self->line_width);
     gtk_editable_set_width_chars (GTK_EDITABLE (lw), 4);
@@ -2406,11 +2394,18 @@ build_toolbox (DiaShell *self)
     set_a11y_label (lw, "line-width");
     g_signal_connect (lw, "value-changed", G_CALLBACK (on_lw_changed), self);
 
-    attr_row (GTK_GRID (attrs), 0, _("Width"), lw);
-    attr_row (GTK_GRID (attrs), 1, _("Start"), sa);
-    attr_row (GTK_GRID (attrs), 2, _("Style"), ls);
-    attr_row (GTK_GRID (attrs), 3, _("End"),   ea);
-    gtk_box_append (GTK_BOX (box), attrs);
+    /* Width on its own row; the three arrow/style previews share one row. */
+    gtk_widget_set_halign (wl, GTK_ALIGN_START);
+    gtk_widget_set_hexpand (lw, TRUE);
+    gtk_box_append (GTK_BOX (wrow), wl);
+    gtk_box_append (GTK_BOX (wrow), lw);
+    gtk_box_append (GTK_BOX (box), wrow);
+
+    gtk_widget_set_halign (drow, GTK_ALIGN_CENTER);
+    gtk_box_append (GTK_BOX (drow), sa);
+    gtk_box_append (GTK_BOX (drow), ls);
+    gtk_box_append (GTK_BOX (drow), ea);
+    gtk_box_append (GTK_BOX (box), drow);
   }
 
   return box;
