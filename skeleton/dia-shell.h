@@ -16,8 +16,14 @@
 
 G_BEGIN_DECLS
 
+typedef struct _DiagramData DiagramData;
+
 /* Returns the window content: an AdwToolbarView with the header bar, tool
  * toolbar, the toolbox/canvas/layers area, and the statusbar. */
 GtkWidget *dia_shell_new (void);
+
+/* Render a whole diagram to a file, format chosen by extension (.pdf/.svg,
+ * else PNG). Shared by the GUI Export action and the --export CLI option. */
+gboolean diagram_export_file (DiagramData *data, const char *path);
 
 G_END_DECLS

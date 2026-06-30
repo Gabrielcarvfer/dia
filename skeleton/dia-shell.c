@@ -10,6 +10,7 @@
  */
 
 #include <glib/gi18n.h>
+#include <glib/gstdio.h>
 #include <gdk/gdkkeysyms.h>
 #include <math.h>
 
@@ -18,6 +19,8 @@
 /* Ported core library: draw on the canvas with the real Dia renderer. */
 #include "diarenderer.h"
 #include "renderer/diacairo.h"
+#include <cairo-pdf.h>
+#include <cairo-svg.h>
 #include "dia-colour.h"
 #include "geometry.h"
 #include "font.h"
@@ -1315,6 +1318,69 @@ action_new (GSimpleAction *a, GVariant *p, gpointer data)
  * whose <dia:object>s are serialized by each object's own save vfunc (the same
  * primitives app/load_save.c uses), then written via dia-io (handles encoding
  * and optional gzip). Produces files loadable by upstream Dia. */
+/* Render the whole diagram to an image/vector file, sized to its extents (plus
+ * a small margin). Format is chosen by extension: .pdf, .svg, else PNG. Uses
+ * the same DiaCairoRenderer the canvas draws with. This is the export backend
+ * shared by the GUI Export action and the --export CLI option. */
+gboolean
+diagram_export_file (DiagramData *data, const char *path)
+{
+  char *lower = g_ascii_strdown (path, -1);
+  gboolean is_pdf = g_str_has_suffix (lower, ".pdf");
+  gboolean is_svg = g_str_has_suffix (lower, ".svg");
+  DiaRectangle *ext;
+  double margin = 0.5;                          /* cm */
+  double dpcm = (is_pdf || is_svg) ? (72.0 / 2.54) : 40.0;  /* pts/cm or px/cm */
+  double w_cm, h_cm;
+  cairo_surface_t *surface;
+  cairo_t *cr;
+  DiaRenderer *renderer;
+  gboolean ok = TRUE;
+
+  g_free (lower);
+  data_update_extents (data);
+  ext = &data->extents;
+  w_cm = (ext->right - ext->left) + 2 * margin;
+  h_cm = (ext->bottom - ext->top) + 2 * margin;
+  if (w_cm < 1.0) w_cm = 1.0;
+  if (h_cm < 1.0) h_cm = 1.0;
+
+  if (is_pdf) {
+    surface = cairo_pdf_surface_create (path, w_cm * dpcm, h_cm * dpcm);
+  } else if (is_svg) {
+    surface = cairo_svg_surface_create (path, w_cm * dpcm, h_cm * dpcm);
+  } else {
+    surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+                                          (int) ceil (w_cm * dpcm),
+                                          (int) ceil (h_cm * dpcm));
+  }
+  if (cairo_surface_status (surface) != CAIRO_STATUS_SUCCESS) {
+    cairo_surface_destroy (surface);
+    return FALSE;
+  }
+
+  cr = cairo_create (surface);
+  cairo_set_source_rgb (cr, 1, 1, 1);           /* white page */
+  cairo_paint (cr);
+  cairo_scale (cr, dpcm, dpcm);
+  cairo_translate (cr, margin - ext->left, margin - ext->top);
+
+  renderer = g_object_new (DIA_CAIRO_TYPE_RENDERER, NULL);
+  DIA_CAIRO_RENDERER (renderer)->cr = cairo_reference (cr);
+  DIA_CAIRO_RENDERER (renderer)->with_alpha = FALSE;
+  data_render (data, renderer, NULL, NULL, NULL);
+  g_object_unref (renderer);
+
+  cairo_show_page (cr);
+  cairo_surface_flush (surface);
+  if (!is_pdf && !is_svg) {
+    ok = (cairo_surface_write_to_png (surface, path) == CAIRO_STATUS_SUCCESS);
+  }
+  cairo_destroy (cr);
+  cairo_surface_destroy (surface);
+  return ok;
+}
+
 static gboolean
 diagram_to_file (DiaShell *self, GFile *file)
 {
@@ -1753,6 +1819,30 @@ on_uitest_lineattr (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): export the diagram to a temp PNG and confirm a
+ * non-trivial file was written (exercises the export backend). */
+static void
+on_uitest_export (GtkButton *button, DiaShell *self)
+{
+  char *path = g_build_filename (g_get_tmp_dir (), "dia-uitest-export.png", NULL);
+  GStatBuf st;
+  gboolean ok;
+  char buf[128];
+
+  g_remove (path);
+  ok = diagram_export_file (self->diagram, path)
+       && g_stat (path, &st) == 0 && st.st_size > 100;
+  if (ok) {
+    g_snprintf (buf, sizeof (buf), _("export OK (%ld bytes)"), (long) st.st_size);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("export FAIL"));
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  g_remove (path);
+  g_free (path);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -1805,6 +1895,53 @@ action_save (GSimpleAction *a, GVariant *p, gpointer data)
   g_object_unref (dialog);
 }
 
+static void
+export_done (GObject *source, GAsyncResult *res, gpointer data)
+{
+  DiaShell *self = data;
+  GFile *file = gtk_file_dialog_save_finish (GTK_FILE_DIALOG (source), res, NULL);
+
+  if (file) {
+    char *path = g_file_get_path (file);
+    gboolean ok = path && diagram_export_file (self->diagram, path);
+
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        ok ? _("Exported diagram") : _("Export failed"));
+    g_free (path);
+    g_object_unref (file);
+  }
+}
+
+static void
+action_export (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GtkFileDialog *dialog = gtk_file_dialog_new ();
+  GtkRoot *root = gtk_widget_get_root (self->canvas);
+  GListStore *filters = g_list_store_new (GTK_TYPE_FILE_FILTER);
+  const struct { const char *name, *pat; } kinds[] = {
+    { N_("PNG image (*.png)"), "*.png" },
+    { N_("PDF document (*.pdf)"), "*.pdf" },
+    { N_("SVG image (*.svg)"), "*.svg" },
+  };
+
+  for (gsize i = 0; i < G_N_ELEMENTS (kinds); i++) {
+    GtkFileFilter *f = gtk_file_filter_new ();
+    gtk_file_filter_set_name (f, gettext (kinds[i].name));
+    gtk_file_filter_add_pattern (f, kinds[i].pat);
+    g_list_store_append (filters, f);
+    g_object_unref (f);
+  }
+  gtk_file_dialog_set_title (dialog, _("Export Diagram"));
+  gtk_file_dialog_set_modal (dialog, FALSE);
+  gtk_file_dialog_set_initial_name (dialog, "diagram.png");
+  gtk_file_dialog_set_filters (dialog, G_LIST_MODEL (filters));
+  gtk_file_dialog_save (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
+                        NULL, export_done, self);
+  g_object_unref (filters);
+  g_object_unref (dialog);
+}
+
 
 static void
 open_done (GObject *source, GAsyncResult *res, gpointer data)
@@ -1843,6 +1980,7 @@ static const GActionEntry dia_actions[] = {
   { "new",        action_new,        NULL, NULL, NULL },
   { "open",       action_open,       NULL, NULL, NULL },
   { "save",       action_save,       NULL, NULL, NULL },
+  { "export",     action_export,     NULL, NULL, NULL },
   { "undo",       action_undo,       NULL, NULL, NULL },
   { "redo",       action_redo,       NULL, NULL, NULL },
   { "delete",     action_delete,     NULL, NULL, NULL },
@@ -1914,6 +2052,7 @@ build_primary_menu_button (void)
   g_menu_append (file, _("_New"), "dia.new");
   g_menu_append (file, _("_Open…"), "dia.open");
   g_menu_append (file, _("_Save…"), "dia.save");
+  g_menu_append (file, _("_Export…"), "dia.export");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (file));
 
   g_menu_append (edit, _("_Undo"), "dia.undo");
@@ -2108,6 +2247,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *sn = gtk_button_new_with_label ("uitest-snap");
     GtkWidget *ly = gtk_button_new_with_label ("uitest-layers");
     GtkWidget *la = gtk_button_new_with_label ("uitest-lineattr");
+    GtkWidget *ex = gtk_button_new_with_label ("uitest-export");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -2119,6 +2259,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (sn), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ly), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (la), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (ex), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -2130,6 +2271,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (sn, "clicked", G_CALLBACK (on_uitest_snap), self);
     g_signal_connect (ly, "clicked", G_CALLBACK (on_uitest_layers), self);
     g_signal_connect (la, "clicked", G_CALLBACK (on_uitest_lineattr), self);
+    g_signal_connect (ex, "clicked", G_CALLBACK (on_uitest_export), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -2141,6 +2283,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), sn);
     gtk_box_append (GTK_BOX (bar), ly);
     gtk_box_append (GTK_BOX (bar), la);
+    gtk_box_append (GTK_BOX (bar), ex);
   }
 
   return bar;

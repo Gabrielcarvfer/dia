@@ -328,6 +328,17 @@ def main():
         ok = any('lineattr OK' in (lab.name or '') for lab in labels)
         check("Line width applies to an object (StdProp)", ok)
 
+    # 3n. Export backend writes a non-trivial PNG (used by the Export action
+    #     and the --export CLI option).
+    ex = find(app, name='uitest-export', roleName='push button')
+    check("DIA_UITEST export trigger present", ex)
+    if ex:
+        do_click(ex)
+        time.sleep(0.5)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('export OK' in (lab.name or '') for lab in labels)
+        check("Export renders the diagram to a file", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
