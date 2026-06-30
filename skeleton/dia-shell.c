@@ -532,11 +532,11 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), b);
   }
 
-  /* UI-test-only trigger (see on_uitest_apply_tool). Absent in normal use. */
+  /* UI-test-only trigger (see on_uitest_apply_tool). Absent in normal use.
+   * The label IS the AT-SPI name the test searches for. */
   if (g_getenv ("DIA_UITEST")) {
-    GtkWidget *t = gtk_button_new_with_label ("uitest");
+    GtkWidget *t = gtk_button_new_with_label ("uitest-apply-tool");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
-    set_a11y_label (t, "uitest-apply-tool");
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     gtk_box_append (GTK_BOX (bar), t);
   }

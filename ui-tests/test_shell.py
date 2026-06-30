@@ -196,7 +196,13 @@ def main():
     # exercise the canvas via the DIA_UITEST trigger: it applies the current
     # tool (Box, selected above) at a fixed page point through the SAME code a
     # real canvas click runs. Invoked via its AT-SPI action -> no input synth.
-    trigger = find(app, name='uitest-apply-tool', roleName='push button')
+    trigger = (find(app, name='uitest-apply-tool')
+               or find(app, name='uitest-apply-tool', roleName='push button'))
+    if not trigger:
+        # Diagnose: list push-button names so we can see what the env produced.
+        btns = app.findChildren(predicate.GenericPredicate(roleName='push button'))
+        print("   push buttons:", [b.name for b in btns])
+        print("   DIA_UITEST =", os.environ.get('DIA_UITEST'))
     check("DIA_UITEST trigger present (run via ui-tests/run.sh)", trigger)
     if trigger:
         do_click(trigger)
