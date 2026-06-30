@@ -43,3 +43,15 @@ test(
   protocol: 'tap',
   timeout: 120,
 )
+
+# Regression test for #405: a dashed line style must not bleed into arrowheads
+# (the ER/UML cardinality "hash mark" arrows used to inherit the stem's dash).
+test(
+  'lib-arrows',
+  executable(
+    'test-arrows-port',
+    ['test-arrows-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)

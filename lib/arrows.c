@@ -545,6 +545,11 @@ draw_one_exactly (DiaRenderer *renderer,
   Point vl,vt;
   Point bs,be;
 
+  /* a dashed/dotted stem must not bleed into the hash marks (#405) */
+  dia_renderer_set_linewidth (renderer, linewidth);
+  dia_renderer_set_linestyle (renderer, DIA_LINE_STYLE_SOLID, 0.0);
+  dia_renderer_set_linejoin (renderer, DIA_LINE_JOIN_MITER);
+
   /* the first line */
   point_copy (&vl,from); point_sub (&vl,to);
   if (point_len (&vl) > 0) {
@@ -643,6 +648,12 @@ draw_one_or_none (DiaRenderer *renderer,
   Point vl,vt;
   Point bs,be;
   Point second_from, second_to;
+
+  /* a dashed/dotted stem must not bleed into the hash mark (#405); the ellipse
+   * helper resets the style itself before its stroke */
+  dia_renderer_set_linewidth (renderer, linewidth);
+  dia_renderer_set_linestyle (renderer, DIA_LINE_STYLE_SOLID, 0.0);
+  dia_renderer_set_linejoin (renderer, DIA_LINE_JOIN_MITER);
 
   /* the  line */
   point_copy (&vl,from); point_sub (&vl,to);
