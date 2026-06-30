@@ -109,7 +109,7 @@ frame_beginprop_get_widget (FrameProperty *prop, PropDialog *dialog)
   gtk_expander_set_expanded (GTK_EXPANDER (frame), TRUE);
   gtk_widget_show (frame);
 
-  gtk_container_add (GTK_CONTAINER (frame), vbox);
+  gtk_expander_set_child (GTK_EXPANDER (frame), vbox);
   gtk_widget_show (vbox);
 
   prop_dialog_add_raw (dialog, frame);
@@ -166,8 +166,6 @@ static WIDGET *
 multicol_beginprop_get_widget(MulticolProperty *prop, PropDialog *dialog)
 {
   GtkWidget *multicol = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 1);
-
-  gtk_container_set_border_width (GTK_CONTAINER(multicol), 2);
   gtk_widget_show(multicol);
 
   prop_dialog_add_raw(dialog,multicol);
@@ -182,13 +180,12 @@ static WIDGET *
 multicol_columnprop_get_widget(MulticolProperty *prop, PropDialog *dialog)
 {
   GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
-
-  gtk_container_set_border_width (GTK_CONTAINER(col), 2);
   gtk_widget_show(col);
 
   prop_dialog_container_pop(dialog); /* NULL or the previous column */
 
-  gtk_box_pack_start(GTK_BOX(dialog->lastcont),col,TRUE,TRUE,0);
+  gtk_widget_set_hexpand (col, TRUE);
+  gtk_box_append (GTK_BOX(dialog->lastcont), col);
 
   prop_dialog_add_raw(dialog,NULL); /* to reset the internal table system */
   prop_dialog_container_push(dialog,col);
@@ -259,7 +256,6 @@ notebook_beginprop_get_widget(NotebookProperty *prop, PropDialog *dialog)
   GtkWidget *notebook = gtk_notebook_new();
 
   gtk_notebook_set_tab_pos(GTK_NOTEBOOK(notebook),GTK_POS_TOP);
-  gtk_container_set_border_width (GTK_CONTAINER(notebook), 1);
   gtk_widget_show(notebook);
 
   prop_dialog_add_raw(dialog,notebook);
@@ -275,8 +271,6 @@ notebook_pageprop_get_widget(NotebookProperty *prop, PropDialog *dialog)
 {
   GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
   GtkWidget *label = gtk_label_new(_(prop->common.descr->description));
-
-  gtk_container_set_border_width (GTK_CONTAINER(page), 2);
   gtk_widget_show(page);
   gtk_widget_show(label);
 

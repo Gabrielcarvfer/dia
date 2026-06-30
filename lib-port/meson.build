@@ -155,6 +155,14 @@ libdia_core_ported = files(
   lib_dir / 'prop_matrix.c',              # box_pack_start->append, container_get_children->walk
   lib_dir / 'dia-font-selector.c',        # box_pack_start->append
   lib_dir / 'prop_pixbuf.c',              # gdk-pixbuf only
+  lib_dir / 'dia-arrow-selector.c',       # box_pack_start->append (combo/cell-layout deprecated, present)
+  lib_dir / 'dia-line-style-selector.c',  # box_pack_start->append
+  lib_dir / 'dia-size-selector.c',        # box_pack_start->append, drop border_width
+  lib_dir / 'widgets.c',                  # toggle button: bin/container->set_child, set_relief->set_has_frame
+  lib_dir / 'prop_widgets.c',             # expander set_child, box_pack->append
+  lib_dir / 'prop_sdarray_widget.c',      # box_pack->append, scrolled set_child, drop show_all
+  lib_dir / 'propdialogs.c',              # box_append, label align, scrolled set_child, misc removed
+  lib_dir / 'prop_text.c',                # GtkEditable, frame set_child, key controller
 
   # --- Still need real GTK4 widget porting (deferred) ---------------------
   # prop_geomtypes.c        -> pulls dia-unit-spinner.h (subclasses

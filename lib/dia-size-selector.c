@@ -152,14 +152,14 @@ dia_size_selector_init (DiaSizeSelector *ss)
   ss->width = GTK_SPIN_BUTTON (gtk_spin_button_new (adj, 1.0, 2));
   gtk_spin_button_set_wrap (GTK_SPIN_BUTTON (ss->width), TRUE);
   gtk_spin_button_set_numeric (GTK_SPIN_BUTTON (ss->width), TRUE);
-  gtk_box_pack_start (GTK_BOX (ss), GTK_WIDGET (ss->width), FALSE, TRUE, 0);
+  gtk_box_append (GTK_BOX (ss), GTK_WIDGET (ss->width));
   gtk_widget_show (GTK_WIDGET (ss->width));
 
   adj = GTK_ADJUSTMENT (gtk_adjustment_new (1.0, 0.01, 10, 0.1, 1.0, 0));
   ss->height = GTK_SPIN_BUTTON (gtk_spin_button_new (adj, 1.0, 2));
   gtk_spin_button_set_wrap (GTK_SPIN_BUTTON (ss->height), TRUE);
   gtk_spin_button_set_numeric (GTK_SPIN_BUTTON (ss->height), TRUE);
-  gtk_box_pack_start (GTK_BOX (ss), GTK_WIDGET (ss->height), FALSE, TRUE, 0);
+  gtk_box_append (GTK_BOX (ss), GTK_WIDGET (ss->height));
   gtk_widget_show (GTK_WIDGET (ss->height));
 
   /* Replace label with images */
@@ -169,14 +169,7 @@ dia_size_selector_init (DiaSizeSelector *ss)
   ss->aspect_locked = GTK_TOGGLE_BUTTON (
     dia_toggle_button_new_with_icon_names ("dia-chain-unbroken",
                                            "dia-chain-broken"));
-
-  gtk_container_set_border_width (GTK_CONTAINER (ss->aspect_locked), 0);
-
-  gtk_box_pack_start (GTK_BOX (ss),
-                      GTK_WIDGET (ss->aspect_locked),
-                      FALSE,
-                      TRUE,
-                      0);
+  gtk_box_append (GTK_BOX (ss), GTK_WIDGET (ss->aspect_locked));
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (ss->aspect_locked), TRUE);
   gtk_widget_show (GTK_WIDGET (ss->aspect_locked));
 

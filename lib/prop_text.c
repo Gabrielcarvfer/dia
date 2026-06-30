@@ -96,8 +96,8 @@ stringprop_get_widget(StringProperty *prop, PropDialog *dialog)
 static void
 stringprop_reset_widget(StringProperty *prop, GtkWidget *widget)
 {
-  gtk_entry_set_text(GTK_ENTRY(widget),
-                     prop->string_data ? prop->string_data : "");
+  gtk_editable_set_text(GTK_EDITABLE(widget),
+                        prop->string_data ? prop->string_data : "");
 }
 
 static void
@@ -105,17 +105,18 @@ stringprop_set_from_widget(StringProperty *prop, GtkWidget *widget)
 {
   g_clear_pointer (&prop->string_data, g_free);
   prop->string_data =
-    g_strdup (gtk_entry_get_text (GTK_ENTRY(widget)));
+    g_strdup (gtk_editable_get_text (GTK_EDITABLE(widget)));
 }
 
 static gboolean
-multistringprop_handle_key(GtkWidget *wid, GdkEventKey *event)
+multistringprop_handle_key(GtkEventControllerKey *controller,
+                           guint                  keyval,
+                           guint                  keycode,
+                           GdkModifierType        state,
+                           gpointer               user_data)
 {
   /* Normal textview doesn't grab return, so to avoid closing the dialog...*/
-  /* Actually, this doesn't seem to work -- I guess the dialog closes
-   * becore this is called :(
-   */
-  if (event->keyval == GDK_KEY_Return)
+  if (keyval == GDK_KEY_Return)
     return TRUE;
   return FALSE;
 }
@@ -126,11 +127,13 @@ multistringprop_get_widget(StringProperty *prop, PropDialog *dialog)
   GtkWidget *ret = gtk_text_view_new();
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(ret));
   GtkWidget *frame = gtk_frame_new(NULL);
-  gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_IN);
-  gtk_container_add(GTK_CONTAINER(frame), ret);
-  g_signal_connect(G_OBJECT(ret), "key-release-event",
+  GtkEventController *key_controller = gtk_event_controller_key_new ();
+  /* GTK4: frame shadow is gone; container_add -> set_child; key events come
+   * from a GtkEventControllerKey. */
+  gtk_frame_set_child(GTK_FRAME(frame), ret);
+  g_signal_connect(key_controller, "key-released",
 		   G_CALLBACK(multistringprop_handle_key), NULL);
-  gtk_widget_show(ret);
+  gtk_widget_add_controller(ret, key_controller);
   prophandler_connect(&prop->common, G_OBJECT(buffer), "changed");
   return frame;
 }
@@ -138,7 +141,7 @@ multistringprop_get_widget(StringProperty *prop, PropDialog *dialog)
 static void
 multistringprop_reset_widget(StringProperty *prop, GtkWidget *widget)
 {
-  GtkWidget *textview = gtk_bin_get_child(GTK_BIN(widget));
+  GtkWidget *textview = gtk_frame_get_child(GTK_FRAME(widget));
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textview));
   gtk_text_buffer_set_text(buffer,
 			   prop->string_data ? prop->string_data : "", -1);
@@ -146,7 +149,7 @@ multistringprop_reset_widget(StringProperty *prop, GtkWidget *widget)
 
 static void
 multistringprop_set_from_widget(StringProperty *prop, GtkWidget *widget) {
-  GtkWidget *textview = gtk_bin_get_child(GTK_BIN(widget));
+  GtkWidget *textview = gtk_frame_get_child(GTK_FRAME(widget));
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textview));
   GtkTextIter start, end;
   gtk_text_buffer_get_start_iter(buffer, &start);

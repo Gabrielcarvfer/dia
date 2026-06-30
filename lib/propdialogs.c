@@ -99,7 +99,7 @@ prop_dialog_add_raw(PropDialog *dialog, GtkWidget *widget)
 {
   dialog->curtable = NULL;
   if (!widget) return;
-  gtk_container_add(GTK_CONTAINER(dialog->lastcont),widget);
+  gtk_box_append(GTK_BOX(dialog->lastcont),widget);
 }
 
 void
@@ -110,7 +110,9 @@ prop_dialog_add_raw_with_flags(PropDialog *dialog, GtkWidget *widget,
 
   dialog->curtable = NULL;
   if (!widget) return;
-  gtk_box_pack_start(GTK_BOX(dialog->lastcont),widget, expand, fill, 0);
+  /* GTK4: vertical container box; expand maps to vexpand. */
+  gtk_widget_set_vexpand (widget, expand);
+  gtk_box_append(GTK_BOX(dialog->lastcont),widget);
 }
 
 static void
@@ -129,7 +131,8 @@ prop_dialog_make_curtable(PropDialog *dialog)
 static void
 prop_dialog_add_widget(PropDialog *dialog, GtkWidget *label, GtkWidget *widget)
 {
-  gtk_misc_set_alignment(GTK_MISC(label), 0.0, 0.5);
+  gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+  gtk_label_set_yalign(GTK_LABEL(label), 0.5);
 
   if (!dialog->curtable)
     prop_dialog_make_curtable(dialog);
@@ -139,7 +142,7 @@ prop_dialog_add_widget(PropDialog *dialog, GtkWidget *label, GtkWidget *widget)
 
   if (GTK_IS_SWITCH (widget)) {
     GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_box_pack_start (GTK_BOX (box), widget, FALSE, TRUE, 0);
+    gtk_box_append (GTK_BOX (box), widget);
     gtk_widget_show (widget);
     widget = box;
   }
@@ -305,7 +308,8 @@ prop_dialog_add_property(PropDialog *dialog, Property *prop)
     label = gtk_label_new("");
   else
     label = gtk_label_new(_(prop->descr->description));
-  gtk_misc_set_alignment(GTK_MISC(label), 0.0, 0.5);
+  gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+  gtk_label_set_yalign(GTK_LABEL(label), 0.5);
 
   prop_dialog_add_widget(dialog, label, widget);
 }
@@ -317,12 +321,13 @@ prop_dialog_add_properties(PropDialog *dialog, GPtrArray *props)
   gboolean scrollable = (props->len > 16);
 
   if (scrollable) {
-    GtkWidget *swin = gtk_scrolled_window_new (NULL, NULL);
+    GtkWidget *swin = gtk_scrolled_window_new ();
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_box_pack_start(GTK_BOX (dialog->widget), swin, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand (swin, TRUE);
+  gtk_box_append (GTK_BOX (dialog->widget), swin);
     gtk_widget_show (swin);
-    gtk_container_add (GTK_CONTAINER (swin), vbox);
-    gtk_viewport_set_shadow_type(GTK_VIEWPORT(gtk_bin_get_child(GTK_BIN(swin))), GTK_SHADOW_NONE);
+    /* GTK4: set_child (auto-wraps in a viewport); viewport shadow is gone. */
+    gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (swin), vbox);
     gtk_widget_show (vbox);
     gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (swin), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     prop_dialog_container_push (dialog, swin);
@@ -339,8 +344,8 @@ prop_dialog_add_properties(PropDialog *dialog, GPtrArray *props)
     GtkRequisition requisition;
     GtkWidget *vbox = prop_dialog_container_pop(dialog);
     GtkWidget *swin = prop_dialog_container_pop(dialog);
-    GdkScreen *screen = gtk_widget_get_screen(swin);
-    gint sheight = screen ? (2 * gdk_screen_get_height(screen)) / 3 : 400;
+    /* GTK4: GdkScreen is gone; cap the scrollable area at a sane height. */
+    gint sheight = 600;
 
     gtk_widget_get_preferred_size (vbox, NULL, &requisition);
     /* I'd say default size calculation for scrollable is quite broken */

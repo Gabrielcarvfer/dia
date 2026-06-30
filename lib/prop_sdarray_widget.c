@@ -479,7 +479,7 @@ _make_button_box_for_view (GtkTreeView *view, GtkTreeView *master_view)
   int i;
 
   for (i = 0; _button_data[i].stock != NULL; ++i) {
-    button = gtk_button_new_from_icon_name (_button_data[i].stock, GTK_ICON_SIZE_LARGE_TOOLBAR);
+    button = gtk_button_new_from_icon_name (_button_data[i].stock);
     /* start with everything disabled ... */
     gtk_widget_set_sensitive (button, FALSE);
     g_signal_connect (G_OBJECT (button), "clicked",
@@ -492,7 +492,7 @@ _make_button_box_for_view (GtkTreeView *view, GtkTreeView *master_view)
 		        G_CALLBACK (_update_button), button);
     else /* ... the main button is always enabled */
       gtk_widget_set_sensitive (button, TRUE);
-    gtk_box_pack_start (GTK_BOX (vbox), button, FALSE, FALSE, 0);
+    gtk_box_append (GTK_BOX (vbox), button);
   }
   return vbox;
 }
@@ -502,9 +502,9 @@ _make_scrollable (GtkWidget *view)
 {
   GtkWidget *sw;
 
-  sw = gtk_scrolled_window_new (NULL, NULL);
+  sw = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-  gtk_container_add (GTK_CONTAINER (sw), view);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (sw), view);
   gtk_widget_show (sw);
   gtk_widget_set_vexpand (sw, TRUE);
   gtk_widget_set_hexpand (sw, TRUE);
@@ -558,28 +558,27 @@ _arrayprop_get_widget (ArrayProperty *prop, PropDialog *dialog)
     GtkWidget *hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL /* less size for button column */, 6);
     GtkWidget *vbox = _make_button_box_for_view (GTK_TREE_VIEW (view), NULL);
 
-    gtk_box_pack_start (GTK_BOX (hbox), vbox, FALSE /* no expand */, FALSE, 0);
-
-    gtk_widget_show_all (vbox);
-
+    gtk_box_append (GTK_BOX (hbox), vbox);
     if (!branch_view) {
       gtk_widget_show (view);
-      gtk_box_pack_start (GTK_BOX (hbox), _make_scrollable (view), TRUE /* expand */, TRUE /* fill */, 0);
+      gtk_box_append (GTK_BOX (hbox), _make_scrollable (view));
     } else {
       /* almost the same once more */
       GtkWidget *hbox2 = gtk_box_new (GTK_ORIENTATION_HORIZONTAL /* less size for button column */, 0);
       GtkWidget *vbox2 = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
       GtkWidget *vbox3 = _make_button_box_for_view (GTK_TREE_VIEW (branch_view), GTK_TREE_VIEW (view));
 
-      gtk_box_pack_start (GTK_BOX (vbox2), _make_scrollable (view), TRUE, TRUE, 0);
+      gtk_widget_set_hexpand (_make_scrollable (view), TRUE);
+  gtk_box_append (GTK_BOX (vbox2), _make_scrollable (view));
       /* Todo: get label for the branch view from props, e.g. UML Operations Parameters  */
-      gtk_box_pack_start (GTK_BOX (vbox2), gtk_label_new (_("Parameters")), FALSE, FALSE, 0);
+      gtk_box_append (GTK_BOX (vbox2), gtk_label_new (_("Parameters")));
 
-      gtk_box_pack_start (GTK_BOX (hbox2), vbox3, FALSE, FALSE, 0);
-      gtk_box_pack_start (GTK_BOX (hbox2), _make_scrollable (branch_view), TRUE, TRUE, 0);
-      gtk_box_pack_start (GTK_BOX (vbox2), hbox2, FALSE, FALSE, 0);
-      gtk_widget_show_all (vbox2);
-      gtk_box_pack_start (GTK_BOX (hbox), vbox2, TRUE /* expand */, TRUE /* fill */, 0);
+      gtk_box_append (GTK_BOX (hbox2), vbox3);
+      gtk_widget_set_hexpand (_make_scrollable (branch_view), TRUE);
+  gtk_box_append (GTK_BOX (hbox2), _make_scrollable (branch_view));
+      gtk_box_append (GTK_BOX (vbox2), hbox2);
+      gtk_widget_set_hexpand (vbox2, TRUE);
+      gtk_box_append (GTK_BOX (hbox), vbox2);
 
       g_object_set_data (G_OBJECT (view), "branch-view", branch_view);
     }

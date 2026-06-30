@@ -163,7 +163,7 @@ dia_arrow_selector_init (DiaArrowSelector *as)
                                   "arrow", COL_ARROW,
                                   NULL);
 
-  gtk_box_pack_start (GTK_BOX (as), as->combo, FALSE, TRUE, 0);
+  gtk_box_append (GTK_BOX (as), as->combo);
   gtk_widget_show (as->combo);
 
   box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
@@ -171,19 +171,22 @@ dia_arrow_selector_init (DiaArrowSelector *as)
 
   label = gtk_label_new (_("Size: "));
   as->sizelabel = GTK_LABEL (label);
-  gtk_box_pack_start (GTK_BOX (box), label, TRUE, TRUE, 0);
+  gtk_widget_set_hexpand (label, TRUE);
+  gtk_box_append (GTK_BOX (box), label);
   gtk_widget_show (label);
 
   size = dia_size_selector_new (0.0, 0.0);
   as->size = DIA_SIZE_SELECTOR (size);
-  gtk_box_pack_start (GTK_BOX (box), size, TRUE, TRUE, 0);
+  gtk_widget_set_hexpand (size, TRUE);
+  gtk_box_append (GTK_BOX (box), size);
   gtk_widget_show (size);
   g_signal_connect (size,
                     "value-changed", G_CALLBACK (arrow_size_change_callback),
                     as);
 
   set_size_sensitivity (as);
-  gtk_box_pack_start (GTK_BOX (as), box, TRUE, TRUE, 0);
+  gtk_widget_set_hexpand (box, TRUE);
+  gtk_box_append (GTK_BOX (as), box);
 
   gtk_widget_show (box);
 }

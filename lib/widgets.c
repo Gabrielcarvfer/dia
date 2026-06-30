@@ -46,17 +46,11 @@ dia_toggle_button_swap_images(GtkToggleButton *widget,
 			      gpointer data)
 {
   struct image_pair *images = (struct image_pair *)data;
+  /* GTK4: GtkBin/container_add are gone; set_child replaces the child. */
   if (gtk_toggle_button_get_active(widget)) {
-    gtk_container_remove(GTK_CONTAINER(widget),
-			 gtk_bin_get_child(GTK_BIN(widget)));
-    gtk_container_add(GTK_CONTAINER(widget),
-		      images->on);
-
+    gtk_button_set_child (GTK_BUTTON (widget), images->on);
   } else {
-    gtk_container_remove(GTK_CONTAINER(widget),
-			 gtk_bin_get_child(GTK_BIN(widget)));
-    gtk_container_add(GTK_CONTAINER(widget),
-		      images->off);
+    gtk_button_set_child (GTK_BUTTON (widget), images->off);
   }
 }
 
@@ -92,24 +86,11 @@ dia_toggle_button_new(GtkWidget *on_widget, GtkWidget *off_widget)
   g_object_ref_sink(images->off);
   gtk_widget_show(images->off);
 
-  /* Make border as small as possible */
-  gtk_misc_set_padding (GTK_MISC (images->on), 0, 0);
-  gtk_misc_set_padding (GTK_MISC (images->off), 0, 0);
+  /* GTK4: GtkMisc and can-default are gone; margins default to 0. */
   gtk_widget_set_can_focus (GTK_WIDGET (button), FALSE);
-  gtk_widget_set_can_default (GTK_WIDGET (button), FALSE);
 
-/* disabled Gtk3 -- Hub
-  rcstyle = gtk_rc_style_new ();
-  rcstyle->xthickness = rcstyle->ythickness = 0;
-  gtk_widget_modify_style (button, rcstyle);
-  g_clear_object (&rcstyle);
-*/
-
-  gtk_button_set_relief(GTK_BUTTON(button), GTK_RELIEF_NONE);
-  /*  gtk_button_set_focus_on_click(GTK_BUTTON(button), FALSE);*/
-  gtk_container_set_border_width(GTK_CONTAINER(button), 0);
-
-  gtk_container_add(GTK_CONTAINER(button), images->off);
+  gtk_button_set_has_frame (GTK_BUTTON (button), FALSE);
+  gtk_button_set_child (GTK_BUTTON (button), images->off);
 
   g_signal_connect(G_OBJECT(button), "toggled",
 		   G_CALLBACK(dia_toggle_button_swap_images), images);
@@ -169,8 +150,8 @@ dia_toggle_button_new_with_icon_names (const char *on,
 {
   GtkWidget *on_img, *off_img;
 
-  on_img = gtk_image_new_from_icon_name (on, GTK_ICON_SIZE_BUTTON);
-  off_img = gtk_image_new_from_icon_name (off, GTK_ICON_SIZE_BUTTON);
+  on_img = gtk_image_new_from_icon_name (on);
+  off_img = gtk_image_new_from_icon_name (off);
 
   return dia_toggle_button_new (on_img, off_img);
 }
