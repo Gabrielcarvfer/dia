@@ -248,6 +248,16 @@ def main():
         ok = any('select+move OK' in (lab.name or '') for lab in labels)
         check("Modify tool selects and moves an object", ok)
 
+    # 3f. Undo/redo (create -> undo -> redo) via the DIA_UITEST trigger.
+    ur = find(app, name='uitest-undo-redo', roleName='push button')
+    check("DIA_UITEST undo-redo trigger present", ur)
+    if ur:
+        do_click(ur)
+        time.sleep(0.5)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('undo/redo OK' in (lab.name or '') for lab in labels)
+        check("Undo/redo restores object count", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

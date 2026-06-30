@@ -52,6 +52,10 @@ typedef struct {
                            * DiaObjects, rendered via the Dia cairo renderer */
   DiaObject  *selected;   /* current selection (Modify tool) */
   Point       drag_origin; /* selected object's position at drag start */
+
+  GPtrArray  *undo;       /* UndoOp* — the undo/redo history */
+  int         undo_pos;   /* number of ops currently applied (undo[0..pos-1]) */
+  GActionGroup *actions;  /* the "dia" group, to toggle undo/redo enabled */
   /* page transform (diagram cm -> widget px), recomputed each draw, so the
    * click handler can map pointer coordinates back to diagram coordinates. */
   double     page_x, page_y, page_scale;
@@ -118,6 +122,96 @@ diagram_create_object (DiaShell *self, const char *type_name, Point p)
     dia_layer_add_object (layer, obj);
   }
   return obj;
+}
+
+
+/* --- undo/redo -----------------------------------------------------------
+ * A small history of create/move ops. Removing an object from a layer only
+ * unlinks it (it isn't destroyed), so undo/redo can move objects in and out.
+ */
+typedef enum { OP_CREATE, OP_MOVE } OpKind;
+
+typedef struct {
+  OpKind     kind;
+  DiaObject *obj;
+  Point      from;   /* OP_MOVE: position before */
+  Point      to;     /* OP_MOVE: position after */
+} UndoOp;
+
+static void
+update_undo_actions (DiaShell *self)
+{
+  GAction *undo = g_action_map_lookup_action (G_ACTION_MAP (self->actions), "undo");
+  GAction *redo = g_action_map_lookup_action (G_ACTION_MAP (self->actions), "redo");
+
+  if (undo) {
+    g_simple_action_set_enabled (G_SIMPLE_ACTION (undo), self->undo_pos > 0);
+  }
+  if (redo) {
+    g_simple_action_set_enabled (G_SIMPLE_ACTION (redo),
+                                 self->undo_pos < (int) self->undo->len);
+  }
+}
+
+static void
+push_op (DiaShell *self, OpKind kind, DiaObject *obj, Point from, Point to)
+{
+  UndoOp *op = g_new0 (UndoOp, 1);
+
+  op->kind = kind;
+  op->obj = obj;
+  op->from = from;
+  op->to = to;
+
+  /* drop any redo tail, then append */
+  while ((int) self->undo->len > self->undo_pos) {
+    g_ptr_array_remove_index (self->undo, self->undo->len - 1);
+  }
+  g_ptr_array_add (self->undo, op);
+  self->undo_pos = self->undo->len;
+  update_undo_actions (self);
+}
+
+static void
+op_apply (DiaShell *self, UndoOp *op)   /* redo direction */
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  DiaObjectChange *change;
+
+  switch (op->kind) {
+    case OP_CREATE:
+      dia_layer_add_object (layer, op->obj);
+      break;
+    case OP_MOVE:
+      change = dia_object_move (op->obj, &op->to);
+      g_clear_pointer (&change, dia_object_change_unref);
+      break;
+    default:
+      break;
+  }
+}
+
+static void
+op_revert (DiaShell *self, UndoOp *op)  /* undo direction */
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  DiaObjectChange *change;
+
+  switch (op->kind) {
+    case OP_CREATE:
+      if (self->selected == op->obj) {
+        self->selected = NULL;
+      }
+      data_unselect (self->diagram, op->obj);
+      dia_layer_remove_object (layer, op->obj);
+      break;
+    case OP_MOVE:
+      change = dia_object_move (op->obj, &op->from);
+      g_clear_pointer (&change, dia_object_change_unref);
+      break;
+    default:
+      break;
+  }
 }
 
 
@@ -410,8 +504,10 @@ apply_tool_at (DiaShell *self, Point p)
 {
   char buf[128];
   const char *type_name = tool_to_type_name (self->tool);
+  DiaObject *obj = type_name ? diagram_create_object (self, type_name, p) : NULL;
 
-  if (type_name && diagram_create_object (self, type_name, p)) {
+  if (obj) {
+    push_op (self, OP_CREATE, obj, p, p);
     gtk_widget_queue_draw (self->canvas);
     g_snprintf (buf, sizeof (buf),
                 _("%s created at (%.1f, %.1f) — %u object(s)"),
@@ -505,6 +601,27 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
   gtk_widget_queue_draw (self->canvas);
 }
 
+static void
+on_canvas_drag_end (GtkGestureDrag *gesture,
+                    double          offset_x,
+                    double          offset_y,
+                    DiaShell       *self)
+{
+  Point to;
+
+  if (g_strcmp0 (self->tool, "Modify") != 0 || !self->selected ||
+      self->page_scale <= 0.0) {
+    return;
+  }
+
+  /* Record the whole drag as a single undoable move. */
+  to.x = self->drag_origin.x + offset_x / self->page_scale;
+  to.y = self->drag_origin.y + offset_y / self->page_scale;
+  if (to.x != self->drag_origin.x || to.y != self->drag_origin.y) {
+    push_op (self, OP_MOVE, self->selected, self->drag_origin, to);
+  }
+}
+
 
 /* UI-test hook: synthetic input isn't deliverable under WSLg, so when
  * DIA_UITEST is set we expose a button that applies the current tool at a
@@ -559,11 +676,43 @@ dia_shell_set_new_diagram (DiaShell *self)
 }
 
 static void
+action_undo (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+
+  if (self->undo_pos > 0) {
+    self->undo_pos--;
+    op_revert (self, g_ptr_array_index (self->undo, self->undo_pos));
+    update_undo_actions (self);
+    gtk_widget_queue_draw (self->canvas);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Undo"));
+  }
+}
+
+static void
+action_redo (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+
+  if (self->undo_pos < (int) self->undo->len) {
+    op_apply (self, g_ptr_array_index (self->undo, self->undo_pos));
+    self->undo_pos++;
+    update_undo_actions (self);
+    gtk_widget_queue_draw (self->canvas);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Redo"));
+  }
+}
+
+static void
 action_new (GSimpleAction *a, GVariant *p, gpointer data)
 {
   DiaShell *self = data;
 
   dia_shell_set_new_diagram (self);
+  g_ptr_array_set_size (self->undo, 0);   /* clear history */
+  self->undo_pos = 0;
+  update_undo_actions (self);
+  self->selected = NULL;
   gtk_widget_queue_draw (self->canvas);
   gtk_label_set_text (GTK_LABEL (self->status_msg),
                       _("New diagram — 0 object(s)"));
@@ -742,6 +891,46 @@ on_uitest_select_move (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): create -> undo -> redo, verifying the object count
+ * goes N -> N+1 -> N -> N+1. */
+static void
+on_uitest_undo_redo (GtkButton *button, DiaShell *self)
+{
+  guint c0, c1, c2, c3;
+  DiaObject *obj;
+  char buf[96];
+
+  c0 = diagram_object_count (self);
+  obj = diagram_create_object (self, "Standard - Box", (Point) { 6, 6 });
+  if (obj) {
+    push_op (self, OP_CREATE, obj, (Point) { 6, 6 }, (Point) { 6, 6 });
+  }
+  c1 = diagram_object_count (self);
+
+  if (self->undo_pos > 0) {
+    self->undo_pos--;
+    op_revert (self, g_ptr_array_index (self->undo, self->undo_pos));
+    update_undo_actions (self);
+  }
+  c2 = diagram_object_count (self);
+
+  if (self->undo_pos < (int) self->undo->len) {
+    op_apply (self, g_ptr_array_index (self->undo, self->undo_pos));
+    self->undo_pos++;
+    update_undo_actions (self);
+  }
+  c3 = diagram_object_count (self);
+
+  if (c1 == c0 + 1 && c2 == c0 && c3 == c1) {
+    g_snprintf (buf, sizeof (buf), _("undo/redo OK (%u/%u/%u/%u)"), c0, c1, c2, c3);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("undo/redo FAIL (%u/%u/%u/%u)"), c0, c1, c2, c3);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -832,6 +1021,8 @@ static const GActionEntry dia_actions[] = {
   { "new",        action_new,        NULL, NULL, NULL },
   { "open",       action_open,       NULL, NULL, NULL },
   { "save",       action_save,       NULL, NULL, NULL },
+  { "undo",       action_undo,       NULL, NULL, NULL },
+  { "redo",       action_redo,       NULL, NULL, NULL },
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
   { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
   { "zoom-reset", action_zoom_reset, NULL, NULL, NULL },
@@ -845,7 +1036,10 @@ dia_shell_install_actions (DiaShell *self, GtkWidget *view)
   g_action_map_add_action_entries (G_ACTION_MAP (group), dia_actions,
                                    G_N_ELEMENTS (dia_actions), self);
   gtk_widget_insert_action_group (view, "dia", G_ACTION_GROUP (group));
+  /* keep a borrowed ref so undo/redo can be enabled/disabled */
+  self->actions = G_ACTION_GROUP (group);
   g_object_unref (group);
+  update_undo_actions (self);   /* both start disabled */
 }
 
 
@@ -930,8 +1124,8 @@ build_action_toolbar (DiaShell *self)
     { "document-open-symbolic",  N_("Open"),        "dia.open" },
     { "document-save-symbolic",  N_("Save"),        "dia.save" },
     { NULL, NULL, NULL },
-    { "edit-undo-symbolic",      N_("Undo"),        NULL },
-    { "edit-redo-symbolic",      N_("Redo"),        NULL },
+    { "edit-undo-symbolic",      N_("Undo"),        "dia.undo" },
+    { "edit-redo-symbolic",      N_("Redo"),        "dia.redo" },
     { NULL, NULL, NULL },
     { "zoom-in-symbolic",        N_("Zoom in"),     "dia.zoom-in" },
     { "zoom-out-symbolic",       N_("Zoom out"),    "dia.zoom-out" },
@@ -966,15 +1160,19 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *t = gtk_button_new_with_label ("uitest-apply-tool");
     GtkWidget *r = gtk_button_new_with_label ("uitest-roundtrip");
     GtkWidget *m = gtk_button_new_with_label ("uitest-select-move");
+    GtkWidget *u = gtk_button_new_with_label ("uitest-undo-redo");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (u), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
+    g_signal_connect (u, "clicked", G_CALLBACK (on_uitest_undo_redo), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
+    gtk_box_append (GTK_BOX (bar), u);
   }
 
   return bar;
@@ -1099,6 +1297,7 @@ build_canvas_area (DiaShell *self)
   drag = gtk_gesture_drag_new ();
   g_signal_connect (drag, "drag-begin", G_CALLBACK (on_canvas_drag_begin), self);
   g_signal_connect (drag, "drag-update", G_CALLBACK (on_canvas_drag_update), self);
+  g_signal_connect (drag, "drag-end", G_CALLBACK (on_canvas_drag_end), self);
   gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (drag));
 
   gtk_grid_attach (GTK_GRID (grid), origin, 0, 0, 1, 1);
@@ -1180,6 +1379,7 @@ static void
 dia_shell_free (gpointer data)
 {
   DiaShell *self = data;
+  g_clear_pointer (&self->undo, g_ptr_array_unref);
   g_clear_object (&self->diagram);
   g_free (self);
 }
@@ -1216,6 +1416,7 @@ dia_shell_new (void)
   libdia_init (DIA_INTERACTIVE);
   register_standard_object_types ();
   self->diagram = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
+  self->undo = g_ptr_array_new_with_free_func (g_free);
   dia_shell_seed_sample (self);
 
   /* Install the "dia" action group on the content so the toolbar buttons and
