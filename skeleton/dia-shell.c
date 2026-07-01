@@ -15,6 +15,7 @@
 #include <math.h>
 
 #include "dia-shell.h"
+#include <xpm-pixbuf.h>
 
 /* Ported core library: draw on the canvas with the real Dia renderer. */
 #include "diarenderer.h"
@@ -3784,7 +3785,15 @@ static void
 cli_message (const char *title, enum ShowAgainStyle showAgain,
              const char *fmt, va_list args)
 {
-  char *body = g_strdup_vprintf (fmt, args);
+  char *body;
+
+  /* @fmt is libdia's own message format forwarded verbatim — legitimately
+   * non-literal. clang's -Werror=format=2 promotes -Wformat-nonliteral to an
+   * error, so silence it just here. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+  body = g_strdup_vprintf (fmt, args);
+#pragma GCC diagnostic pop
 
   g_printerr ("dia: %s: %s\n", title ? title : "message", body);
   g_free (body);
@@ -6815,6 +6824,18 @@ on_sheet_shape_clicked (GtkButton *btn, DiaShell *self)
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
+/* A GtkImage from a pixbuf via a GdkTexture — gtk_image_new_from_pixbuf() is
+ * deprecated in GTK 4.12. */
+static GtkWidget *
+image_from_pixbuf (GdkPixbuf *pb)
+{
+  GdkTexture *tex = gdk_texture_new_for_pixbuf (pb);
+  GtkWidget *img = gtk_image_new_from_paintable (GDK_PAINTABLE (tex));
+
+  g_object_unref (tex);
+  return img;
+}
+
 /* Make a small image of an object type's icon (XPM pixmap or icon file). */
 static GtkWidget *
 shape_icon (DiaObjectType *t)
@@ -6822,13 +6843,19 @@ shape_icon (DiaObjectType *t)
   GtkWidget *img = NULL;
 
   if (t && t->pixmap) {
-    GdkPixbuf *pb = gdk_pixbuf_new_from_xpm_data (t->pixmap);
-    img = gtk_image_new_from_pixbuf (pb);
-    g_clear_object (&pb);
+    /* xpm_pixbuf_load (our subproject) instead of the deprecated
+     * gdk_pixbuf_new_from_xpm_data(). */
+    GdkPixbuf *pb = xpm_pixbuf_load ((const char *const *) t->pixmap);
+
+    if (pb) {
+      img = image_from_pixbuf (pb);
+      g_clear_object (&pb);
+    }
   } else if (t && t->pixmap_file) {
     GdkPixbuf *pb = gdk_pixbuf_new_from_file (t->pixmap_file, NULL);
+
     if (pb) {
-      img = gtk_image_new_from_pixbuf (pb);
+      img = image_from_pixbuf (pb);
       g_clear_object (&pb);
     }
   }

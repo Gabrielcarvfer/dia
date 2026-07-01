@@ -200,7 +200,9 @@ jobs:
       - name: Build
         run: |
           set -eux
-          meson setup build --buildtype=release -Dtests=false
+          # MSYS2/UCRT64's gcc linker doesn't support -fsanitize=address,undefined
+          # (on by default via meson.build), so turn sanitizers off for Windows.
+          meson setup build --buildtype=release -Dtests=false -Db_sanitize=none
           meson compile -C build
 
       - name: Assemble dist tree
