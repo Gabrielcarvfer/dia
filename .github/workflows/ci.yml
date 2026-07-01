@@ -201,12 +201,34 @@ jobs:
           rm -f "$APP/Contents/share/dia/shapes/meson.build" \
                 "$APP/Contents/share/dia/shapes/make-midpoint.pl"
 
+          BIN="$APP/Contents/MacOS/dia"
+
+          # Bundle the xpm-pixbuf dylib explicitly. dia references it via @rpath
+          # from the build tree, which dylibbundler can't reliably resolve/copy,
+          # so the .app crashes with "DYLD library missing: libxpm-pixbuf". Copy
+          # it in, repoint dia at the bundled copy, and repoint the dylib's own
+          # glib/gdk-pixbuf deps at the copies dylibbundler already put in libs.
+          XPMSRC="build/subprojects/xpm-pixbuf/libxpm-pixbuf.0.dylib"
+          if [ -f "$XPMSRC" ]; then
+            cp -f "$XPMSRC" "$APP/Contents/libs/"
+            XPMLIB="$APP/Contents/libs/libxpm-pixbuf.0.dylib"
+            XPMDST="@executable_path/../libs/libxpm-pixbuf.0.dylib"
+            install_name_tool -id "$XPMDST" "$XPMLIB"
+            ref="$(otool -L "$BIN" | awk '/libxpm-pixbuf/{print $1; exit}')"
+            [ -n "$ref" ] && install_name_tool -change "$ref" "$XPMDST" "$BIN"
+            otool -L "$XPMLIB" | awk 'NR>1{print $1}' | while read -r dep; do
+              case "$dep" in @executable_path/*) continue ;; esac
+              base="$(basename "$dep")"
+              [ -f "$APP/Contents/libs/$base" ] && install_name_tool \
+                -change "$dep" "@executable_path/../libs/$base" "$XPMLIB"
+            done
+          fi
+
           # De-duplicate LC_RPATH on the main binary. meson's build rpath and the
           # rpath dylibbundler adds (-p @executable_path/../libs) can collide, and
           # modern dyld ABORTS on a duplicate LC_RPATH ("termination reason: DYLD,
           # duplicate LC_RPATH") — the app crashes on launch. Delete extra copies,
           # keeping one of each. Must run BEFORE signing (which seals the binary).
-          BIN="$APP/Contents/MacOS/dia"
           rpaths() { otool -l "$1" | awk '/cmd LC_RPATH/{r=1} r&&/ path /{print $2; r=0}'; }
           for dup in $(rpaths "$BIN" | sort | uniq -d); do
             while [ "$(rpaths "$BIN" | grep -Fxc "$dup")" -gt 1 ]; do
