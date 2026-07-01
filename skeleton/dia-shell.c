@@ -708,6 +708,7 @@ pan_view (DiaShell *self, double off_x_px, double off_y_px)
 static void update_zoom (DiaShell *self, double factor);
 static void zoom_about (DiaShell *self, double factor, double cx, double cy);
 static void refresh_layers_list (DiaShell *self);
+static void on_zoom_entry_activate (GtkEntry *entry, DiaShell *self);
 
 /* Mouse wheel: Ctrl = zoom, Shift = horizontal scroll, otherwise vertical. */
 static gboolean
@@ -2142,7 +2143,9 @@ zoom_about (DiaShell *self, double factor, double cx, double cy)
   update_scrollbars (self);
 
   g_snprintf (buf, sizeof (buf), "%.0f%%", self->zoom * 100.0);
-  gtk_editable_set_text (GTK_EDITABLE (self->zoom_label), buf);
+  if (self->zoom_label) {
+    gtk_editable_set_text (GTK_EDITABLE (self->zoom_label), buf);
+  }
   redraw_canvas_and_rulers (self);
 }
 
@@ -4744,10 +4747,6 @@ build_action_toolbar (DiaShell *self)
     { "edit-cut-symbolic",       N_("Cut"),         "dia.cut" },
     { "edit-copy-symbolic",      N_("Copy"),        "dia.copy" },
     { "edit-paste-symbolic",     N_("Paste"),       "dia.paste" },
-    { NULL, NULL, NULL },
-    { "zoom-in-symbolic",        N_("Zoom in"),     "dia.zoom-in" },
-    { "zoom-out-symbolic",       N_("Zoom out"),    "dia.zoom-out" },
-    { "zoom-original-symbolic",  N_("Zoom 1:1"),    "dia.zoom-reset" },
   };
 
   gtk_widget_add_css_class (bar, "toolbar");
@@ -4770,6 +4769,43 @@ build_action_toolbar (DiaShell *self)
     else
       gtk_widget_set_sensitive (b, FALSE);   /* Undo/Redo: not wired yet */
     gtk_box_append (GTK_BOX (bar), b);
+  }
+
+  /* Zoom group up top: [−] [editable %] [+] [1:1]. */
+  {
+    struct { const char *icon, *tip, *action; } zb[] = {
+      { "zoom-out-symbolic",      N_("Zoom out"), "dia.zoom-out" },
+      { NULL, NULL, NULL },   /* the % entry goes here */
+      { "zoom-in-symbolic",       N_("Zoom in"),  "dia.zoom-in" },
+      { "zoom-original-symbolic", N_("Zoom 1:1"), "dia.zoom-reset" },
+    };
+
+    self->zoom_label = gtk_entry_new ();
+    gtk_editable_set_text (GTK_EDITABLE (self->zoom_label), _("100%"));
+    gtk_editable_set_width_chars (GTK_EDITABLE (self->zoom_label), 5);
+    gtk_editable_set_max_width_chars (GTK_EDITABLE (self->zoom_label), 6);
+    gtk_entry_set_alignment (GTK_ENTRY (self->zoom_label), 1.0);
+    gtk_widget_set_tooltip_text (self->zoom_label,
+                                 _("Zoom — type a percentage"));
+    set_a11y_label (self->zoom_label, "zoom");
+    g_signal_connect (self->zoom_label, "activate",
+                      G_CALLBACK (on_zoom_entry_activate), self);
+
+    gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
+    for (gsize j = 0; j < G_N_ELEMENTS (zb); j++) {
+      GtkWidget *b;
+
+      if (zb[j].icon == NULL) {
+        gtk_box_append (GTK_BOX (bar), self->zoom_label);
+        continue;
+      }
+      b = gtk_button_new_from_icon_name (zb[j].icon);
+      gtk_button_set_has_frame (GTK_BUTTON (b), FALSE);
+      gtk_widget_set_tooltip_text (b, gettext (zb[j].tip));
+      set_a11y_label (b, gettext (zb[j].tip));
+      gtk_actionable_set_action_name (GTK_ACTIONABLE (b), zb[j].action);
+      gtk_box_append (GTK_BOX (bar), b);
+    }
   }
 
   gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
@@ -5697,15 +5733,6 @@ build_statusbar (DiaShell *self)
 
   self->status_msg = gtk_label_new ("");
   self->pos_label = gtk_label_new ("0, 0");
-  /* Editable zoom readout (type a percentage + Enter). */
-  self->zoom_label = gtk_entry_new ();
-  gtk_editable_set_text (GTK_EDITABLE (self->zoom_label), _("100%"));
-  gtk_editable_set_width_chars (GTK_EDITABLE (self->zoom_label), 5);
-  gtk_entry_set_alignment (GTK_ENTRY (self->zoom_label), 1.0);
-  gtk_widget_set_tooltip_text (self->zoom_label, _("Zoom — type a percentage"));
-  set_a11y_label (self->zoom_label, "zoom");
-  g_signal_connect (self->zoom_label, "activate",
-                    G_CALLBACK (on_zoom_entry_activate), self);
 
   gtk_widget_add_css_class (bar, "toolbar");
   gtk_widget_set_margin_start (bar, 6);
@@ -5715,8 +5742,6 @@ build_statusbar (DiaShell *self)
   gtk_widget_set_halign (self->status_msg, GTK_ALIGN_START);
   gtk_box_append (GTK_BOX (bar), self->status_msg);
   gtk_box_append (GTK_BOX (bar), self->pos_label);
-  gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
-  gtk_box_append (GTK_BOX (bar), self->zoom_label);
 
   return bar;
 }
