@@ -155,6 +155,22 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for an uninitialised dash length in "Standard - Path":
+# stdpath_create() forgot to seed the line-style defaults (every sibling object
+# does), so the dash length stayed 0.0 (from g_new0) instead of
+# DEFAULT_LINESTYLE_DASHLEN, giving a degenerate dashed style and a line-style
+# block that did not round-trip through save/load.
+test(
+  'lib-stdpath-dashlen',
+  executable(
+    'test-stdpath-dashlen-port',
+    ['test-stdpath-dashlen-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for a truncation bug in find_slope_directions(): the slope
 # magnitude fabs(dy/dx) was stored in a gint, so an edge whose slope was in
 # (0.5, 1.0) truncated to 0 and wrongly failed the "slope > 0.5" test, dropping

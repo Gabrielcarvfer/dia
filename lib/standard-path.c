@@ -305,6 +305,11 @@ stdpath_create (Point *startpoint,
   stdpath->line_width = attributes_get_default_linewidth();
   stdpath->line_color = attributes_get_foreground();
   stdpath->fill_color = attributes_get_background();
+  /* Every other standard object seeds its line style (and, crucially, the dash
+   * length) from the defaults here. Without this the dash length stays 0 (from
+   * g_new0), so switching the path to a dashed style later yields a degenerate
+   * zero-length dash pattern instead of the usual DEFAULT_LINESTYLE_DASHLEN. */
+  attributes_get_default_line_style (&stdpath->line_style, &stdpath->dashlength);
 
   *handle1 = stdpath->object.handles[0];
   *handle2 = stdpath->object.handles[7];
