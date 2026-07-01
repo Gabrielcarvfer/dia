@@ -34,7 +34,7 @@ jobs:
     name: Headless test (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build + test dependencies
         run: |
@@ -74,7 +74,7 @@ jobs:
       APPIMAGE_EXTRACT_AND_RUN: 1     # CI runners have no FUSE
       DEPLOY_GTK_VERSION: 4           # tell linuxdeploy-plugin-gtk to bundle GTK4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -128,7 +128,7 @@ jobs:
     runs-on: macos-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies (Homebrew)
         run: |
@@ -199,7 +199,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up MSYS2 (UCRT64)
         uses: msys2/setup-msys2@v2
@@ -284,7 +284,7 @@ jobs:
     # release. Runs on pushes to master and on tags.
     if: github.event_name != 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -312,7 +312,7 @@ jobs:
     permissions:
       contents: write       # create the release and upload assets
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0    # full history for the changelog
 
