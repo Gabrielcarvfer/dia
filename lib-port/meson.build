@@ -14,9 +14,12 @@ lib_dir = meson.project_source_root() / 'lib'
 # legacy build pins >= 2.14; the port works fine against the system libxml2.
 port_libxml_dep = dependency('libxml-2.0')
 
-# Bundled GdkPixbuf loader (subproject); only needs glib + gdk-pixbuf, no GTK,
-# so it is fine under GTK4. Needed by object.c for object-type icons.
-xpm_dep = dependency('xpm-pixbuf')
+# Bundled XPM->GdkPixbuf helper (subproject); only needs glib + gdk-pixbuf, no
+# GTK, so it is fine under GTK4. Needed by object.c for object-type icons.
+# Force it static (it's a wrap we can't edit): linked into the dia binary there
+# is no libxpm-pixbuf.so for the AppImage/DMG/ZIP packagers to hunt for.
+xpm_dep = dependency('xpm-pixbuf',
+                     default_options: ['default_library=static'])
 
 # --- Generated headers/sources the core depends on -------------------------
 dia_version_info_h = configure_file(
