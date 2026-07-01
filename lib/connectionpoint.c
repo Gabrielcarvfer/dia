@@ -43,7 +43,7 @@ gint
 find_slope_directions (Point from, Point to)
 {
   gint dirs;
-  gint slope;
+  real slope;
 
   if (fabs (from.y-to.y) < 0.0000001)
     return (from.x > to.x?DIR_SOUTH:DIR_NORTH);

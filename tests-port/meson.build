@@ -155,6 +155,21 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for a truncation bug in find_slope_directions(): the slope
+# magnitude fabs(dy/dx) was stored in a gint, so an edge whose slope was in
+# (0.5, 1.0) truncated to 0 and wrongly failed the "slope > 0.5" test, dropping
+# the east/west connection-point direction that polyshape/beziershape assign to
+# sloped edges. Storing the slope in a real fixes it.
+test(
+  'lib-connpoint-slope',
+  executable(
+    'test-connpoint-slope-port',
+    ['test-connpoint-slope-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for #140 (broken-file crash): the numeric data_* node parsers
 # (data_int/data_enum/data_real/data_point/data_rectangle) dereferenced the
 # "val" attribute unconditionally, so a corrupt file with a val-less node (e.g. a
