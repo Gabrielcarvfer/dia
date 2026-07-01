@@ -202,6 +202,21 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for a copy bug in "Standard - Arc": arc_copy() called
+# arc_update_data() on the source arc instead of the new copy, leaving the
+# copy's enclosing_box at a zero-initialised {0,0,0,0} (object_copy copies
+# bounding_box but not the object-specific enclosing_box).
+test(
+  'lib-arc-copy',
+  executable(
+    'test-arc-copy-port',
+    ['test-arc-copy-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for #140 (broken-file crash): the numeric data_* node parsers
 # (data_int/data_enum/data_real/data_point/data_rectangle) dereferenced the
 # "val" attribute unconditionally, so a corrupt file with a val-less node (e.g. a

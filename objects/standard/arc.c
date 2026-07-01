@@ -807,7 +807,7 @@ arc_copy(Arc *arc)
   newobj->handles[3] = &newarc->center_handle;
   newarc->center_handle = arc->center_handle;
 
-  arc_update_data(arc);
+  arc_update_data(newarc);
 
   return &newarc->connection.object;
 }
