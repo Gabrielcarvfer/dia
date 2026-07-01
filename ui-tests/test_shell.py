@@ -571,6 +571,16 @@ def main():
         ok = any('zoomfit OK' in (lab.name or '') for lab in labels)
         check("Zoom-to-fit frames the whole drawing", ok)
 
+    # 3am. Select Same Type picks both boxes, not the ellipse.
+    st = find(app, name='uitest-selecttype', roleName='push button')
+    check("DIA_UITEST selecttype trigger present", st)
+    if st:
+        do_click(st)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('selecttype OK' in (lab.name or '') for lab in labels)
+        check("Select Same Type selects matching objects", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)

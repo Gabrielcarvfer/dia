@@ -2462,7 +2462,9 @@ on_canvas_key (GtkEventControllerKey *controller,
       case GDK_KEY_x: case GDK_KEY_X: act = "cut";        break;
       case GDK_KEY_c: case GDK_KEY_C: act = "copy";       break;
       case GDK_KEY_v: case GDK_KEY_V: act = "paste";      break;
-      case GDK_KEY_a: case GDK_KEY_A: act = "select-all"; break;
+      case GDK_KEY_a: case GDK_KEY_A:
+        act = (state & GDK_SHIFT_MASK) ? "select-none" : "select-all";
+        break;
       case GDK_KEY_s: case GDK_KEY_S: act = "save";       break;
       /* Ctrl+Z undoes, Ctrl+Shift+Z (or Ctrl+Y) redoes. */
       case GDK_KEY_z: case GDK_KEY_Z:
@@ -2795,6 +2797,80 @@ action_select_all (GSimpleAction *a, GVariant *p, gpointer data)
   self->selected = n > 0 ? dia_layer_object_get_nth (layer, n - 1) : NULL;
   gtk_widget_queue_draw (self->canvas);
   g_snprintf (buf, sizeof (buf), _("Selected all (%d)"), n);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+static void
+action_select_none (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+
+  data_remove_all_selected (self->diagram);
+  self->selected = NULL;
+  sync_font_button_to_selection (self);
+  gtk_widget_queue_draw (self->canvas);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Nothing selected"));
+}
+
+/* Select exactly the active-layer objects that are NOT currently selected. */
+static void
+action_select_invert (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  int n = layer ? dia_layer_object_count (layer) : 0;
+  GHashTable *was = g_hash_table_new (g_direct_hash, g_direct_equal);
+  int count = 0;
+  char buf[64];
+
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    g_hash_table_add (was, l->data);
+  }
+  data_remove_all_selected (self->diagram);
+  self->selected = NULL;
+  for (int i = 0; i < n; i++) {
+    DiaObject *o = dia_layer_object_get_nth (layer, i);
+
+    if (!g_hash_table_contains (was, o)) {
+      data_select (self->diagram, o);
+      self->selected = o;
+      count++;
+    }
+  }
+  g_hash_table_destroy (was);
+  gtk_widget_queue_draw (self->canvas);
+  g_snprintf (buf, sizeof (buf), _("Inverted selection (%d)"), count);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+/* Select every active-layer object of the same type as the current selection. */
+static void
+action_select_same_type (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  int n = layer ? dia_layer_object_count (layer) : 0;
+  DiaObjectType *t;
+  int count = 0;
+  char buf[80];
+
+  if (!self->selected) {
+    return;
+  }
+  t = self->selected->type;
+  data_remove_all_selected (self->diagram);
+  self->selected = NULL;
+  for (int i = 0; i < n; i++) {
+    DiaObject *o = dia_layer_object_get_nth (layer, i);
+
+    if (o->type == t) {
+      data_select (self->diagram, o);
+      self->selected = o;
+      count++;
+    }
+  }
+  gtk_widget_queue_draw (self->canvas);
+  g_snprintf (buf, sizeof (buf), _("Selected %d × %s"), count, t->name);
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
@@ -5199,6 +5275,34 @@ on_uitest_zoomfit (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): Select Same Type from a box selects both boxes,
+ * not the ellipse. */
+static void
+on_uitest_selecttype (GtkButton *button, DiaShell *self)
+{
+  DiaObject *b1;
+  int cnt;
+  char buf[80];
+
+  dia_shell_set_new_diagram (self);
+  b1 = diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  diagram_create_object (self, "Standard - Box", (Point) { 5, 5 });
+  diagram_create_object (self, "Standard - Ellipse", (Point) { 8, 8 });
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, b1);
+  self->selected = b1;
+
+  g_action_group_activate_action (self->actions, "select-same-type", NULL);
+  cnt = g_list_length (self->diagram->selected);
+
+  g_snprintf (buf, sizeof (buf),
+              cnt == 2 ? _("selecttype OK (%d boxes)")
+                       : _("selecttype FAIL (%d)"), cnt);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5382,6 +5486,9 @@ static const GActionEntry dia_actions[] = {
   { "copy",       action_copy,       NULL, NULL, NULL },
   { "paste",      action_paste,      NULL, NULL, NULL },
   { "select-all", action_select_all, NULL, NULL, NULL },
+  { "select-none", action_select_none, NULL, NULL, NULL },
+  { "select-invert", action_select_invert, NULL, NULL, NULL },
+  { "select-same-type", action_select_same_type, NULL, NULL, NULL },
   { "group",      action_group,      NULL, NULL, NULL },
   { "ungroup",    action_ungroup,    NULL, NULL, NULL },
   { "to-front",   action_to_front,   NULL, NULL, NULL },
@@ -5539,6 +5646,9 @@ build_primary_menu_button (void)
   g_menu_append (edit, _("_Copy"), "dia.copy");
   g_menu_append (edit, _("_Paste"), "dia.paste");
   g_menu_append (edit, _("Select _All"), "dia.select-all");
+  g_menu_append (edit, _("Select _None"), "dia.select-none");
+  g_menu_append (edit, _("_Invert Selection"), "dia.select-invert");
+  g_menu_append (edit, _("Select Same _Type"), "dia.select-same-type");
   g_menu_append (edit, _("_Group"), "dia.group");
   g_menu_append (edit, _("_Ungroup"), "dia.ungroup");
   g_menu_append (edit, _("Bring to _Front"), "dia.to-front");
@@ -5845,6 +5955,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *sl = gtk_button_new_with_label ("uitest-saveload");
     GtkWidget *kb = gtk_button_new_with_label ("uitest-keyboard");
     GtkWidget *zf = gtk_button_new_with_label ("uitest-zoomfit");
+    GtkWidget *st = gtk_button_new_with_label ("uitest-selecttype");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -5881,6 +5992,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (sl), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (kb), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (zf), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (st), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -5917,6 +6029,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (sl, "clicked", G_CALLBACK (on_uitest_saveload), self);
     g_signal_connect (kb, "clicked", G_CALLBACK (on_uitest_keyboard), self);
     g_signal_connect (zf, "clicked", G_CALLBACK (on_uitest_zoomfit), self);
+    g_signal_connect (st, "clicked", G_CALLBACK (on_uitest_selecttype), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -5953,6 +6066,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), sl);
     gtk_box_append (GTK_BOX (bar), kb);
     gtk_box_append (GTK_BOX (bar), zf);
+    gtk_box_append (GTK_BOX (bar), st);
   }
 
   return bar;
