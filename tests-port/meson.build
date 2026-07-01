@@ -122,3 +122,18 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Regression test for #140 (broken-file crash): the numeric data_* node parsers
+# (data_int/data_enum/data_real/data_point/data_rectangle) dereferenced the
+# "val" attribute unconditionally, so a corrupt file with a val-less node (e.g. a
+# Standard - Box whose line_style is "<dia:enum/>") crashed the loader in
+# atoi(NULL) / an uninitialised strtod endptr. Complements the data_string fix.
+test(
+  'lib-dia-xml-parse',
+  executable(
+    'test-dia-xml-parse-port',
+    ['test-dia-xml-parse-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)

@@ -242,8 +242,12 @@ data_int(DataNode data, DiaContext *ctx)
   }
 
   val = xmlGetProp(data, (const xmlChar *)"val");
+  if (!val) {
+    dia_context_add_message (ctx, _("Missing value in int node; assuming 0."));
+    return 0;
+  }
   res = atoi((char *) val);
-  if (val) xmlFree(val);
+  xmlFree(val);
 
   return res;
 }
@@ -268,8 +272,12 @@ data_enum(DataNode data, DiaContext *ctx)
   }
 
   val = xmlGetProp(data, (const xmlChar *)"val");
+  if (!val) {
+    dia_context_add_message (ctx, _("Missing value in enum node; assuming 0."));
+    return 0;
+  }
   res = atoi((char *) val);
-  if (val) xmlFree(val);
+  xmlFree(val);
 
   return res;
 }
@@ -294,8 +302,12 @@ data_real(DataNode data, DiaContext *ctx)
   }
 
   val = xmlGetProp(data, (const xmlChar *)"val");
+  if (!val) {
+    dia_context_add_message (ctx, _("Missing value in real node; assuming 0."));
+    return 0;
+  }
   res = g_ascii_strtod((char *) val, NULL);
-  if (val) xmlFree(val);
+  xmlFree(val);
 
   return res;
 }
@@ -418,6 +430,10 @@ data_point(DataNode data, Point *point, DiaContext *ctx)
   }
 
   val = xmlGetProp(data, (const xmlChar *)"val");
+  if (!val) {
+    dia_context_add_message (ctx, _("Error parsing point."));
+    return;
+  }
   point->x = g_ascii_strtod((char *)val, &str);
   ax = fabs(point->x);
   if ((ax > 1e9) || ((ax < 1e-9) && (ax != 0.0)) || isnan(ax) || isinf(ax)) {
@@ -537,6 +553,10 @@ data_rectangle(DataNode data, DiaRectangle *rect, DiaContext *ctx)
   }
 
   val = xmlGetProp(data, (const xmlChar *)"val");
+  if (!val) {
+    dia_context_add_message (ctx, _("Error parsing rectangle."));
+    return;
+  }
 
   rect->left = g_ascii_strtod((char *)val, &str);
 
