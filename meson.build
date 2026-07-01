@@ -250,6 +250,15 @@ else
     exclude_files: ['meson.build', 'make-midpoint.pl'],
   )
 
+  # Ship the app icon in the hicolor theme (PNG at several sizes + the SVG) so
+  # gtk_window_set_default_icon_name() can load it — a PNG loads without the SVG
+  # pixbuf loader, which is what left the window showing GTK's fallback logo.
+  install_subdir('data/icons', install_dir: get_option('datadir'))
+  install_data(
+    'data/org.gnome.Dia.svg',
+    install_dir: get_option('datadir') / 'icons/hicolor/scalable/apps',
+  )
+
   summary(
     {'Toolkit': 'GTK4 + libadwaita (port skeleton)'},
     section: 'Build mode',

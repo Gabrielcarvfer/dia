@@ -30,12 +30,24 @@ libdia_resources = gnome.compile_resources(
   c_name: 'dia_lib',
 )
 
+# On Windows, compile the app-icon resource (dia.rc -> dia.ico) into the exe so
+# Explorer/taskbar show the Dia logo as the executable's file icon.
+dia_win_resources = []
+if host_machine.system() == 'windows'
+  windows = import('windows')
+  dia_win_resources = windows.compile_resources(
+    'dia.rc',
+    depend_files: files('dia.ico'),
+  )
+endif
+
 dia_skeleton_exe = executable(
   'dia',
   'main.c',
   'dia-shell.c',
   skeleton_resources,
   libdia_resources,
+  dia_win_resources,
   c_args: [
     '-DPACKAGE_VERSION="@0@"'.format(meson.project_version()),
     # libdia-core is a STATIC lib, but its headers declare exported globals

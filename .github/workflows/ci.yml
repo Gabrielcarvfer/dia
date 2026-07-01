@@ -127,7 +127,7 @@ jobs:
           export LD_LIBRARY_PATH="${xpmdir}:$PWD/AppDir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --plugin gtk \
             --desktop-file AppDir/usr/share/applications/org.gnome.Dia.desktop \
-            --icon-file data/org.gnome.Dia.svg \
+            --icon-file data/icons/hicolor/256x256/apps/org.gnome.Dia.png \
             --output appimage
           mkdir -p dist && mv Dia*.AppImage dist/
 
@@ -359,7 +359,9 @@ jobs:
           cp -r /ucrt64/share/icons dist/dia/share/ 2>/dev/null || true
           # Our app icon in the theme so the window/taskbar shows the Dia logo
           # (gtk_window_set_default_icon_name looks it up by name at runtime).
+          # PNGs load without the SVG pixbuf loader; ship the SVG too.
           mkdir -p dist/dia/share/icons/hicolor/scalable/apps
+          cp -r data/icons/hicolor/. dist/dia/share/icons/hicolor/
           cp data/org.gnome.Dia.svg dist/dia/share/icons/hicolor/scalable/apps/
           # Shape libraries (Cisco/network/…): the app looks for them beside the
           # binary at <exe>/../share/dia/shapes -> dist/dia/share/dia/shapes.

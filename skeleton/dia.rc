@@ -1,0 +1,4 @@
+/* Windows resource: embed the application icon into dia.exe so Explorer, the
+ * taskbar and Alt-Tab show the Dia logo. Icon id 1 is what Windows uses as the
+ * executable's file icon. Compiled only on Windows (see skeleton/meson.build). */
+1 ICON "dia.ico"
