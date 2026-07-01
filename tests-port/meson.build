@@ -295,3 +295,21 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Regression test for a division-by-zero in the custom-shape XML parser's
+# aspect-ratio derivation: update_bounds() computes the missing default
+# dimension as (default_width / shape_width) * shape_height (or the height
+# analogue), which divided by zero for a shape with zero extent in that
+# direction (a vertical/horizontal line, or an empty drawing), leaving a
+# non-finite default size that then propagated into a created object.
+test(
+  'lib-custom-shape-aspect',
+  executable(
+    'test-custom-shape-aspect-port',
+    ['test-custom-shape-aspect-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+    include_directories: include_directories('../objects/custom'),
+  ),
+  protocol: 'tap',
+)

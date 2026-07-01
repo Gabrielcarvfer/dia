@@ -695,9 +695,15 @@ update_bounds (ShapeInfo *info)
     real width = info->shape_bounds.right-info->shape_bounds.left;
     real height = info->shape_bounds.bottom-info->shape_bounds.top;
 
-    if (info->default_width > 0.0 && info->default_height == 0.0) {
+    /* Derive the missing default dimension from the shape's aspect ratio, but
+     * only when the shape has a non-zero extent in the dividing direction --
+     * a degenerate (e.g. purely vertical) or empty shape would otherwise make
+     * this a division by zero and leave a non-finite default size behind. In
+     * that case we leave the dimension at 0.0, so the getter falls back to the
+     * DEFAULT_WIDTH/DEFAULT_HEIGHT constant. */
+    if (info->default_width > 0.0 && info->default_height == 0.0 && width > 0.0) {
       info->default_height = (info->default_width / width) * height;
-    } else if (info->default_height > 0.0 && info->default_width == 0.0) {
+    } else if (info->default_height > 0.0 && info->default_width == 0.0 && height > 0.0) {
       info->default_width = (info->default_height / height) * width;
     }
   }
