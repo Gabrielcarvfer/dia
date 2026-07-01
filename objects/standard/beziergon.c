@@ -350,6 +350,15 @@ beziergon_copy(Beziergon *beziergon)
   if (beziergon->pattern)
     newbeziergon->pattern = g_object_ref (beziergon->pattern);
 
+  /* beziershape_copy() recomputes the bounding_box but not the object-specific
+   * enclosing_box (which also spans the off-curve control points); only
+   * beziergon_update_data() does. Unlike polygon/polyline (whose enclosing_box
+   * is NULL, so dia_object_get_enclosing_box() falls back to the copied
+   * bounding_box), a beziergon allocates a real enclosing_box here -- left
+   * unfilled it stays {0,0,0,0}, so the copy is redrawn/selected with a bogus
+   * region anchored at the origin. */
+  beziergon_update_data (newbeziergon);
+
   return &newbeziergon->bezier.object;
 }
 

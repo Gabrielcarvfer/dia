@@ -523,6 +523,14 @@ bezierline_copy(Bezierline *bezierline)
   newbezierline->absolute_start_gap = bezierline->absolute_start_gap;
   newbezierline->absolute_end_gap = bezierline->absolute_end_gap;
 
+  /* bezierconn_copy() recomputes the bounding_box but not the object-specific
+   * enclosing_box (which also spans the off-curve control points); only
+   * bezierline_update_data() does. Without this the freshly allocated
+   * enclosing_box stays {0,0,0,0}, so the copy is redrawn/selected with a bogus
+   * region anchored at the origin (cf. polyline_copy/zigzagline_copy, which
+   * likewise call their _update_data). */
+  bezierline_update_data (newbezierline);
+
   return &newbezierline->bez.object;
 }
 

@@ -247,6 +247,22 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for a copy bug in "Standard - BezierLine"/"Standard -
+# Beziergon" (same class as the arc_copy/line_copy fixes): their _copy()
+# allocated a fresh enclosing_box but never called their _update_data(), so the
+# box that also spans the off-curve control points stayed {0,0,0,0} on the copy
+# (bezierconn_copy/beziershape_copy recompute only the bounding_box).
+test(
+  'lib-bezier-copy',
+  executable(
+    'test-bezier-copy-port',
+    ['test-bezier-copy-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for a copy bug in "Network - WAN Link": wanlink_copy() copied
 # the width/colours but never recomputed the cached render/hit-test polygon
 # (wanlink->poly), leaving it at {0,0}. object_copy() carried the bounding box
