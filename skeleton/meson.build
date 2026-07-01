@@ -106,4 +106,15 @@ if get_option('tests') and python3_prog.found()
     args: [meson.project_source_root() / 'ui-tests' / 'test_broken_polyobjects.py'],
     env: {'DIA_BIN': dia_skeleton_exe.full_path()},
   )
+  # Export-parity canary vs upstream `dia` (skips if it/xvfb/Pillow absent).
+  test(
+    'cli-parity',
+    python3_prog,
+    args: [
+      meson.project_source_root() / 'ui-tests' / 'test_cli_parity.py',
+      meson.project_source_root() / 'samples',
+    ],
+    env: {'DIA_BIN': dia_skeleton_exe.full_path()},
+    timeout: 120,
+  )
 endif
