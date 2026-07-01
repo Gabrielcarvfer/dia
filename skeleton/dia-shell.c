@@ -109,6 +109,7 @@ typedef struct {
   /* Snapping toggles (toolbar). snap_grid is applied to create/move/handle. */
   gboolean   snap_grid, snap_object, snap_guide;
   gboolean   show_connections;   /* draw the objects' connection-point crosses */
+  double     grid_cm;            /* grid line spacing in cm (Diagram Properties) */
   GtkWidget *layers_panel;          /* right sidebar, hideable to free space */
   GtkWidget *layers_list;           /* GtkListBox of the diagram's layers */
   GtkWidget *sheet_box;             /* FlowBox of the current sheet's shapes */
@@ -826,12 +827,13 @@ draw_canvas (GtkDrawingArea *area,
   cm_x1 = self->origin_x + width / pxcm;
   cm_y1 = self->origin_y + height / pxcm;
   {
-    int gx0 = (int) floor (cm_x0), gx1 = (int) ceil (cm_x1);
-    int gy0 = (int) floor (cm_y0), gy1 = (int) ceil (cm_y1);
+    double g = self->grid_cm > 0.01 ? self->grid_cm : 1.0;   /* cm per cell */
+    int gx0 = (int) floor (cm_x0 / g), gx1 = (int) ceil (cm_x1 / g);
+    int gy0 = (int) floor (cm_y0 / g), gy1 = (int) ceil (cm_y1 / g);
 
     for (int gx = gx0; gx <= gx1; gx++) {
       gboolean major = (gx % 5 == 0);
-      double dx = ox + gx * pxcm;
+      double dx = ox + gx * g * pxcm;
       cairo_set_line_width (cr, major ? 1.0 : 0.5);
       cairo_set_source_rgb (cr, major ? 0.60 : 0.82,
                                 major ? 0.70 : 0.88,
@@ -842,7 +844,7 @@ draw_canvas (GtkDrawingArea *area,
     }
     for (int gy = gy0; gy <= gy1; gy++) {
       gboolean major = (gy % 5 == 0);
-      double dy = oy + gy * pxcm;
+      double dy = oy + gy * g * pxcm;
       cairo_set_line_width (cr, major ? 1.0 : 0.5);
       cairo_set_source_rgb (cr, major ? 0.60 : 0.82,
                                 major ? 0.70 : 0.88,
@@ -1170,11 +1172,12 @@ set_object_text (DiaObject *obj, const char *str)
 }
 
 
-/* If snap-to-grid is on, round @p to the nearest half-centimetre. */
+/* If snap-to-grid is on, round @p to the nearest half grid cell (so both grid
+ * lines and their midpoints are snap targets, as before). */
 static void
 snap_to_grid (DiaShell *self, Point *p)
 {
-  const double step = 0.5;
+  double step = (self->grid_cm > 0.01 ? self->grid_cm : 1.0) / 2.0;
 
   if (!self->snap_grid) {
     return;
@@ -3028,6 +3031,66 @@ action_fullscreen (GSimpleAction *a, GVariant *p, gpointer data)
   } else {
     gtk_window_fullscreen (GTK_WINDOW (root));
   }
+}
+
+static void
+on_diag_props_response (AdwAlertDialog *dlg, const char *response,
+                        DiaShell *self)
+{
+  if (g_strcmp0 (response, "apply") == 0) {
+    GtkSpinButton *spin = g_object_get_data (G_OBJECT (dlg), "grid");
+    GtkColorDialogButton *cb = g_object_get_data (G_OBJECT (dlg), "bg");
+    double g = gtk_spin_button_get_value (spin);
+    const GdkRGBA *rgba = gtk_color_dialog_button_get_rgba (cb);
+
+    if (g > 0.01) {
+      self->grid_cm = g;
+    }
+    if (rgba) {
+      Color c = { rgba->red, rgba->green, rgba->blue, rgba->alpha };
+
+      self->bg = *rgba;
+      attributes_set_background (&c);
+    }
+    redraw_canvas_and_rulers (self);
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Diagram properties updated"));
+  }
+}
+
+/* Diagram Properties: grid spacing (cm) + background colour. */
+static void
+action_diagram_properties (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  GtkWidget *grow = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  GtkWidget *brow = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  GtkAdjustment *adj = gtk_adjustment_new (self->grid_cm, 0.1, 10.0, 0.1,
+                                           0.5, 0);
+  GtkWidget *spin = gtk_spin_button_new (adj, 0.1, 2);
+  GtkColorDialog *cd = gtk_color_dialog_new ();
+  GtkWidget *cb = gtk_color_dialog_button_new (cd);   /* takes ownership */
+  AdwDialog *dlg;
+
+  gtk_color_dialog_button_set_rgba (GTK_COLOR_DIALOG_BUTTON (cb), &self->bg);
+  gtk_widget_set_hexpand (spin, TRUE);
+  gtk_box_append (GTK_BOX (grow), gtk_label_new (_("Grid spacing (cm):")));
+  gtk_box_append (GTK_BOX (grow), spin);
+  gtk_box_append (GTK_BOX (brow), gtk_label_new (_("Background:")));
+  gtk_box_append (GTK_BOX (brow), cb);
+  gtk_box_append (GTK_BOX (box), grow);
+  gtk_box_append (GTK_BOX (box), brow);
+
+  dlg = adw_alert_dialog_new (_("Diagram Properties"), NULL);
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), box);
+  adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "cancel", _("Cancel"));
+  adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "apply", _("Apply"));
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "apply");
+  g_object_set_data (G_OBJECT (dlg), "grid", spin);
+  g_object_set_data (G_OBJECT (dlg), "bg", cb);
+  g_signal_connect (dlg, "response", G_CALLBACK (on_diag_props_response), self);
+  adw_dialog_present (dlg, GTK_WIDGET (gtk_widget_get_root (self->canvas)));
 }
 
 /* Combine the selected objects into a Group (unlink them from the layer, wrap
@@ -5640,6 +5703,38 @@ on_uitest_selconnected (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): the grid spacing drives snapping — at 1 cm the
+ * snap step is 0.5 cm (2.3→2.5); at 2 cm it is 1 cm (2.3→2.0). */
+static void
+on_uitest_gridprops (GtkButton *button, DiaShell *self)
+{
+  Point p1 = { 2.3, 0.0 }, p2 = { 2.3, 0.0 };
+  double saved = self->grid_cm;
+  gboolean saved_snap = self->snap_grid;
+  gboolean ok1, ok2;
+  char buf[80];
+
+  self->snap_grid = TRUE;
+  self->grid_cm = 1.0;
+  snap_to_grid (self, &p1);
+  ok1 = fabs (p1.x - 2.5) < 0.001;
+
+  self->grid_cm = 2.0;
+  snap_to_grid (self, &p2);
+  ok2 = fabs (p2.x - 2.0) < 0.001;
+
+  self->grid_cm = saved;
+  self->snap_grid = saved_snap;
+
+  if (ok1 && ok2) {
+    g_snprintf (buf, sizeof (buf), _("gridprops OK"));
+  } else {
+    g_snprintf (buf, sizeof (buf), _("gridprops FAIL (%.2f/%.2f)"), p1.x, p2.x);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5828,6 +5923,7 @@ static const GActionEntry dia_actions[] = {
   { "select-same-type", action_select_same_type, NULL, NULL, NULL },
   { "select-connected", action_select_connected, NULL, NULL, NULL },
   { "fullscreen", action_fullscreen, NULL, NULL, NULL },
+  { "diagram-properties", action_diagram_properties, NULL, NULL, NULL },
   { "group",      action_group,      NULL, NULL, NULL },
   { "ungroup",    action_ungroup,    NULL, NULL, NULL },
   { "to-front",   action_to_front,   NULL, NULL, NULL },
@@ -6022,6 +6118,7 @@ build_primary_menu_button (void)
   g_menu_append (view, _("_Reset Zoom"), "dia.zoom-reset");
   g_menu_append (view, _("Zoom to _Fit"), "dia.zoom-fit");
   g_menu_append (view, _("_Fullscreen"), "dia.fullscreen");
+  g_menu_append (view, _("Diagram _Properties…"), "dia.diagram-properties");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (view));
 
   g_menu_append (app, _("_About Dia"), "app.about");
@@ -6308,6 +6405,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *rs = gtk_button_new_with_label ("uitest-restack");
     GtkWidget *fp = gtk_button_new_with_label ("uitest-flip");
     GtkWidget *sc = gtk_button_new_with_label ("uitest-selconnected");
+    GtkWidget *gp = gtk_button_new_with_label ("uitest-gridprops");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -6348,6 +6446,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (rs), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (fp), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (sc), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (gp), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -6388,6 +6487,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (rs, "clicked", G_CALLBACK (on_uitest_restack), self);
     g_signal_connect (fp, "clicked", G_CALLBACK (on_uitest_flip), self);
     g_signal_connect (sc, "clicked", G_CALLBACK (on_uitest_selconnected), self);
+    g_signal_connect (gp, "clicked", G_CALLBACK (on_uitest_gridprops), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -6428,6 +6528,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), rs);
     gtk_box_append (GTK_BOX (bar), fp);
     gtk_box_append (GTK_BOX (bar), sc);
+    gtk_box_append (GTK_BOX (bar), gp);
   }
 
   return bar;
@@ -7527,6 +7628,7 @@ dia_shell_new (void)
   self->origin_y = -2.0;
   self->snap_grid = TRUE;     /* on by default, like upstream Dia */
   self->show_connections = TRUE;   /* connection-point crosses visible */
+  self->grid_cm = 1.0;             /* 1 cm grid spacing by default */
   self->line_width = 0.10;
   self->line_style = DIA_LINE_STYLE_SOLID;
   self->start_arrow = ARROW_NONE;

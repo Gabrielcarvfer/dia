@@ -611,6 +611,16 @@ def main():
         ok = any('selconnected OK' in (lab.name or '') for lab in labels)
         check("Select Connected follows connections", ok)
 
+    # 3aq. Grid spacing drives the snap step.
+    gp = find(app, name='uitest-gridprops', roleName='push button')
+    check("DIA_UITEST gridprops trigger present", gp)
+    if gp:
+        do_click(gp)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('gridprops OK' in (lab.name or '') for lab in labels)
+        check("Grid spacing controls snapping", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)
