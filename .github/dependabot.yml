@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keep the GitHub Actions in .github/workflows/ up to date automatically so we
+  # don't chase Node-runtime deprecations / new majors by hand. Dependabot opens
+  # one batched PR (all actions grouped) when anything has a newer version.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
