@@ -108,6 +108,7 @@ typedef struct {
   guint      scroll_guard;          /* >0 while we update adjustments ourselves */
   /* Snapping toggles (toolbar). snap_grid is applied to create/move/handle. */
   gboolean   snap_grid, snap_object, snap_guide;
+  gboolean   show_connections;   /* draw the objects' connection-point crosses */
   GtkWidget *layers_panel;          /* right sidebar, hideable to free space */
   GtkWidget *layers_list;           /* GtkListBox of the diagram's layers */
   GtkWidget *sheet_box;             /* FlowBox of the current sheet's shapes */
@@ -855,7 +856,9 @@ draw_canvas (GtkDrawingArea *area,
    * whatever the zoom — drawing them in cm space made them ~1 px when zoomed
    * out. */
   if (self->diagram) {
-    draw_connection_points (cr, self->diagram, ox, oy, pxcm);
+    if (self->show_connections) {
+      draw_connection_points (cr, self->diagram, ox, oy, pxcm);
+    }
     draw_selection_handles (cr, self->diagram, ox, oy, pxcm);
   }
 
@@ -5193,6 +5196,13 @@ on_snap_guide_toggled (GtkToggleButton *b, DiaShell *self)
   self->snap_guide = gtk_toggle_button_get_active (b);
 }
 
+static void
+on_show_connections_toggled (GtkToggleButton *b, DiaShell *self)
+{
+  self->show_connections = gtk_toggle_button_get_active (b);
+  gtk_widget_queue_draw (self->canvas);
+}
+
 /* A flat toggle button with an icon from the resource bundle. */
 static GtkWidget *
 make_snap_toggle (const char *icon_res, const char *tip, const char *a11y,
@@ -5330,6 +5340,12 @@ build_action_toolbar (DiaShell *self)
                                     _("Snap to guides"), "snap-guide",
                                     self->snap_guide,
                                     G_CALLBACK (on_snap_guide_toggled), self));
+  gtk_box_append (GTK_BOX (bar),
+                  make_snap_toggle ("/org/gnome/Dia/icons/dia-mainpoints-on.png",
+                                    _("Show connection points"),
+                                    "show-connections", self->show_connections,
+                                    G_CALLBACK (on_show_connections_toggled),
+                                    self));
 
   /* UI-test-only trigger (see on_uitest_apply_tool). Absent in normal use.
    * The label IS the AT-SPI name the test searches for. */
@@ -6564,6 +6580,7 @@ dia_shell_new (void)
   self->origin_x = -2.0;
   self->origin_y = -2.0;
   self->snap_grid = TRUE;     /* on by default, like upstream Dia */
+  self->show_connections = TRUE;   /* connection-point crosses visible */
   self->line_width = 0.10;
   self->line_style = DIA_LINE_STYLE_SOLID;
   self->start_arrow = ARROW_NONE;
