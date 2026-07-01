@@ -1786,13 +1786,54 @@ rotate_element_clean (DiaObject *obj, int degrees, Point center)
   return TRUE;
 }
 
+/* Does @obj expose a property named @name? */
+static gboolean
+object_has_prop (DiaObject *obj, const char *name)
+{
+  const PropDescription *d = dia_object_describe_properties (obj);
+
+  for (int i = 0; d && d[i].name; i++) {
+    if (g_strcmp0 (d[i].name, name) == 0) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/* Text objects rotate via a "text_angle" property; libdia's transform op sets
+ * it from the matrix ABSOLUTELY, so an incremental 90° matrix always yields 90°
+ * and repeated rotations don't accumulate. Instead ADD @degrees to the current
+ * text_angle (wrapped to (-180,180]) so it turns each time. Returns FALSE for
+ * objects without text_angle. */
+static gboolean
+rotate_via_text_angle (DiaObject *obj, double degrees)
+{
+  static PropDescription d[] = { { "text_angle", PROP_TYPE_REAL },
+                                 PROP_DESC_END };
+  GPtrArray *props;
+  RealProperty *rp;
+  double a;
+
+  if (!object_has_prop (obj, "text_angle")) {
+    return FALSE;
+  }
+  props = prop_list_from_descs (d, pdtpp_true);
+  dia_object_get_properties (obj, props);
+  rp = g_ptr_array_index (props, 0);
+  a = rp->real_data + degrees;
+  while (a > 180.0) a -= 360.0;
+  while (a <= -180.0) a += 360.0;
+  rp->real_data = a;
+  dia_object_set_properties (obj, props);
+  prop_list_free (props);
+  return TRUE;
+}
+
 /* Rotate one object by @degrees about the fixed point @center. Elements take
- * the pixel-clean axis-aligned path at right angles; everything else (lines,
- * polygons, béziers, groups) rotates its real geometry via libdia's transform
- * op (groups recurse into their children). Rotating about an explicit centre
- * (rather than the recomputed bbox centre) makes it exactly invertible, so the
- * undo path can restore the original by rotating back about the same centre.
- * Returns FALSE if neither path applies. */
+ * the pixel-clean axis-aligned path at right angles; text objects accumulate
+ * text_angle; everything else (lines, polygons, béziers, groups) rotates its
+ * real geometry via libdia's transform op (groups recurse into their
+ * children). Returns FALSE if no path applies. */
 static gboolean
 rotate_object_about (DiaObject *obj, double degrees, Point center)
 {
@@ -1810,6 +1851,9 @@ rotate_object_about (DiaObject *obj, double degrees, Point center)
 
   if ((deg == 90 || deg == 180 || deg == 270) &&
       rotate_element_clean (obj, deg, center)) {
+    return TRUE;
+  }
+  if (rotate_via_text_angle (obj, degrees)) {   /* text objects accumulate */
     return TRUE;
   }
   if (!obj->ops || !obj->ops->transform) {
@@ -4656,6 +4700,46 @@ on_uitest_textstyle (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): rotating a text object 90° twice must accumulate
+ * to text_angle 180 (not stay at 90). */
+static void
+on_uitest_textrotate (GtkButton *button, DiaShell *self)
+{
+  DiaObject *t = diagram_create_object (self, "Standard - Text",
+                                        (Point) { 9, 9 });
+  static PropDescription d[] = { { "text_angle", PROP_TYPE_REAL },
+                                 PROP_DESC_END };
+  GPtrArray *props;
+  double a;
+  char buf[80];
+
+  if (!t) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("textrotate FAIL (no object)"));
+    return;
+  }
+  push_op (self, OP_CREATE, t, (Point) { 9, 9 }, (Point) { 9, 9 });
+  set_object_text (t, "R");
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, t);
+  self->selected = t;
+  rotate_selected (self, 90);
+  rotate_selected (self, 90);
+
+  props = prop_list_from_descs (d, pdtpp_true);
+  dia_object_get_properties (t, props);
+  a = ((RealProperty *) g_ptr_array_index (props, 0))->real_data;
+  prop_list_free (props);
+
+  g_snprintf (buf, sizeof (buf),
+              fabs (a - 180.0) < 0.5 ? _("textrotate OK (angle=%.0f)")
+                                     : _("textrotate FAIL (angle=%.0f)"),
+              a);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5282,6 +5366,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *lm = gtk_button_new_with_label ("uitest-layermove");
     GtkWidget *ts = gtk_button_new_with_label ("uitest-textstyle");
     GtkWidget *nt = gtk_button_new_with_label ("uitest-newtext");
+    GtkWidget *tr = gtk_button_new_with_label ("uitest-textrotate");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -5314,6 +5399,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (lm), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ts), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (nt), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (tr), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -5346,6 +5432,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (lm, "clicked", G_CALLBACK (on_uitest_layermove), self);
     g_signal_connect (ts, "clicked", G_CALLBACK (on_uitest_textstyle), self);
     g_signal_connect (nt, "clicked", G_CALLBACK (on_uitest_newtext), self);
+    g_signal_connect (tr, "clicked", G_CALLBACK (on_uitest_textrotate), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -5378,6 +5465,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), lm);
     gtk_box_append (GTK_BOX (bar), ts);
     gtk_box_append (GTK_BOX (bar), nt);
+    gtk_box_append (GTK_BOX (bar), tr);
   }
 
   return bar;

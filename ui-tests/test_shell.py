@@ -531,6 +531,16 @@ def main():
         ok = any('textstyle OK' in (lab.name or '') for lab in labels)
         check("Text font and size are settable", ok)
 
+    # 3ai. Rotating text 90 twice accumulates to 180 (text_angle).
+    tr = find(app, name='uitest-textrotate', roleName='push button')
+    check("DIA_UITEST textrotate trigger present", tr)
+    if tr:
+        do_click(tr)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('textrotate OK' in (lab.name or '') for lab in labels)
+        check("Text rotation accumulates (90+90=180)", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)
