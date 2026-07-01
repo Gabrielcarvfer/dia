@@ -247,6 +247,23 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for a copy bug in "Network - WAN Link": wanlink_copy() copied
+# the width/colours but never recomputed the cached render/hit-test polygon
+# (wanlink->poly), leaving it at {0,0}. object_copy() carried the bounding box
+# over so the flaw was invisible there, but distance_from()/draw() used the
+# degenerate polygon at the origin. Calling wanlink_update_data() on the copy
+# (as create/load/move all do) rebuilds it.
+test(
+  'lib-wanlink-copy',
+  executable(
+    'test-wanlink-copy-port',
+    ['test-wanlink-copy-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for a copy bug in "ER - Relationship": relationship_copy()
 # rebuilds the connection-point array by hand but forgot to copy .flags, so the
 # central connection point lost its CP_FLAGS_MAIN (anyplace/auto-gap) marker on

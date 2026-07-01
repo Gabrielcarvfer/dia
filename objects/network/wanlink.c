@@ -263,6 +263,13 @@ wanlink_copy(WanLink *wanlink)
   newwanlink->line_color = wanlink->line_color;
   newwanlink->fill_color = wanlink->fill_color;
 
+  /* The rendered/hit-tested polygon (wanlink->poly) is derived state that
+   * object_copy() does not carry over; without this the copy keeps the
+   * zero-initialised {0,0} polygon until its next move, so it draws and
+   * hit-tests as a degenerate point at the origin. Every other code path
+   * (create/load/move/move_handle) recomputes it via wanlink_update_data(). */
+  wanlink_update_data (newwanlink);
+
   return (DiaObject *)newwanlink;
 }
 
