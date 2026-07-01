@@ -115,6 +115,9 @@ main (int argc, char *argv[])
   g_autofree char *export_to = NULL;
   g_autofree char *filter = NULL;
   g_autofree char *size = NULL;
+  g_autofree char *layers = NULL;
+  g_autofree char *input_dir = NULL;
+  g_autofree char *output_dir = NULL;
   gboolean show_version = FALSE;
   gboolean list_filters = FALSE;
   int status;
@@ -129,6 +132,13 @@ main (int argc, char *argv[])
       "TYPE" },
     { "size", 's', 0, G_OPTION_ARG_STRING, &size,
       "Export at this pixel size (WxH; either side may be omitted)", "WxH" },
+    { "show-layers", 'L', 0, G_OPTION_ARG_STRING, &layers,
+      "Export only these layers (names, indices, or index ranges X-Y)",
+      "LAYER,..." },
+    { "input-directory", 'I', 0, G_OPTION_ARG_FILENAME, &input_dir,
+      "Directory to resolve input files against", "DIR" },
+    { "output-directory", 'O', 0, G_OPTION_ARG_FILENAME, &output_dir,
+      "Directory to write exported files into", "DIR" },
     { "list-filters", 0, 0, G_OPTION_ARG_NONE, &list_filters,
       "List the supported export formats and exit", NULL },
     { "version", 'v', 0, G_OPTION_ARG_NONE, &show_version,
@@ -153,9 +163,9 @@ main (int argc, char *argv[])
              "  pdf  Portable Document Format (cairo)\n");
     return 0;
   }
-  if (export_to) {
+  if (export_to || output_dir) {
     if (argc < 2) {
-      g_printerr ("dia: --export needs an input .dia file\n");
+      g_printerr ("dia: nothing to export — give at least one input .dia file\n");
       return 2;
     }
     if (filter && g_ascii_strcasecmp (filter, "png") != 0
@@ -165,7 +175,13 @@ main (int argc, char *argv[])
                   "(try --list-filters)\n", filter);
       return 2;
     }
-    return dia_shell_export_cli (argv[1], export_to, filter, size);
+    if (export_to && argc - 1 > 1) {
+      g_printerr ("dia: --export names one output; for multiple inputs the "
+                  "output names are derived (use -t/-O)\n");
+    }
+    return dia_shell_export_cli ((const char *const *) &argv[1], argc - 1,
+                                 export_to, output_dir, input_dir,
+                                 filter, size, layers);
   }
 
   /* WSLg's native-Wayland popovers are unreliable (the menu/popover surfaces

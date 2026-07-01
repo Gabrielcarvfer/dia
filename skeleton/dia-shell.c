@@ -2682,6 +2682,76 @@ diagram_export_file (DiagramData *data, const char *path)
   return diagram_export_file_full (data, path, NULL, 0, 0);
 }
 
+/* Populate @data with the layers and objects under XML @root, recreating the
+ * file's layer structure (one DiaLayer per <dia:layer>, honouring its name,
+ * visibility and the active flag). Shared by the GUI open and the CLI loader.
+ * @data must already have its default (active) layer, reused for the first. */
+static void
+load_diagram_layers (DiagramData *data, xmlNodePtr root, DiaContext *ctx)
+{
+  gboolean first_layer = TRUE;
+  DiaLayer *active = NULL;
+
+  for (xmlNodePtr ln = root ? root->children : NULL; ln; ln = ln->next) {
+    char *lname, *lvisible, *lactive;
+    DiaLayer *layer;
+
+    if (xmlStrcmp (ln->name, (const xmlChar *) "layer") != 0) {
+      continue;
+    }
+    lname = (char *) xmlGetProp (ln, (const xmlChar *) "name");
+    lvisible = (char *) xmlGetProp (ln, (const xmlChar *) "visible");
+    lactive = (char *) xmlGetProp (ln, (const xmlChar *) "active");
+
+    if (first_layer) {
+      layer = dia_diagram_data_get_active_layer (data);
+      if (lname) {
+        g_object_set (layer, "name", lname, NULL);
+      }
+      first_layer = FALSE;
+    } else {
+      layer = dia_layer_new (lname ? lname : _("Layer"), data);
+      data_add_layer (data, layer);      /* refs the layer */
+      g_object_unref (layer);            /* drop construction ref */
+    }
+    if (lvisible) {
+      dia_layer_set_visible (layer, g_strcmp0 (lvisible, "false") != 0);
+    }
+    if (lactive && g_strcmp0 (lactive, "true") == 0) {
+      active = layer;
+    }
+
+    for (xmlNodePtr on = ln->children; on; on = on->next) {
+      char *type_name, *version_str;
+      DiaObjectType *type;
+
+      if (xmlStrcmp (on->name, (const xmlChar *) "object") != 0) {
+        continue;
+      }
+      type_name = (char *) xmlGetProp (on, (const xmlChar *) "type");
+      version_str = (char *) xmlGetProp (on, (const xmlChar *) "version");
+      type = type_name ? object_get_type (type_name) : NULL;
+      if (type && type->ops->load) {
+        DiaObject *obj = type->ops->load (on,
+                                          version_str ? atoi (version_str) : 0,
+                                          ctx);
+        if (obj) {
+          dia_layer_add_object (layer, obj);
+        }
+      }
+      if (type_name) xmlFree (type_name);
+      if (version_str) xmlFree (version_str);
+    }
+
+    if (lname) xmlFree (lname);
+    if (lvisible) xmlFree (lvisible);
+    if (lactive) xmlFree (lactive);
+  }
+  if (active) {
+    data_set_active_layer (data, active);
+  }
+}
+
 /* Load a .dia file into a fresh DiagramData (no shell/GUI). Caller unrefs.
  * Assumes libdia_init + object-type registration already happened. */
 static DiagramData *
@@ -2697,38 +2767,8 @@ diagram_load_standalone (const char *path)
   doc = dia_io_load_document (path, ctx, NULL);
 
   if (doc) {
-    xmlNodePtr root = xmlDocGetRootElement (doc);
-    DiaLayer *layer;
-
     data = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
-    layer = dia_diagram_data_get_active_layer (data);
-
-    for (xmlNodePtr ln = root ? root->children : NULL; ln; ln = ln->next) {
-      if (xmlStrcmp (ln->name, (const xmlChar *) "layer") != 0) {
-        continue;
-      }
-      for (xmlNodePtr on = ln->children; on; on = on->next) {
-        char *type_name, *version_str;
-        DiaObjectType *type;
-
-        if (xmlStrcmp (on->name, (const xmlChar *) "object") != 0) {
-          continue;
-        }
-        type_name = (char *) xmlGetProp (on, (const xmlChar *) "type");
-        version_str = (char *) xmlGetProp (on, (const xmlChar *) "version");
-        type = type_name ? object_get_type (type_name) : NULL;
-        if (type && type->ops->load) {
-          DiaObject *obj = type->ops->load (on,
-                                            version_str ? atoi (version_str) : 0,
-                                            ctx);
-          if (obj) {
-            dia_layer_add_object (layer, obj);
-          }
-        }
-        if (type_name) xmlFree (type_name);
-        if (version_str) xmlFree (version_str);
-      }
-    }
+    load_diagram_layers (data, xmlDocGetRootElement (doc), ctx);
     xmlFreeDoc (doc);
   }
   dia_context_release (ctx);
@@ -2748,17 +2788,97 @@ cli_message (const char *title, enum ShowAgainStyle showAgain,
   g_free (body);
 }
 
-/* Headless CLI: load @infile (.dia) and export it to @outfile. @fmt overrides
- * the format ("png"/"svg"/"pdf"), NULL = infer from the extension. @size is an
- * optional "WxH" (either side may be empty) giving the output size in pixels.
+/* Apply a -L/--show-layers spec to @data: hide every layer, then show the ones
+ * the spec names — by layer NAME, by 0-based INDEX, or an INDEX RANGE "X-Y".
+ * data_render only draws visible layers, so this scopes the export. */
+static void
+apply_layer_filter (DiagramData *data, const char *spec)
+{
+  int n = data_layer_count (data);
+  gboolean *vis = g_new0 (gboolean, n > 0 ? n : 1);
+  char **parts = g_strsplit (spec, ",", -1);
+
+  for (int p = 0; parts[p]; p++) {
+    char *tok = g_strstrip (parts[p]);
+    char *dash;
+
+    if (tok[0] == '\0') {
+      continue;
+    }
+    dash = strchr (tok, '-');
+    if (dash && g_ascii_isdigit (tok[0])) {          /* "X-Y" index range */
+      int a = atoi (tok);
+      int b = atoi (dash + 1);
+
+      for (int i = MAX (a, 0); i <= MIN (b, n - 1); i++) {
+        vis[i] = TRUE;
+      }
+    } else if (g_ascii_isdigit (tok[0]) && !dash) {  /* single index */
+      int i = atoi (tok);
+
+      if (i >= 0 && i < n) {
+        vis[i] = TRUE;
+      }
+    } else {                                         /* layer name */
+      for (int i = 0; i < n; i++) {
+        DiaLayer *l = data_layer_get_nth (data, i);
+
+        if (g_strcmp0 (dia_layer_get_name (l), tok) == 0) {
+          vis[i] = TRUE;
+        }
+      }
+    }
+  }
+  for (int i = 0; i < n; i++) {
+    dia_layer_set_visible (data_layer_get_nth (data, i), vis[i]);
+  }
+  g_strfreev (parts);
+  g_free (vis);
+}
+
+/* Derive an output path for @infile: reuse @outfile for a single input; else
+ * <basename-without-ext>.<ext> where ext comes from @fmt (default png). @outdir
+ * (if given) is prepended. Caller frees. */
+static char *
+cli_output_path (const char *infile, const char *outfile, gboolean single,
+                 const char *outdir, const char *fmt)
+{
+  char *name;
+
+  if (outfile && single) {
+    name = outdir ? g_build_filename (outdir, outfile, NULL)
+                  : g_strdup (outfile);
+    return name;
+  } else {
+    char *base = g_path_get_basename (infile);
+    char *dot = strrchr (base, '.');
+    char *stem;
+
+    if (dot) {
+      *dot = '\0';
+    }
+    stem = g_strdup_printf ("%s.%s", base, fmt ? fmt : "png");
+    name = outdir ? g_build_filename (outdir, stem, NULL) : g_strdup (stem);
+    g_free (base);
+    g_free (stem);
+    return name;
+  }
+}
+
+/* Headless CLI export. Loads and exports each of @infiles. @outfile is the
+ * explicit output for a single input; otherwise (or with @outdir) the output
+ * name is derived from each input's basename + format. @fmt overrides the
+ * format ("png"/"svg"/"pdf"). @size is an optional "WxH" output size. @indir/
+ * @outdir prepend to input/output paths. @layers is an optional -L spec.
  * Returns a process exit code. Needs no display. */
 int
-dia_shell_export_cli (const char *infile, const char *outfile,
-                      const char *fmt, const char *size)
+dia_shell_export_cli (const char *const *infiles, int n_infiles,
+                      const char *outfile, const char *outdir,
+                      const char *indir, const char *fmt,
+                      const char *size, const char *layers)
 {
-  DiagramData *data;
-  gboolean ok;
   int out_w = 0, out_h = 0;
+  int failures = 0;
 
   if (size) {   /* "WxH", "Wx", "xH" */
     const char *x = strchr (size, 'x');
@@ -2773,20 +2893,32 @@ dia_shell_export_cli (const char *infile, const char *outfile,
   libdia_init (DIA_INTERACTIVE);
   register_standard_object_types ();
 
-  data = diagram_load_standalone (infile);
-  if (!data) {
-    g_printerr ("dia: cannot load '%s'\n", infile);
-    return 1;
-  }
-  ok = diagram_export_file_full (data, outfile, fmt, out_w, out_h);
-  g_object_unref (data);
+  for (int i = 0; i < n_infiles; i++) {
+    char *in = indir ? g_build_filename (indir, infiles[i], NULL)
+                     : g_strdup (infiles[i]);
+    char *out = cli_output_path (infiles[i], outfile, n_infiles == 1,
+                                 outdir, fmt);
+    DiagramData *data = diagram_load_standalone (in);
 
-  if (!ok) {
-    g_printerr ("dia: export to '%s' failed\n", outfile);
-    return 1;
+    if (!data) {
+      g_printerr ("dia: cannot load '%s'\n", in);
+      failures++;
+    } else {
+      if (layers) {
+        apply_layer_filter (data, layers);
+      }
+      if (diagram_export_file_full (data, out, fmt, out_w, out_h)) {
+        g_print ("Exported '%s' -> '%s'\n", in, out);
+      } else {
+        g_printerr ("dia: export to '%s' failed\n", out);
+        failures++;
+      }
+      g_object_unref (data);
+    }
+    g_free (in);
+    g_free (out);
   }
-  g_print ("Exported '%s' -> '%s'\n", infile, outfile);
-  return 0;
+  return failures ? 1 : 0;
 }
 
 static gboolean

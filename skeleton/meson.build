@@ -106,6 +106,13 @@ if get_option('tests') and python3_prog.found()
     args: [meson.project_source_root() / 'ui-tests' / 'test_broken_polyobjects.py'],
     env: {'DIA_BIN': dia_skeleton_exe.full_path()},
   )
+  # CLI batch/scoping options: multiple inputs, -O/-I dirs, -L layer filter.
+  test(
+    'cli-batch',
+    python3_prog,
+    args: [meson.project_source_root() / 'ui-tests' / 'test_cli_batch.py'],
+    env: {'DIA_BIN': dia_skeleton_exe.full_path()},
+  )
   # Export-parity canary vs upstream `dia` (skips if it/xvfb/Pillow absent).
   test(
     'cli-parity',
