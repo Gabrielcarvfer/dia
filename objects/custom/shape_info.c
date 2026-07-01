@@ -280,7 +280,7 @@ parse_svg_node(ShapeInfo *info, xmlNodePtr node, xmlNsPtr svg_ns,
 
       str = xmlGetProp(node, (const xmlChar *)"points");
       tmp = (gchar *) str;
-      while (tmp[0] != '\0') {
+      while (tmp && tmp[0] != '\0') {
             /* skip junk */
         while (tmp[0] != '\0' && !g_ascii_isdigit(tmp[0]) && tmp[0]!='.'&&tmp[0]!='-')
           tmp++;
@@ -313,7 +313,7 @@ parse_svg_node(ShapeInfo *info, xmlNodePtr node, xmlNsPtr svg_ns,
 
       str = xmlGetProp(node, (const xmlChar *)"points");
       tmp = (char *) str;
-      while (tmp[0] != '\0') {
+      while (tmp && tmp[0] != '\0') {
             /* skip junk */
         while (tmp[0] != '\0' && !g_ascii_isdigit(tmp[0]) && tmp[0]!='.'&&tmp[0]!='-')
           tmp++;

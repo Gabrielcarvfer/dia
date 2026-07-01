@@ -186,6 +186,22 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for a NULL-deref crash in the custom-shape XML parser: a
+# <svg:polyline>/<svg:polygon> without a "points" attribute made shape_info.c
+# walk xmlGetProp()'s NULL return and segfault while loading the shape. Also
+# checks a well-formed polyline still parses.
+test(
+  'lib-custom-shape-parse',
+  executable(
+    'test-custom-shape-parse-port',
+    ['test-custom-shape-parse-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+    include_directories: include_directories('../objects/custom'),
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for #140 (broken-file crash): the numeric data_* node parsers
 # (data_int/data_enum/data_real/data_point/data_rectangle) dereferenced the
 # "val" attribute unconditionally, so a corrupt file with a val-less node (e.g. a
