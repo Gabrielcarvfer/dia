@@ -2566,6 +2566,58 @@ zoom_about (DiaShell *self, double factor, double cx, double cy)
   redraw_canvas_and_rulers (self);
 }
 
+/* Zoom + pan so the whole drawing (union of every object's bbox, plus a small
+ * margin) fits centred in the viewport — upstream's View ▸ Show All. No-op for
+ * an empty diagram or an unrealized canvas. */
+static void
+zoom_to_fit (DiaShell *self)
+{
+  DiaRectangle ext = { 0, 0, 0, 0 };
+  gboolean any = FALSE;
+  int vw = gtk_widget_get_width (self->canvas);
+  int vh = gtk_widget_get_height (self->canvas);
+  double w, h, z, pxcm, cx, cy, margin = 1.0;
+  char buf[32];
+
+  for (int li = 0; li < data_layer_count (self->diagram); li++) {
+    DiaLayer *l = data_layer_get_nth (self->diagram, li);
+
+    for (int i = 0; i < dia_layer_object_count (l); i++) {
+      DiaObject *o = dia_layer_object_get_nth (l, i);
+
+      if (!any) {
+        ext = o->bounding_box;
+        any = TRUE;
+      } else {
+        rectangle_union (&ext, &o->bounding_box);
+      }
+    }
+  }
+  if (!any || vw < 2 || vh < 2) {
+    return;
+  }
+  w = (ext.right - ext.left) + 2 * margin;
+  h = (ext.bottom - ext.top) + 2 * margin;
+  w = MAX (w, 0.01);
+  h = MAX (h, 0.01);
+  z = MIN ((vw / w) / PX_PER_CM, (vh / h) / PX_PER_CM);
+  self->zoom = CLAMP (z, 0.1, 20.0);
+
+  pxcm = shell_pxcm (self);
+  cx = (ext.left + ext.right) / 2.0;
+  cy = (ext.top + ext.bottom) / 2.0;
+  self->origin_x = cx - (vw / pxcm) / 2.0;   /* centre the extents */
+  self->origin_y = cy - (vh / pxcm) / 2.0;
+
+  update_transform (self);
+  update_scrollbars (self);
+  g_snprintf (buf, sizeof (buf), "%.0f%%", self->zoom * 100.0);
+  if (self->zoom_label) {
+    gtk_editable_set_text (GTK_EDITABLE (self->zoom_label), buf);
+  }
+  redraw_canvas_and_rulers (self);
+}
+
 static void
 update_zoom (DiaShell *self, double factor)
 {
@@ -2601,6 +2653,12 @@ action_zoom_reset (GSimpleAction *a, GVariant *p, gpointer data)
 {
   DiaShell *self = data;
   update_zoom (self, 1.0 / self->zoom);   /* back to 100%, centred */
+}
+
+static void
+action_zoom_fit (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  zoom_to_fit ((DiaShell *) data);
 }
 
 static void
@@ -5104,6 +5162,43 @@ on_uitest_keyboard (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): after Zoom-to-Fit, two far-apart objects must both
+ * map inside the viewport. */
+static void
+on_uitest_zoomfit (GtkButton *button, DiaShell *self)
+{
+  DiaObject *objs[2];
+  double pxcm;
+  int vw, vh;
+  gboolean fit_ok = TRUE;
+  char buf[80];
+
+  dia_shell_set_new_diagram (self);
+  objs[0] = diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  objs[1] = diagram_create_object (self, "Standard - Box", (Point) { 25, 25 });
+  zoom_to_fit (self);
+
+  vw = gtk_widget_get_width (self->canvas);
+  vh = gtk_widget_get_height (self->canvas);
+  pxcm = shell_pxcm (self);
+  for (int i = 0; i < 2; i++) {
+    DiaRectangle *bb = &objs[i]->bounding_box;
+    double px = ((bb->left + bb->right) / 2.0 - self->origin_x) * pxcm;
+    double py = ((bb->top + bb->bottom) / 2.0 - self->origin_y) * pxcm;
+
+    if (px < -1 || px > vw + 1 || py < -1 || py > vh + 1) {
+      fit_ok = FALSE;
+    }
+  }
+  if (fit_ok && vw > 2) {
+    g_snprintf (buf, sizeof (buf), _("zoomfit OK (%.0f%%)"), self->zoom * 100.0);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("zoomfit FAIL (vw=%d)"), vw);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5296,6 +5391,7 @@ static const GActionEntry dia_actions[] = {
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
   { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
   { "zoom-reset", action_zoom_reset, NULL, NULL, NULL },
+  { "zoom-fit",   action_zoom_fit,   NULL, NULL, NULL },
 };
 
 static void
@@ -5466,6 +5562,7 @@ build_primary_menu_button (void)
   g_menu_append (view, _("Zoom _In"), "dia.zoom-in");
   g_menu_append (view, _("Zoom _Out"), "dia.zoom-out");
   g_menu_append (view, _("_Reset Zoom"), "dia.zoom-reset");
+  g_menu_append (view, _("Zoom to _Fit"), "dia.zoom-fit");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (view));
 
   g_menu_append (app, _("_About Dia"), "app.about");
@@ -5631,6 +5728,7 @@ build_action_toolbar (DiaShell *self)
       { NULL, NULL, NULL },   /* the % entry goes here */
       { "zoom-in-symbolic",       N_("Zoom in"),  "dia.zoom-in" },
       { "zoom-original-symbolic", N_("Zoom 1:1"), "dia.zoom-reset" },
+      { "zoom-fit-best-symbolic", N_("Zoom to fit"), "dia.zoom-fit" },
     };
 
     self->zoom_label = gtk_entry_new ();
@@ -5746,6 +5844,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *tr = gtk_button_new_with_label ("uitest-textrotate");
     GtkWidget *sl = gtk_button_new_with_label ("uitest-saveload");
     GtkWidget *kb = gtk_button_new_with_label ("uitest-keyboard");
+    GtkWidget *zf = gtk_button_new_with_label ("uitest-zoomfit");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -5781,6 +5880,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (tr), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (sl), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (kb), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (zf), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -5816,6 +5916,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (tr, "clicked", G_CALLBACK (on_uitest_textrotate), self);
     g_signal_connect (sl, "clicked", G_CALLBACK (on_uitest_saveload), self);
     g_signal_connect (kb, "clicked", G_CALLBACK (on_uitest_keyboard), self);
+    g_signal_connect (zf, "clicked", G_CALLBACK (on_uitest_zoomfit), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -5851,6 +5952,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), tr);
     gtk_box_append (GTK_BOX (bar), sl);
     gtk_box_append (GTK_BOX (bar), kb);
+    gtk_box_append (GTK_BOX (bar), zf);
   }
 
   return bar;

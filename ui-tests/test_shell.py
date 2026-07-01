@@ -561,6 +561,16 @@ def main():
         ok = any('keyboard OK' in (lab.name or '') for lab in labels)
         check("Nudge moves selection + Ctrl+D duplicates", ok)
 
+    # 3al. Zoom-to-fit frames all objects in the viewport.
+    zf = find(app, name='uitest-zoomfit', roleName='push button')
+    check("DIA_UITEST zoomfit trigger present", zf)
+    if zf:
+        do_click(zf)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('zoomfit OK' in (lab.name or '') for lab in labels)
+        check("Zoom-to-fit frames the whole drawing", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)
