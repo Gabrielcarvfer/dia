@@ -344,7 +344,7 @@ _parse_color(gint32 *color, const char *str)
     int r = 0, g = 0, b = 0;
     if (3 == sscanf (str+4, "%d,%d,%d", &r, &g, &b)) {
       /* Set alpha to 1.0 */
-      *color = ((0xFF<<24) & 0xFF000000) | ((r<<16) & 0xFF0000) | ((g<<8) & 0xFF00) | (b & 0xFF);
+      *color = 0xFF000000 | ((r<<16) & 0xFF0000) | ((g<<8) & 0xFF00) | (b & 0xFF);
     } else if (strchr (str+4, '%')) {
       /* e.g. cairo uses percent values */
       char **vals = g_strsplit (str+4, "%,", -1);
@@ -359,8 +359,10 @@ _parse_color(gint32 *color, const char *str)
     }
   } else if (0 == strncmp(str, "rgba(", 5)) {
     int r = 0, g = 0, b = 0, a = 0;
-    if (4 == sscanf (str+4, "%d,%d,%d,%d", &r, &g, &b, &a))
-      *color = ((a<<24) & 0xFF000000) | ((r<<16) & 0xFF0000) | ((g<<8) & 0xFF00) | (b & 0xFF);
+    /* skip "rgba(" -- five characters, not four, or sscanf trips over the
+     * leading '(' and every rgba() colour fails to parse (renders black) */
+    if (4 == sscanf (str+5, "%d,%d,%d,%d", &r, &g, &b, &a))
+      *color = (((guint32)a << 24) & 0xFF000000) | ((r<<16) & 0xFF0000) | ((g<<8) & 0xFF00) | (b & 0xFF);
     else
       return FALSE;
   } else {

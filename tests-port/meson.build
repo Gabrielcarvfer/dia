@@ -110,6 +110,20 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for the rgba() colour-parsing bug in lib/dia_svg.c: the
+# "rgba(r,g,b,a)" branch ran sscanf() at str+4 (the "rgb(" offset) instead of
+# str+5, so the leftover '(' made every rgba() colour fail to parse and stay
+# black. Also covers the signed "<<24" shift UB on the same lines.
+test(
+  'lib-dia-svg-color',
+  executable(
+    'test-dia-svg-color-port',
+    ['test-dia-svg-color-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for the DiaContext message-log leak: the add_message helpers
 # used g_strv_builder_add() (which copies) on a g_strdup_vprintf()ed string and
 # never freed the original. Runs under ASan/LSan.
