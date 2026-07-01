@@ -6835,6 +6835,37 @@ image_from_pixbuf (GdkPixbuf *pb)
   return img;
 }
 
+static gboolean
+shell_is_dark (void)
+{
+  return adw_style_manager_get_dark (adw_style_manager_get_default ());
+}
+
+/* One app-wide rule that puts a light "paper" backing behind shape icons —
+ * added only in dark mode (below). Installed once. */
+static void
+install_shape_css (void)
+{
+  static gboolean done = FALSE;
+  GtkCssProvider *p;
+
+  if (done) {
+    return;
+  }
+  done = TRUE;
+  p = gtk_css_provider_new ();
+  gtk_css_provider_load_from_data (p,
+    ".shape-swatch {"
+    "  background-color: #d8d8d8;"
+    "  border-radius: 6px;"
+    "  padding: 3px;"
+    "}", -1);
+  gtk_style_context_add_provider_for_display (
+    gdk_display_get_default (), GTK_STYLE_PROVIDER (p),
+    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+  g_object_unref (p);
+}
+
 /* Make a small image of an object type's icon (XPM pixmap or icon file). */
 static GtkWidget *
 shape_icon (DiaObjectType *t)
@@ -6868,6 +6899,11 @@ shape_icon (DiaObjectType *t)
     img = gtk_image_new_from_icon_name ("image-x-generic-symbolic");
   }
   gtk_image_set_pixel_size (GTK_IMAGE (img), 24);
+  /* These XPM icons are drawn for a white canvas, so in dark mode black line
+   * art (arrows, flowchart shapes) disappears — back it with a light swatch. */
+  if (shell_is_dark ()) {
+    gtk_widget_add_css_class (img, "shape-swatch");
+  }
   return img;
 }
 
@@ -6900,6 +6936,14 @@ rebuild_sheet_shapes (DiaShell *self)
   }
 }
 
+/* Light/dark switched at runtime → rebuild the drawer so the swatch backing is
+ * added or removed to match. */
+static void
+on_theme_changed (GObject *sm, GParamSpec *ps, DiaShell *self)
+{
+  rebuild_sheet_shapes (self);
+}
+
 static void
 on_sheet_changed (GtkDropDown *dd, GParamSpec *ps, DiaShell *self)
 {
@@ -6930,6 +6974,10 @@ build_sheets (DiaShell *self)
                                    GTK_SELECTION_NONE);
   gtk_flow_box_set_max_children_per_line (GTK_FLOW_BOX (self->sheet_box), 4);
   self->sheet_index = 0;
+  install_shape_css ();
+  /* Re-back the icons when the user toggles light/dark at runtime. */
+  g_signal_connect_object (adw_style_manager_get_default (), "notify::dark",
+                           G_CALLBACK (on_theme_changed), self, 0);
   rebuild_sheet_shapes (self);
 
   /* Categories can hold hundreds of shapes; scroll within a bounded height. */
