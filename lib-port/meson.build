@@ -16,10 +16,11 @@ port_libxml_dep = dependency('libxml-2.0')
 
 # Bundled XPM->GdkPixbuf helper (subproject); only needs glib + gdk-pixbuf, no
 # GTK, so it is fine under GTK4. Needed by object.c for object-type icons.
-# Force it static (it's a wrap we can't edit): linked into the dia binary there
-# is no libxpm-pixbuf.so for the AppImage/DMG/ZIP packagers to hunt for.
-xpm_dep = dependency('xpm-pixbuf',
-                     default_options: ['default_library=static'])
+# Kept as a SHARED library: its header marks xpm_pixbuf_load G_MODULE_EXPORT
+# (__declspec(dllexport) on Windows), so a static build leaves consumers with an
+# undefined __imp_ reference on MinGW. The packagers bundle the .so/.dll/.dylib
+# (the Linux AppImage points linuxdeploy at it via LD_LIBRARY_PATH).
+xpm_dep = dependency('xpm-pixbuf')
 
 # --- Generated headers/sources the core depends on -------------------------
 dia_version_info_h = configure_file(

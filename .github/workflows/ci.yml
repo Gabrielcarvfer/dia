@@ -103,6 +103,12 @@ jobs:
           wget -q "$base/linuxdeploy-x86_64.AppImage"
           wget -q "$gtkbase/linuxdeploy-plugin-gtk.sh"
           chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
+          # The bundled xpm-pixbuf subproject installs libxpm-pixbuf.so.0 under
+          # AppDir/usr/lib (on Ubuntu, the multiarch .../lib/x86_64-linux-gnu
+          # subdir). Point linuxdeploy at wherever it landed so it can resolve +
+          # bundle that NEEDED dependency of dia.
+          xpmdir="$(dirname "$(find AppDir -name 'libxpm-pixbuf.so.0' | head -1)")"
+          export LD_LIBRARY_PATH="${xpmdir}:$PWD/AppDir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --plugin gtk \
             --desktop-file AppDir/usr/share/applications/org.gnome.Dia.desktop \
             --icon-file data/org.gnome.Dia.svg \

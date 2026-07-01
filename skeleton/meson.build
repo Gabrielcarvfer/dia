@@ -52,9 +52,9 @@ dia_skeleton_exe = executable(
     gio_dep,
     libdia_core_dep,
     libdia_objects_dep,
-    xpm_dep,        # dia-shell.c calls xpm_pixbuf_load() directly; declaring it
-                    # here fixes the undefined reference at link on Windows
-                    # (static-link ordering resolved it transitively elsewhere).
+    xpm_dep,        # lib/object.c (in libdia-core) calls xpm_pixbuf_load();
+                    # link the shared xpm-pixbuf explicitly so its import
+                    # resolves on Windows rather than relying on propagation.
   ],
   install: true,
 )

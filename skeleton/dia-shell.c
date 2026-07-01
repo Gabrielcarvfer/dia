@@ -15,7 +15,6 @@
 #include <math.h>
 
 #include "dia-shell.h"
-#include <xpm-pixbuf.h>
 
 /* Ported core library: draw on the canvas with the real Dia renderer. */
 #include "diarenderer.h"
@@ -6843,10 +6842,16 @@ shape_icon (DiaObjectType *t)
   GtkWidget *img = NULL;
 
   if (t && t->pixmap) {
-    /* xpm_pixbuf_load (our subproject) instead of the deprecated
-     * gdk_pixbuf_new_from_xpm_data(). */
-    GdkPixbuf *pb = xpm_pixbuf_load ((const char *const *) t->pixmap);
+    /* gdk_pixbuf_new_from_xpm_data() is deprecated in gdk-pixbuf 2.44 but has
+     * no non-deprecated replacement for a char** XPM, and it is always linked
+     * (unlike our static xpm-pixbuf helper, whose hidden symbols MinGW can't
+     * resolve from here). Silence just this one call. */
+    GdkPixbuf *pb;
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    pb = gdk_pixbuf_new_from_xpm_data ((const char **) t->pixmap);
+#pragma GCC diagnostic pop
     if (pb) {
       img = image_from_pixbuf (pb);
       g_clear_object (&pb);
