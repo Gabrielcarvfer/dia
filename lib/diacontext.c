@@ -163,7 +163,9 @@ dia_context_add_message (DiaContext *context,
   va_end (args);
   /* ToDo: dont repeat the same message over and over again, except ... */
 
-  g_strv_builder_add (context->messages, msg);
+  /* take ownership of msg -- g_strv_builder_add() would copy it and leak the
+   * original */
+  g_strv_builder_take (context->messages, msg);
 }
 
 void
@@ -190,7 +192,9 @@ dia_context_add_message_with_errno (DiaContext *context, int nr,
   }
   /* ToDo: dont repeat the same message over and over again, except ... */
 
-  g_strv_builder_add (context->messages, msg);
+  /* take ownership of msg -- g_strv_builder_add() would copy it and leak the
+   * original */
+  g_strv_builder_take (context->messages, msg);
 
   g_clear_pointer (&errstr, g_free);
 }

@@ -96,3 +96,16 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Regression test for the DiaContext message-log leak: the add_message helpers
+# used g_strv_builder_add() (which copies) on a g_strdup_vprintf()ed string and
+# never freed the original. Runs under ASan/LSan.
+test(
+  'lib-diacontext',
+  executable(
+    'test-diacontext-port',
+    ['test-diacontext-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
