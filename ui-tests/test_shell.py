@@ -551,6 +551,16 @@ def main():
         ok = any('saveload OK' in (lab.name or '') for lab in labels)
         check("Multi-layer diagram round-trips through save/load", ok)
 
+    # 3ak. Arrow-key nudge + Ctrl+D duplicate helpers.
+    kb = find(app, name='uitest-keyboard', roleName='push button')
+    check("DIA_UITEST keyboard trigger present", kb)
+    if kb:
+        do_click(kb)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('keyboard OK' in (lab.name or '') for lab in labels)
+        check("Nudge moves selection + Ctrl+D duplicates", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)

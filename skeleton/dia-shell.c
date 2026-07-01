@@ -2367,7 +2367,85 @@ add_type_drag_source (GtkWidget *button, const char *type_name)
 }
 
 
-/* Canvas key bindings: Delete/BackSpace remove the selection, Escape clears it. */
+/* Move every selected object by (@dx,@dy) cm, each an undoable OP_MOVE, and
+ * refresh anything connected to them. Used by the arrow-key nudge. */
+static void
+nudge_selected (DiaShell *self, double dx, double dy)
+{
+  if (!self->diagram->selected) {
+    return;
+  }
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    DiaObject *obj = l->data;
+    Point from = obj->position;
+    Point to = { from.x + dx, from.y + dy };
+    DiaObjectChange *ch = dia_object_move (obj, &to);
+
+    g_clear_pointer (&ch, dia_object_change_unref);
+    push_op (self, OP_MOVE, obj, from, to);
+    update_connections_for (obj);
+  }
+  gtk_widget_queue_draw (self->canvas);
+}
+
+/* Duplicate the selection: clone each object, offset ~0.5 cm, add to the active
+ * layer, and select the clones (each undoable as an OP_CREATE). */
+static void
+duplicate_selected (DiaShell *self)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  GList *clones = NULL;
+
+  if (!self->diagram->selected || !layer) {
+    return;
+  }
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    DiaObject *obj = l->data;
+    DiaObject *copy = obj->ops->copy (obj);
+    Point to;
+    DiaObjectChange *ch;
+
+    if (!copy) {
+      continue;
+    }
+    to.x = copy->position.x + 0.5;
+    to.y = copy->position.y + 0.5;
+    ch = dia_object_move (copy, &to);
+    g_clear_pointer (&ch, dia_object_change_unref);
+    dia_layer_add_object (layer, copy);
+    clones = g_list_prepend (clones, copy);
+  }
+  if (!clones) {
+    return;
+  }
+  data_remove_all_selected (self->diagram);
+  self->selected = NULL;
+  for (GList *l = clones; l; l = l->next) {
+    DiaObject *copy = l->data;
+
+    data_select (self->diagram, copy);
+    self->selected = copy;
+    push_op (self, OP_CREATE, copy, copy->position, copy->position);
+  }
+  g_list_free (clones);
+  refresh_layers_list (self);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+/* Scroll the viewport by (@dx,@dy) cm (arrow keys with nothing selected). */
+static void
+pan_canvas_by (DiaShell *self, double dx, double dy)
+{
+  self->origin_x += dx;
+  self->origin_y += dy;
+  update_transform (self);
+  update_scrollbars (self);
+  redraw_canvas_and_rulers (self);
+}
+
+/* Canvas key bindings. Ctrl+{X,C,V,A,Z,Y,G,S,D,+,-,0} dispatch editing/zoom
+ * actions; arrow keys nudge the selection (Shift = fine) or pan when nothing is
+ * selected; Delete removes the selection and Escape clears it. */
 static gboolean
 on_canvas_key (GtkEventControllerKey *controller,
                guint                  keyval,
@@ -2385,12 +2463,25 @@ on_canvas_key (GtkEventControllerKey *controller,
       case GDK_KEY_c: case GDK_KEY_C: act = "copy";       break;
       case GDK_KEY_v: case GDK_KEY_V: act = "paste";      break;
       case GDK_KEY_a: case GDK_KEY_A: act = "select-all"; break;
-      case GDK_KEY_z: case GDK_KEY_Z: act = "undo";       break;
+      case GDK_KEY_s: case GDK_KEY_S: act = "save";       break;
+      /* Ctrl+Z undoes, Ctrl+Shift+Z (or Ctrl+Y) redoes. */
+      case GDK_KEY_z: case GDK_KEY_Z:
+        act = (state & GDK_SHIFT_MASK) ? "redo" : "undo";
+        break;
       case GDK_KEY_y: case GDK_KEY_Y: act = "redo";       break;
       /* Ctrl+G groups, Ctrl+Shift+G ungroups. */
       case GDK_KEY_g: case GDK_KEY_G:
         act = (state & GDK_SHIFT_MASK) ? "ungroup" : "group";
         break;
+      case GDK_KEY_d: case GDK_KEY_D:
+        duplicate_selected (self);
+        return TRUE;
+      case GDK_KEY_plus: case GDK_KEY_equal: case GDK_KEY_KP_Add:
+        act = "zoom-in";    break;
+      case GDK_KEY_minus: case GDK_KEY_KP_Subtract:
+        act = "zoom-out";   break;
+      case GDK_KEY_0: case GDK_KEY_KP_0:
+        act = "zoom-reset"; break;
       default: break;
     }
     if (act) {
@@ -2400,6 +2491,24 @@ on_canvas_key (GtkEventControllerKey *controller,
   }
 
   switch (keyval) {
+    case GDK_KEY_Up: case GDK_KEY_Down:
+    case GDK_KEY_Left: case GDK_KEY_Right: {
+      double step = (state & GDK_SHIFT_MASK) ? 0.1 : 0.5;
+      double dx = 0, dy = 0;
+
+      switch (keyval) {
+        case GDK_KEY_Up:    dy = -step; break;
+        case GDK_KEY_Down:  dy =  step; break;
+        case GDK_KEY_Left:  dx = -step; break;
+        default:            dx =  step; break;   /* Right */
+      }
+      if (self->diagram->selected) {
+        nudge_selected (self, dx, dy);
+      } else {
+        pan_canvas_by (self, dx * 2.0, dy * 2.0);   /* a bigger step to pan */
+      }
+      return TRUE;
+    }
     case GDK_KEY_Delete:
     case GDK_KEY_BackSpace:
       delete_selected (self);
@@ -4951,6 +5060,50 @@ on_uitest_saveload (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): the arrow-key nudge moves the selection by the
+ * requested cm, and Ctrl+D duplication adds one object. Exercises the helpers
+ * the key handler dispatches to (canvas keys aren't reachable over AT-SPI). */
+static void
+on_uitest_keyboard (GtkButton *button, DiaShell *self)
+{
+  DiaObject *o;
+  Point before;
+  int n0, n1;
+  gboolean nudge_ok, dup_ok;
+  char buf[80];
+
+  dia_shell_set_new_diagram (self);
+  o = diagram_create_object (self, "Standard - Box", (Point) { 5, 5 });
+  if (!o) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("keyboard FAIL (no object)"));
+    return;
+  }
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, o);
+  self->selected = o;
+
+  before = o->position;
+  nudge_selected (self, 0.5, 0.0);
+  nudge_ok = fabs (o->position.x - (before.x + 0.5)) < 0.01 &&
+             fabs (o->position.y - before.y) < 0.01;
+
+  n0 = diagram_object_count (self);
+  duplicate_selected (self);
+  n1 = diagram_object_count (self);
+  dup_ok = (n1 == n0 + 1);
+
+  if (nudge_ok && dup_ok) {
+    g_snprintf (buf, sizeof (buf), _("keyboard OK (nudge+duplicate)"));
+  } else {
+    g_snprintf (buf, sizeof (buf), _("keyboard FAIL (nudge=%d dup=%d)"),
+                nudge_ok, dup_ok);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5592,6 +5745,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *nt = gtk_button_new_with_label ("uitest-newtext");
     GtkWidget *tr = gtk_button_new_with_label ("uitest-textrotate");
     GtkWidget *sl = gtk_button_new_with_label ("uitest-saveload");
+    GtkWidget *kb = gtk_button_new_with_label ("uitest-keyboard");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -5626,6 +5780,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (nt), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (tr), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (sl), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (kb), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -5660,6 +5815,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (nt, "clicked", G_CALLBACK (on_uitest_newtext), self);
     g_signal_connect (tr, "clicked", G_CALLBACK (on_uitest_textrotate), self);
     g_signal_connect (sl, "clicked", G_CALLBACK (on_uitest_saveload), self);
+    g_signal_connect (kb, "clicked", G_CALLBACK (on_uitest_keyboard), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -5694,6 +5850,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), nt);
     gtk_box_append (GTK_BOX (bar), tr);
     gtk_box_append (GTK_BOX (bar), sl);
+    gtk_box_append (GTK_BOX (bar), kb);
   }
 
   return bar;
