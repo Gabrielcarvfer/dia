@@ -61,6 +61,8 @@ typedef struct {
   GtkWidget *ctx_menu;    /* canvas right-click popover (parented to canvas) */
   DiaObject *dnd_object;  /* object being dragged in the layers panel */
   DiaLayer  *dnd_src_layer;  /* the layer it came from */
+  GtkWidget *modify_toggle;  /* the Modify tool toggle, for switching back */
+  gboolean   skip_layer_select;  /* a group row was clicked; don't select the whole layer */
   double     cursor_x, cursor_y;  /* pointer position over the canvas (px) */
   gboolean   cursor_valid;
   double     zoom;        /* 1.0 == 100% */
@@ -1458,15 +1460,23 @@ on_canvas_pressed (GtkGestureClick *gesture,
       select_at (self, p, (m & GDK_SHIFT_MASK) != 0);
     }
   } else {
+    gboolean is_text = (g_strcmp0 (self->tool, "Text") == 0);
     DiaObject *created = apply_tool_at (self, p);
 
-    /* The Text tool drops an (initially empty) text object; open its editor
-     * straight away so the user can type, and leave it selected. */
-    if (created && g_strcmp0 (self->tool, "Text") == 0) {
+    if (created) {
+      /* Select the new object and switch back to Modify so the next click
+       * manipulates it instead of dropping another copy. */
       data_remove_all_selected (self->diagram);
       data_select (self->diagram, created);
       self->selected = created;
-      open_text_editor (self, created);
+      if (is_text) {
+        open_text_editor (self, created);   /* type straight into it */
+      }
+      if (self->modify_toggle) {
+        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->modify_toggle),
+                                      TRUE);   /* fires on_tool_toggled */
+      }
+      gtk_widget_queue_draw (self->canvas);
     }
   }
 }
@@ -5335,6 +5345,7 @@ build_toolbox (DiaShell *self)
     g_object_set_data (G_OBJECT (btn), "tool-name", (gpointer) name);
     if (first == NULL) {
       first = GTK_TOGGLE_BUTTON (btn);
+      self->modify_toggle = btn;   /* entry 0 is Modify; used to switch back */
       gtk_toggle_button_set_active (first, TRUE);
       g_strlcpy (self->tool, gettext (tool_entries[i].name), sizeof (self->tool));
     } else {
@@ -5663,6 +5674,37 @@ on_obj_row_drag_prepare (GtkDragSource *src, double x, double y, DiaShell *self)
   return gdk_content_provider_new_typed (G_TYPE_STRING, "dia-object");
 }
 
+/* Clicking a group row selects the objects inside the group (its direct
+ * children). Sets skip_layer_select so the ListBox row-selected that follows
+ * doesn't widen it to the whole layer. */
+static void
+on_group_row_clicked (GtkGestureClick *gesture, int n_press,
+                      double x, double y, DiaShell *self)
+{
+  GtkWidget *w = gtk_event_controller_get_widget (GTK_EVENT_CONTROLLER (gesture));
+  DiaObject *group = g_object_get_data (G_OBJECT (w), "dnd-obj");
+  guint count = 0;
+
+  if (!group || group->type != &group_type) {
+    return;
+  }
+  data_remove_all_selected (self->diagram);
+  self->selected = NULL;
+  for (GList *l = group_objects (group); l; l = l->next) {
+    data_select (self->diagram, l->data);
+    self->selected = l->data;
+    count++;
+  }
+  self->skip_layer_select = TRUE;
+  gtk_widget_queue_draw (self->canvas);
+  if (count) {
+    char buf[64];
+
+    g_snprintf (buf, sizeof (buf), _("Selected %u in group"), count);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  }
+}
+
 /* One "• type" row per object in @objects, recursing into groups (indented).
  * Top-level rows (depth 0) are drag sources so they can be moved to another
  * layer by dropping on that layer's row. */
@@ -5691,14 +5733,21 @@ append_object_rows (GtkWidget *vbox, GList *objects, int depth,
       gtk_widget_add_controller (ol, GTK_EVENT_CONTROLLER (ds));
 
       if (obj && obj->type == &group_type) {
-        /* a group row also accepts a drop → move that object into the group */
+        /* a group row accepts a drop → move that object into the group, and a
+         * click → select the group's contents */
         GtkDropTarget *dt = gtk_drop_target_new (G_TYPE_STRING,
                                                  GDK_ACTION_MOVE);
+        GtkGesture *click = gtk_gesture_click_new ();
 
         g_signal_connect (dt, "drop", G_CALLBACK (on_group_row_drop), self);
         gtk_widget_add_controller (ol, GTK_EVENT_CONTROLLER (dt));
-        gtk_widget_set_tooltip_text (ol, _("Drop an object here to add it to "
-                                           "this group"));
+        gtk_event_controller_set_propagation_phase (
+            GTK_EVENT_CONTROLLER (click), GTK_PHASE_CAPTURE);
+        g_signal_connect (click, "pressed",
+                          G_CALLBACK (on_group_row_clicked), self);
+        gtk_widget_add_controller (ol, GTK_EVENT_CONTROLLER (click));
+        gtk_widget_set_tooltip_text (ol, _("Click to select the group's "
+                                           "contents; drop here to add to it"));
       }
     }
     gtk_box_append (GTK_BOX (vbox), ol);
@@ -5795,7 +5844,25 @@ on_layer_row_selected (GtkListBox *lb, GtkListBoxRow *row, DiaShell *self)
   idx = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (child), "dia-layer-index"));
   l = data_layer_get_nth (self->diagram, idx);
   if (l) {
+    int n = dia_layer_object_count (l);
+
     data_set_active_layer (self->diagram, l);
+    /* A group row was clicked → it already set the selection; don't widen it
+     * to the whole layer. */
+    if (self->skip_layer_select) {
+      self->skip_layer_select = FALSE;
+      return;
+    }
+    /* Selecting a layer selects everything on it. */
+    data_remove_all_selected (self->diagram);
+    self->selected = NULL;
+    for (int i = 0; i < n; i++) {
+      DiaObject *o = dia_layer_object_get_nth (l, i);
+
+      data_select (self->diagram, o);
+      self->selected = o;
+    }
+    gtk_widget_queue_draw (self->canvas);
   }
 }
 
