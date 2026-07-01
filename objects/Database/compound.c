@@ -698,7 +698,7 @@ compound_copy (Compound * comp)
                      copy_obj,
                      &copy_obj->handles[0]->pos);
 
-  compound_update_data (comp);
+  compound_update_data (copy);
   compound_sanity_check (copy, "Copied");
   return &copy->object;
 }
