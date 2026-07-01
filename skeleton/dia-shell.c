@@ -113,9 +113,10 @@ typedef struct {
   ArrowType    start_arrow, end_arrow;
 } DiaShell;
 
-/* Pixels per cm at 100% zoom. Chosen so a typical canvas shows ~80 cm across,
- * matching upstream Dia's zoomed-out default (the page is small within it). */
-#define PX_PER_CM 10.0
+/* Pixels per cm at 100% zoom. At 20 px/cm a typical canvas shows ~40 cm across
+ * (objects appear a comfortable size); Ctrl+wheel / the zoom box scale from
+ * there. */
+#define PX_PER_CM 20.0
 
 /* A moving object + its position at drag start (for multi-object move). */
 typedef struct { DiaObject *obj; Point start; } MoveItem;
