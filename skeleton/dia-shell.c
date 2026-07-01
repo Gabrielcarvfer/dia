@@ -2994,6 +2994,43 @@ diagram_export_file (DiagramData *data, const char *path)
   return diagram_export_file_full (data, path, NULL, 0, 0);
 }
 
+/* Load the objects directly under @parent (a layer or a group node), returning
+ * a new GList of top-level objects. A <dia:group> child is loaded recursively
+ * and wrapped with group_create (which takes ownership of the child list). The
+ * caller owns the returned list (free with g_list_free once the objects are
+ * re-homed into a layer/group). */
+static GList *
+load_objects_recursive (xmlNodePtr parent, DiaContext *ctx)
+{
+  GList *out = NULL;
+
+  for (xmlNodePtr on = parent->children; on; on = on->next) {
+    if (xmlStrcmp (on->name, (const xmlChar *) "object") == 0) {
+      char *type_name = (char *) xmlGetProp (on, (const xmlChar *) "type");
+      char *version_str = (char *) xmlGetProp (on, (const xmlChar *) "version");
+      DiaObjectType *type = type_name ? object_get_type (type_name) : NULL;
+
+      if (type && type->ops && type->ops->load) {
+        DiaObject *obj = type->ops->load (on,
+                                          version_str ? atoi (version_str) : 0,
+                                          ctx);
+        if (obj) {
+          out = g_list_append (out, obj);
+        }
+      }
+      if (type_name) xmlFree (type_name);
+      if (version_str) xmlFree (version_str);
+    } else if (xmlStrcmp (on->name, (const xmlChar *) "group") == 0) {
+      GList *children = load_objects_recursive (on, ctx);
+
+      if (children) {
+        out = g_list_append (out, group_create (children));   /* owns children */
+      }
+    }
+  }
+  return out;
+}
+
 /* Populate @data with the layers and objects under XML @root, recreating the
  * file's layer structure (one DiaLayer per <dia:layer>, honouring its name,
  * visibility and the active flag). Shared by the GUI open and the CLI loader.
@@ -3033,26 +3070,13 @@ load_diagram_layers (DiagramData *data, xmlNodePtr root, DiaContext *ctx)
       active = layer;
     }
 
-    for (xmlNodePtr on = ln->children; on; on = on->next) {
-      char *type_name, *version_str;
-      DiaObjectType *type;
+    {
+      GList *objs = load_objects_recursive (ln, ctx);
 
-      if (xmlStrcmp (on->name, (const xmlChar *) "object") != 0) {
-        continue;
+      for (GList *o = objs; o; o = o->next) {
+        dia_layer_add_object (layer, o->data);
       }
-      type_name = (char *) xmlGetProp (on, (const xmlChar *) "type");
-      version_str = (char *) xmlGetProp (on, (const xmlChar *) "version");
-      type = type_name ? object_get_type (type_name) : NULL;
-      if (type && type->ops->load) {
-        DiaObject *obj = type->ops->load (on,
-                                          version_str ? atoi (version_str) : 0,
-                                          ctx);
-        if (obj) {
-          dia_layer_add_object (layer, obj);
-        }
-      }
-      if (type_name) xmlFree (type_name);
-      if (version_str) xmlFree (version_str);
+      g_list_free (objs);   /* the objects are now owned by the layer */
     }
 
     if (lname) xmlFree (lname);
@@ -3233,6 +3257,39 @@ dia_shell_export_cli (const char *const *infiles, int n_infiles,
   return failures ? 1 : 0;
 }
 
+/* Serialize @objects under @parent: a group becomes a <dia:group> with its
+ * children recursively (groups carry NO type->ops->save — they're a structural
+ * element, like upstream write_objects); every other object is a <dia:object>
+ * saved by its own ops. */
+static void
+save_objects_recursive (xmlNodePtr parent, xmlNsPtr ns, GList *objects,
+                        DiaContext *ctx, int *obj_id)
+{
+  for (GList *l = objects; l; l = l->next) {
+    DiaObject *obj = l->data;
+
+    if (obj->type == &group_type && group_objects (obj) != NULL) {
+      xmlNodePtr gnode = xmlNewChild (parent, ns, (const xmlChar *) "group",
+                                      NULL);
+
+      save_objects_recursive (gnode, ns, group_objects (obj), ctx, obj_id);
+    } else {
+      xmlNodePtr obj_node = xmlNewChild (parent, ns,
+                                         (const xmlChar *) "object", NULL);
+      char buf[16];
+
+      xmlSetProp (obj_node, (const xmlChar *) "type",
+                  (const xmlChar *) obj->type->name);
+      g_snprintf (buf, sizeof (buf), "%d", obj->type->version);
+      xmlSetProp (obj_node, (const xmlChar *) "version", (const xmlChar *) buf);
+      g_snprintf (buf, sizeof (buf), "O%d", (*obj_id)++);
+      xmlSetProp (obj_node, (const xmlChar *) "id", (const xmlChar *) buf);
+
+      obj->type->ops->save (obj, obj_node, ctx);
+    }
+  }
+}
+
 static gboolean
 diagram_to_file (DiaShell *self, GFile *file)
 {
@@ -3257,7 +3314,6 @@ diagram_to_file (DiaShell *self, GFile *file)
    * loader — saving only the active layer silently dropped the others. */
   for (int li = 0; li < nl; li++) {
     DiaLayer *layer = data_layer_get_nth (self->diagram, li);
-    int n = dia_layer_object_count (layer);
     xmlNodePtr layer_node = xmlNewChild (root, ns,
                                          (const xmlChar *) "layer", NULL);
 
@@ -3271,21 +3327,8 @@ diagram_to_file (DiaShell *self, GFile *file)
                   (const xmlChar *) "true");
     }
 
-    for (int i = 0; i < n; i++) {
-      DiaObject *obj = dia_layer_object_get_nth (layer, i);
-      xmlNodePtr obj_node = xmlNewChild (layer_node, ns,
-                                         (const xmlChar *) "object", NULL);
-      char buf[16];
-
-      xmlSetProp (obj_node, (const xmlChar *) "type",
-                  (const xmlChar *) obj->type->name);
-      g_snprintf (buf, sizeof (buf), "%d", obj->type->version);
-      xmlSetProp (obj_node, (const xmlChar *) "version", (const xmlChar *) buf);
-      g_snprintf (buf, sizeof (buf), "O%d", obj_id++);
-      xmlSetProp (obj_node, (const xmlChar *) "id", (const xmlChar *) buf);
-
-      obj->type->ops->save (obj, obj_node, ctx);
-    }
+    save_objects_recursive (layer_node, ns, dia_layer_get_object_list (layer),
+                            ctx, &obj_id);
   }
 
   ok = dia_io_save_document (path, doc, FALSE, ctx);
@@ -3357,68 +3400,9 @@ diagram_from_file (DiaShell *self, GFile *file)
   doc = dia_io_load_document (path, ctx, NULL);
 
   if (doc) {
-    xmlNodePtr root = xmlDocGetRootElement (doc);
-    gboolean first_layer = TRUE;
-    DiaLayer *active = NULL;
-
     dia_shell_set_new_diagram (self);
-
-    /* Recreate the file's layer structure so the layers panel mirrors it,
-     * instead of collapsing everything into one layer. */
-    for (xmlNodePtr ln = root ? root->children : NULL; ln; ln = ln->next) {
-      char *lname, *lactive;
-      DiaLayer *layer;
-
-      if (xmlStrcmp (ln->name, (const xmlChar *) "layer") != 0) {
-        continue;
-      }
-      lname = (char *) xmlGetProp (ln, (const xmlChar *) "name");
-      lactive = (char *) xmlGetProp (ln, (const xmlChar *) "active");
-
-      if (first_layer) {
-        /* reuse the fresh diagram's default layer for the first one */
-        layer = dia_diagram_data_get_active_layer (self->diagram);
-        if (lname) {
-          g_object_set (layer, "name", lname, NULL);
-        }
-        first_layer = FALSE;
-      } else {
-        layer = dia_layer_new (lname ? lname : _("Layer"), self->diagram);
-        data_add_layer (self->diagram, layer);   /* refs the layer */
-        g_object_unref (layer);                   /* drop construction ref */
-      }
-      if (lactive && g_strcmp0 (lactive, "true") == 0) {
-        active = layer;
-      }
-
-      for (xmlNodePtr on = ln->children; on; on = on->next) {
-        char *type_name, *version_str;
-        DiaObjectType *type;
-        DiaObject *obj;
-
-        if (xmlStrcmp (on->name, (const xmlChar *) "object") != 0) {
-          continue;
-        }
-        type_name = (char *) xmlGetProp (on, (const xmlChar *) "type");
-        version_str = (char *) xmlGetProp (on, (const xmlChar *) "version");
-        type = type_name ? object_get_type (type_name) : NULL;
-
-        if (type && type->ops->load) {
-          obj = type->ops->load (on, version_str ? atoi (version_str) : 0, ctx);
-          if (obj) {
-            dia_layer_add_object (layer, obj);
-          }
-        }
-        if (type_name) xmlFree (type_name);
-        if (version_str) xmlFree (version_str);
-      }
-
-      if (lname) xmlFree (lname);
-      if (lactive) xmlFree (lactive);
-    }
-    if (active) {
-      data_set_active_layer (self->diagram, active);
-    }
+    /* Recreate the file's layer + group structure (shared with the CLI). */
+    load_diagram_layers (self->diagram, xmlDocGetRootElement (doc), ctx);
     xmlFreeDoc (doc);
 
     /* Keep the loaded diagram in the positive quadrant and frame it near the
@@ -4772,10 +4756,22 @@ on_uitest_saveload (GtkButton *button, DiaShell *self)
   int nl = -1, saved_nl;
   char buf[80];
 
+  DiaObject *b, *c;
+  gboolean group_ok = FALSE;
+
   /* Fresh diagram so the count is deterministic (earlier triggers leave stray
-   * layers/objects). L0 gets a box, a new L1 gets an ellipse. */
+   * layers/objects). L0 gets a box + a GROUP of two boxes; a new L1 gets an
+   * ellipse. The group exercises <dia:group> save/load. */
   dia_shell_set_new_diagram (self);
   diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  b = diagram_create_object (self, "Standard - Box", (Point) { 4, 4 });
+  c = diagram_create_object (self, "Standard - Box", (Point) { 5, 5 });
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, b);
+  data_select (self->diagram, c);
+  self->selected = c;
+  group_selected (self);   /* group {b,c} in L0 */
+
   l1 = dia_layer_new ("Second", self->diagram);
   data_add_layer (self->diagram, l1);
   g_object_unref (l1);
@@ -4787,13 +4783,26 @@ on_uitest_saveload (GtkButton *button, DiaShell *self)
   reloaded = diagram_load_standalone (path);
   if (reloaded) {
     nl = data_layer_count (reloaded);
+    /* find a group of 2 among the reloaded layers */
+    for (int li = 0; li < nl && !group_ok; li++) {
+      DiaLayer *l = data_layer_get_nth (reloaded, li);
+
+      for (int i = 0; i < dia_layer_object_count (l); i++) {
+        DiaObject *o = dia_layer_object_get_nth (l, i);
+
+        if (o->type == &group_type && g_list_length (group_objects (o)) == 2) {
+          group_ok = TRUE;
+        }
+      }
+    }
     g_object_unref (reloaded);
   }
-  if (saved_nl == 2 && nl == 2) {
-    g_snprintf (buf, sizeof (buf), _("saveload OK (%d layers)"), nl);
+  if (saved_nl == 2 && nl == 2 && group_ok) {
+    g_snprintf (buf, sizeof (buf), _("saveload OK (%d layers + group)"), nl);
   } else {
-    g_snprintf (buf, sizeof (buf), _("saveload FAIL (saved=%d reloaded=%d)"),
-                saved_nl, nl);
+    g_snprintf (buf, sizeof (buf),
+                _("saveload FAIL (saved=%d reloaded=%d group=%d)"),
+                saved_nl, nl, group_ok);
   }
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
   refresh_layers_list (self);
