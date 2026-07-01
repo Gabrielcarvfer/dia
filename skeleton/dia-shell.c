@@ -59,6 +59,8 @@ typedef struct {
   GtkWidget *pos_label;
   GtkWidget *zoom_label;
   GtkWidget *ctx_menu;    /* canvas right-click popover (parented to canvas) */
+  DiaObject *dnd_object;  /* object being dragged in the layers panel */
+  DiaLayer  *dnd_src_layer;  /* the layer it came from */
   double     cursor_x, cursor_y;  /* pointer position over the canvas (px) */
   gboolean   cursor_valid;
   double     zoom;        /* 1.0 == 100% */
@@ -709,6 +711,10 @@ static void update_zoom (DiaShell *self, double factor);
 static void zoom_about (DiaShell *self, double factor, double cx, double cy);
 static void refresh_layers_list (DiaShell *self);
 static void on_zoom_entry_activate (GtkEntry *entry, DiaShell *self);
+static void lp_move_to_layer (DiaShell *self, DiaObject *obj, DiaLayer *src,
+                              DiaLayer *dst);
+static void lp_move_into_group (DiaShell *self, DiaObject *obj, DiaLayer *src,
+                                DiaObject *group, DiaLayer *glayer);
 
 /* Mouse wheel: Ctrl = zoom, Shift = horizontal scroll, otherwise vertical. */
 static gboolean
@@ -4258,6 +4264,77 @@ on_uitest_rothandle (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): exercise the layers-panel move operations that
+ * drag-and-drop drives — move an object to another layer, and move an object
+ * into a group (rebuild via ungroup + group_create). */
+static void
+on_uitest_layermove (GtkButton *button, DiaShell *self)
+{
+  DiaLayer *l0 = dia_diagram_data_get_active_layer (self->diagram);
+  DiaObject *a = diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  DiaLayer *l1;
+  gboolean move_ok = FALSE, group_ok = FALSE;
+  char buf[128];
+
+  if (!a || !l0) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("layermove FAIL (no object)"));
+    return;
+  }
+  push_op (self, OP_CREATE, a, (Point) { 2, 2 }, (Point) { 2, 2 });
+
+  /* move A from L0 to a fresh layer L1 */
+  l1 = dia_layer_new ("MoveTarget", self->diagram);
+  data_add_layer (self->diagram, l1);
+  g_object_unref (l1);
+  lp_move_to_layer (self, a, l0, l1);
+  {
+    gboolean in0 = FALSE, in1 = FALSE;
+
+    for (int i = 0; i < dia_layer_object_count (l0); i++) {
+      if (dia_layer_object_get_nth (l0, i) == a) in0 = TRUE;
+    }
+    for (int i = 0; i < dia_layer_object_count (l1); i++) {
+      if (dia_layer_object_get_nth (l1, i) == a) in1 = TRUE;
+    }
+    move_ok = (!in0 && in1);
+  }
+
+  /* group B+C in L0, then move D into that group → a group of 3 */
+  data_set_active_layer (self->diagram, l0);
+  {
+    DiaObject *b = diagram_create_object (self, "Standard - Box", (Point){4,4});
+    DiaObject *c = diagram_create_object (self, "Standard - Box", (Point){5,5});
+    DiaObject *d = diagram_create_object (self, "Standard - Box", (Point){6,6});
+    DiaObject *grp;
+
+    data_remove_all_selected (self->diagram);
+    data_select (self->diagram, b);
+    data_select (self->diagram, c);
+    self->selected = c;
+    group_selected (self);          /* grp {b,c} in L0 */
+    grp = self->selected;
+    lp_move_into_group (self, d, l0, grp, l0);
+
+    for (int i = 0; i < dia_layer_object_count (l0); i++) {
+      DiaObject *o = dia_layer_object_get_nth (l0, i);
+
+      if (o->type == &group_type && g_list_length (group_objects (o)) == 3) {
+        group_ok = TRUE;
+      }
+    }
+  }
+
+  g_snprintf (buf, sizeof (buf),
+              (move_ok && group_ok) ? _("layermove OK (to-layer + into-group)")
+                                    : _("layermove FAIL (move=%d group=%d)"),
+              move_ok, group_ok);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -4861,6 +4938,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *ro = gtk_button_new_with_label ("uitest-rotate");
     GtkWidget *ue = gtk_button_new_with_label ("uitest-undoedit");
     GtkWidget *rh = gtk_button_new_with_label ("uitest-rothandle");
+    GtkWidget *lm = gtk_button_new_with_label ("uitest-layermove");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -4890,6 +4968,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (ro), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ue), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (rh), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (lm), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -4919,6 +4998,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (ro, "clicked", G_CALLBACK (on_uitest_rotate), self);
     g_signal_connect (ue, "clicked", G_CALLBACK (on_uitest_undo_edit), self);
     g_signal_connect (rh, "clicked", G_CALLBACK (on_uitest_rothandle), self);
+    g_signal_connect (lm, "clicked", G_CALLBACK (on_uitest_layermove), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -4948,6 +5028,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), ro);
     gtk_box_append (GTK_BOX (bar), ue);
     gtk_box_append (GTK_BOX (bar), rh);
+    gtk_box_append (GTK_BOX (bar), lm);
   }
 
   return bar;
@@ -5484,10 +5565,110 @@ on_layer_label_editing (GObject *labelobj, GParamSpec *ps, DiaShell *self)
   }
 }
 
+/* Move a top-level @obj from layer @src to layer @dst. */
+static void
+lp_move_to_layer (DiaShell *self, DiaObject *obj, DiaLayer *src, DiaLayer *dst)
+{
+  if (!obj || !src || !dst || src == dst) {
+    return;
+  }
+  dia_layer_remove_object (src, obj);
+  dia_layer_add_object (dst, obj);
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Moved to layer"));
+}
+
+/* Move @obj into @group (in layer @glayer). libdia has no add-to-group op, so
+ * rebuild the group from its children plus @obj (ungroup + group_create) — the
+ * net effect is the object joining the group (works for nesting a group too). */
+static void
+lp_move_into_group (DiaShell *self, DiaObject *obj, DiaLayer *src,
+                    DiaObject *group, DiaLayer *glayer)
+{
+  GList *children;
+  DiaObject *newgroup;
+
+  if (!obj || obj == group || !group || group->type != &group_type || !glayer) {
+    return;
+  }
+  children = g_list_copy (group_objects (group));   /* snapshot before dissolve */
+  dia_layer_remove_object (src, obj);               /* detach dragged object */
+  dia_layer_remove_object (glayer, group);          /* detach the group */
+  group_destroy_shallow (group);                    /* free group, keep kids */
+  children = g_list_append (children, obj);
+  newgroup = group_create (children);               /* takes ownership */
+  dia_layer_add_object (glayer, newgroup);
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, newgroup);
+  self->selected = newgroup;
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Moved into group"));
+}
+
+static gboolean
+on_layer_row_drop (GtkDropTarget *dt, const GValue *value, double x, double y,
+                   DiaShell *self)
+{
+  GtkWidget *w = gtk_event_controller_get_widget (GTK_EVENT_CONTROLLER (dt));
+  int idx = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (w),
+                                                "dia-layer-index"));
+  DiaLayer *dst = data_layer_get_nth (self->diagram, idx);
+
+  if (!self->dnd_object || !dst) {
+    return FALSE;
+  }
+  lp_move_to_layer (self, self->dnd_object, self->dnd_src_layer, dst);
+  self->dnd_object = NULL;
+  self->dnd_src_layer = NULL;
+  return TRUE;
+}
+
+static gboolean
+on_group_row_drop (GtkDropTarget *dt, const GValue *value, double x, double y,
+                   DiaShell *self)
+{
+  GtkWidget *w = gtk_event_controller_get_widget (GTK_EVENT_CONTROLLER (dt));
+  DiaObject *group = g_object_get_data (G_OBJECT (w), "dnd-obj");
+  DiaLayer *glayer = g_object_get_data (G_OBJECT (w), "dnd-layer");
+
+  if (!self->dnd_object || !group || self->dnd_object == group) {
+    return FALSE;
+  }
+  lp_move_into_group (self, self->dnd_object, self->dnd_src_layer, group,
+                      glayer);
+  self->dnd_object = NULL;
+  self->dnd_src_layer = NULL;
+  return TRUE;
+}
+
 /* Append one "• type" row per object in @objects to @vbox, recursing into
  * groups (indented one step deeper) so the nested group hierarchy is visible. */
+static GdkContentProvider *
+on_obj_row_drag_prepare (GtkDragSource *src, double x, double y, DiaShell *self)
+{
+  GtkWidget *w = gtk_event_controller_get_widget (GTK_EVENT_CONTROLLER (src));
+
+  self->dnd_object = g_object_get_data (G_OBJECT (w), "dnd-obj");
+  self->dnd_src_layer = g_object_get_data (G_OBJECT (w), "dnd-layer");
+  if (!self->dnd_object) {
+    return NULL;
+  }
+  /* Local drag; the payload is a marker — the object is passed via self. */
+  return gdk_content_provider_new_typed (G_TYPE_STRING, "dia-object");
+}
+
+/* One "• type" row per object in @objects, recursing into groups (indented).
+ * Top-level rows (depth 0) are drag sources so they can be moved to another
+ * layer by dropping on that layer's row. */
 static void
-append_object_rows (GtkWidget *vbox, GList *objects, int depth)
+append_object_rows (GtkWidget *vbox, GList *objects, int depth,
+                    DiaShell *self, DiaLayer *layer)
 {
   for (GList *l = objects; l; l = l->next) {
     DiaObject *obj = l->data;
@@ -5499,11 +5680,32 @@ append_object_rows (GtkWidget *vbox, GList *objects, int depth)
     gtk_widget_set_margin_start (ol, 12 + depth * 12);
     gtk_widget_add_css_class (ol, "dim-label");
     gtk_widget_add_css_class (ol, "caption");
+
+    if (depth == 0) {   /* only top-level objects can be moved between layers */
+      GtkDragSource *ds = gtk_drag_source_new ();
+
+      g_object_set_data (G_OBJECT (ol), "dnd-obj", obj);
+      g_object_set_data (G_OBJECT (ol), "dnd-layer", layer);
+      g_signal_connect (ds, "prepare",
+                        G_CALLBACK (on_obj_row_drag_prepare), self);
+      gtk_widget_add_controller (ol, GTK_EVENT_CONTROLLER (ds));
+
+      if (obj && obj->type == &group_type) {
+        /* a group row also accepts a drop → move that object into the group */
+        GtkDropTarget *dt = gtk_drop_target_new (G_TYPE_STRING,
+                                                 GDK_ACTION_MOVE);
+
+        g_signal_connect (dt, "drop", G_CALLBACK (on_group_row_drop), self);
+        gtk_widget_add_controller (ol, GTK_EVENT_CONTROLLER (dt));
+        gtk_widget_set_tooltip_text (ol, _("Drop an object here to add it to "
+                                           "this group"));
+      }
+    }
     gtk_box_append (GTK_BOX (vbox), ol);
     g_free (txt);
 
     if (obj && obj->type == &group_type) {
-      append_object_rows (vbox, group_objects (obj), depth + 1);
+      append_object_rows (vbox, group_objects (obj), depth + 1, self, layer);
     }
   }
 }
@@ -5548,7 +5750,7 @@ refresh_layers_list (DiaShell *self)
                       G_CALLBACK (on_layer_label_editing), self);
     gtk_box_append (GTK_BOX (vbox), name);
 
-    append_object_rows (vbox, dia_layer_get_object_list (l), 0);
+    append_object_rows (vbox, dia_layer_get_object_list (l), 0, self, l);
     if (oc == 0) {
       GtkWidget *empty = gtk_label_new (_("(empty)"));
 
@@ -5559,8 +5761,15 @@ refresh_layers_list (DiaShell *self)
       gtk_box_append (GTK_BOX (vbox), empty);
     }
 
-    /* on_layer_row_selected reads the index from the row's child (the vbox) */
+    /* on_layer_row_selected reads the index from the row's child (the vbox);
+     * the row is also a drop target → move a dragged object to this layer. */
     g_object_set_data (G_OBJECT (vbox), "dia-layer-index", GINT_TO_POINTER (i));
+    {
+      GtkDropTarget *dt = gtk_drop_target_new (G_TYPE_STRING, GDK_ACTION_MOVE);
+
+      g_signal_connect (dt, "drop", G_CALLBACK (on_layer_row_drop), self);
+      gtk_widget_add_controller (vbox, GTK_EVENT_CONTROLLER (dt));
+    }
     gtk_list_box_insert (lb, vbox, -1);
   }
   if (active_idx >= 0) {

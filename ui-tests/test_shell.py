@@ -511,6 +511,16 @@ def main():
         ok = any('rothandle OK' in (lab.name or '') for lab in labels)
         check("Rotated-object handles are grabbable at drawn positions", ok)
 
+    # 3af. Layers-panel moves: object -> another layer, and object -> into a group.
+    lm = find(app, name='uitest-layermove', roleName='push button')
+    check("DIA_UITEST layermove trigger present", lm)
+    if lm:
+        do_click(lm)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('layermove OK' in (lab.name or '') for lab in labels)
+        check("Move object between layers and into a group", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
