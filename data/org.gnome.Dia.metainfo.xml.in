@@ -33,6 +33,11 @@
     <id>dia.desktop</id>
   </provides>
   <releases>
+    <release version="1.0.0" date="2026-07-02">
+      <description>
+        <p>First release of the GTK4 / libadwaita port.</p>
+      </description>
+    </release>
     <release version="0.97.2" date="2011-12-18">
       <description>
         <p>Updated translations</p>

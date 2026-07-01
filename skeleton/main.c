@@ -87,6 +87,11 @@ on_activate (GApplication *app,
 {
   GtkWidget *window;
 
+  /* Use our app icon (looked up by name in the icon theme) for every window —
+   * without this GTK shows no icon in the titlebar/taskbar/dock. The icon
+   * (org.gnome.Dia.svg) ships in hicolor/scalable/apps of each bundle. */
+  gtk_window_set_default_icon_name (DIA_APP_ID);
+
   /* If we are activated again, just present the existing window. */
   window = GTK_WIDGET (gtk_application_get_active_window (GTK_APPLICATION (app)));
   if (window != NULL) {

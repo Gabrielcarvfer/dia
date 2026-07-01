@@ -149,7 +149,8 @@ jobs:
       - name: Install dependencies (Homebrew)
         run: |
           brew update
-          brew install gtk4 libadwaita meson ninja pkg-config libxml2 dylibbundler
+          brew install gtk4 libadwaita meson ninja pkg-config libxml2 dylibbundler \
+            librsvg
 
       - name: Build
         run: |
@@ -200,6 +201,20 @@ jobs:
           cp -R shapes "$APP/Contents/share/dia/shapes"
           rm -f "$APP/Contents/share/dia/shapes/meson.build" \
                 "$APP/Contents/share/dia/shapes/make-midpoint.pl"
+
+          # Dock/Finder icon: render the SVG at each size into an .iconset and
+          # pack it into Contents/Resources/dia.icns (Info.plist -> CFBundleIconFile).
+          # Best-effort: a missing icon shouldn't fail the release.
+          if command -v rsvg-convert >/dev/null; then
+            mkdir -p Dia.iconset
+            for s in 16 32 64 128 256 512; do
+              rsvg-convert -w "$s" -h "$s" data/org.gnome.Dia.svg \
+                -o "Dia.iconset/icon_${s}x${s}.png" || true
+              rsvg-convert -w "$((s*2))" -h "$((s*2))" data/org.gnome.Dia.svg \
+                -o "Dia.iconset/icon_${s}x${s}@2x.png" || true
+            done
+            iconutil -c icns Dia.iconset -o "$APP/Contents/Resources/dia.icns" || true
+          fi
 
           BIN="$APP/Contents/MacOS/dia"
 
@@ -342,6 +357,10 @@ jobs:
           glib-compile-schemas /ucrt64/share/glib-2.0/schemas \
             --targetdir dist/dia/share/glib-2.0/schemas || true
           cp -r /ucrt64/share/icons dist/dia/share/ 2>/dev/null || true
+          # Our app icon in the theme so the window/taskbar shows the Dia logo
+          # (gtk_window_set_default_icon_name looks it up by name at runtime).
+          mkdir -p dist/dia/share/icons/hicolor/scalable/apps
+          cp data/org.gnome.Dia.svg dist/dia/share/icons/hicolor/scalable/apps/
           # Shape libraries (Cisco/network/…): the app looks for them beside the
           # binary at <exe>/../share/dia/shapes -> dist/dia/share/dia/shapes.
           mkdir -p dist/dia/share/dia
