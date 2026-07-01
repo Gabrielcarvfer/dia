@@ -210,15 +210,20 @@ jobs:
           # to an identical "@executable_path/../libs/", producing duplicate
           # LC_RPATH entries that crash dyld; the dedup below fixes that.)
 
-          # De-duplicate LC_RPATH on the main binary. meson's build rpath and the
-          # rpath dylibbundler adds (-p @executable_path/../libs) can collide, and
-          # modern dyld ABORTS on a duplicate LC_RPATH ("termination reason: DYLD,
-          # duplicate LC_RPATH") — the app crashes on launch. Delete extra copies,
-          # keeping one of each. Must run BEFORE signing (which seals the binary).
+          # De-duplicate LC_RPATH on the main binary AND every bundled dylib.
+          # dylibbundler converts each of a Mach-O's rpaths to an identical
+          # "@executable_path/../libs/", so many end up with several duplicate
+          # LC_RPATH entries — and modern dyld ABORTS on a duplicate LC_RPATH
+          # ("termination reason: DYLD, duplicate LC_RPATH") when loading that
+          # file (dia OR e.g. libxpm-pixbuf). Delete extra copies, keeping one of
+          # each. Must run BEFORE signing (which seals each file).
           rpaths() { otool -l "$1" | awk '/cmd LC_RPATH/{r=1} r&&/ path /{print $2; r=0}'; }
-          for dup in $(rpaths "$BIN" | sort | uniq -d); do
-            while [ "$(rpaths "$BIN" | grep -Fxc "$dup")" -gt 1 ]; do
-              install_name_tool -delete_rpath "$dup" "$BIN"
+          for f in "$BIN" "$APP"/Contents/libs/*.dylib; do
+            [ -f "$f" ] || continue
+            for dup in $(rpaths "$f" | sort | uniq -d); do
+              while [ "$(rpaths "$f" | grep -Fxc "$dup")" -gt 1 ]; do
+                install_name_tool -delete_rpath "$dup" "$f"
+              done
             done
           done
 
