@@ -591,6 +591,16 @@ def main():
         ok = any('restack OK' in (lab.name or '') for lab in labels)
         check("Raise moves object up one step in draw order", ok)
 
+    # 3ao. Flip horizontal mirrors a line's endpoints (and undo restores).
+    fp = find(app, name='uitest-flip', roleName='push button')
+    check("DIA_UITEST flip trigger present", fp)
+    if fp:
+        do_click(fp)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('flip OK' in (lab.name or '') for lab in labels)
+        check("Flip mirrors geometry and undoes cleanly", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)

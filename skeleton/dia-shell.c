@@ -179,6 +179,7 @@ typedef enum {
   OP_CREATE, OP_DELETE, OP_MOVE, OP_HANDLE,
   OP_CHANGE,   /* a libdia DiaObjectChange (property edit, add/del corner, …) */
   OP_ROTATE,   /* a rotation by `degrees` about `from` (the stored centre) */
+  OP_FLIP,     /* a mirror about `from`; `degrees` != 0 ⇒ vertical (self-inverse) */
 } OpKind;
 
 typedef struct {
@@ -195,6 +196,8 @@ typedef struct {
  * the other rotation helpers). */
 static gboolean rotate_object_about (DiaObject *obj, double degrees,
                                      Point center);
+static gboolean flip_object_about (DiaObject *obj, gboolean horizontal,
+                                   Point center);
 static void update_connections_for (DiaObject *obj);
 
 static void
@@ -331,6 +334,10 @@ op_apply (DiaShell *self, UndoOp *op)   /* redo direction */
       rotate_object_about (op->obj, op->degrees, op->from);
       update_connections_for (op->obj);
       break;
+    case OP_FLIP:   /* self-inverse: same mirror undoes it */
+      flip_object_about (op->obj, op->degrees == 0.0, op->from);
+      update_connections_for (op->obj);
+      break;
     default:
       break;
   }
@@ -367,6 +374,10 @@ op_revert (DiaShell *self, UndoOp *op)  /* undo direction */
     case OP_ROTATE:
       /* inverse rotation about the same stored centre → exact undo */
       rotate_object_about (op->obj, 360.0 - op->degrees, op->from);
+      update_connections_for (op->obj);
+      break;
+    case OP_FLIP:   /* self-inverse: same mirror undoes it */
+      flip_object_about (op->obj, op->degrees == 0.0, op->from);
       update_connections_for (op->obj);
       break;
     default:
@@ -1883,6 +1894,81 @@ rotate_object_about (DiaObject *obj, double degrees, Point center)
   return TRUE;
 }
 
+/* Mirror @obj about @center (@horizontal reflects left↔right, else top↕bottom)
+ * via a reflection matrix, then pin its bbox centre back to @center. A pure
+ * reflection has determinant −1, which the box/ellipse transform decomposes
+ * badly — but those shapes are symmetric so a flip is a visual no-op; skip them.
+ * Returns FALSE if the object can't be transformed. */
+static gboolean
+flip_object_about (DiaObject *obj, gboolean horizontal, Point center)
+{
+  DiaMatrix m = {
+    .xx = horizontal ? -1.0 : 1.0, .xy = 0.0,
+    .yx = 0.0, .yy = horizontal ? 1.0 : -1.0,
+    .x0 = horizontal ? 2.0 * center.x : 0.0,
+    .y0 = horizontal ? 0.0 : 2.0 * center.y,
+  };
+
+  if (object_has_prop (obj, "elem_corner")) {
+    return FALSE;   /* box/ellipse/other elements: symmetric, nothing to do */
+  }
+  if (!obj->ops || !obj->ops->transform) {
+    return FALSE;
+  }
+  if (!dia_object_transform (obj, &m)) {
+    return FALSE;
+  }
+  {
+    double cx1 = (obj->bounding_box.left + obj->bounding_box.right) / 2.0;
+    double cy1 = (obj->bounding_box.top + obj->bounding_box.bottom) / 2.0;
+
+    if (fabs (cx1 - center.x) > 1e-6 || fabs (cy1 - center.y) > 1e-6) {
+      Point to = { obj->position.x + (center.x - cx1),
+                   obj->position.y + (center.y - cy1) };
+      DiaObjectChange *ch = dia_object_move (obj, &to);
+
+      g_clear_pointer (&ch, dia_object_change_unref);
+    }
+  }
+  return TRUE;
+}
+
+/* Record a flip (about @center) as an undoable op (self-inverse). */
+static void
+push_op_flip (DiaShell *self, DiaObject *obj, gboolean horizontal, Point center)
+{
+  UndoOp *op;
+
+  push_op (self, OP_MOVE, obj, center, center);
+  op = g_ptr_array_index (self->undo, self->undo_pos - 1);
+  op->kind = OP_FLIP;
+  op->degrees = horizontal ? 0.0 : 1.0;   /* 0 ⇒ horizontal, 1 ⇒ vertical */
+  op->from = center;
+}
+
+/* Flip every selected object about its own centre. */
+static void
+flip_selected (DiaShell *self, gboolean horizontal)
+{
+  guint done = 0;
+  char buf[64];
+
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    Point center = object_center (l->data);
+
+    if (flip_object_about (l->data, horizontal, center)) {
+      update_connections_for (l->data);
+      push_op_flip (self, l->data, horizontal, center);
+      done++;
+    }
+  }
+  gtk_widget_queue_draw (self->canvas);
+  g_snprintf (buf, sizeof (buf),
+              horizontal ? _("Flipped %u horizontally")
+                         : _("Flipped %u vertically"), done);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
 /* Rotate every selected object by @degrees (each about its own centre), and
  * record each as an undoable op. */
 static void
@@ -2027,6 +2113,8 @@ on_canvas_secondary (GtkGestureClick *gesture,
   ctx_add_action (box, self, _("Send to _Back"), "dia.to-back", NULL);
   ctx_add_action (box, self, _("Raise"), "dia.raise", NULL);
   ctx_add_action (box, self, _("Lower"), "dia.lower", NULL);
+  ctx_add_action (box, self, _("Flip _Horizontal"), "dia.flip-horizontal", NULL);
+  ctx_add_action (box, self, _("Flip _Vertical"), "dia.flip-vertical", NULL);
   ctx_add_action (box, self, _("_Group"), "dia.group", NULL);
   ctx_add_action (box, self, _("_Ungroup"), "dia.ungroup", NULL);
 
@@ -3058,6 +3146,18 @@ static void
 action_lower (GSimpleAction *a, GVariant *p, gpointer data)
 {
   restack_step (data, FALSE);
+}
+
+static void
+action_flip_h (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  flip_selected (data, TRUE);
+}
+
+static void
+action_flip_v (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  flip_selected (data, FALSE);
 }
 
 static void
@@ -5404,6 +5504,52 @@ on_uitest_restack (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): flipping a line horizontally mirrors each endpoint
+ * about the line's centre x (and leaves y alone), and undo restores it. */
+static void
+on_uitest_flip (GtkButton *button, DiaShell *self)
+{
+  DiaObject *line;
+  Point c, h0b, h1b, h0a, h1a, h0u;
+  gboolean mirror_ok, nontrivial, undo_ok;
+  char buf[80];
+
+  dia_shell_set_new_diagram (self);
+  line = diagram_create_object (self, "Standard - Line", (Point) { 3, 3 });
+  if (!line || line->num_handles < 2) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("flip FAIL (no line)"));
+    return;
+  }
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, line);
+  self->selected = line;
+
+  h0b = line->handles[0]->pos;
+  h1b = line->handles[1]->pos;
+  c = object_center (line);
+  flip_selected (self, TRUE);
+  h0a = line->handles[0]->pos;
+  h1a = line->handles[1]->pos;
+  mirror_ok = fabs (h0a.x - (2 * c.x - h0b.x)) < 0.05 &&
+              fabs (h1a.x - (2 * c.x - h1b.x)) < 0.05 &&
+              fabs (h0a.y - h0b.y) < 0.05 && fabs (h1a.y - h1b.y) < 0.05;
+  nontrivial = fabs (h0b.x - h1b.x) > 0.05;   /* line has horizontal extent */
+
+  g_action_group_activate_action (self->actions, "undo", NULL);
+  h0u = line->handles[0]->pos;
+  undo_ok = fabs (h0u.x - h0b.x) < 0.05 && fabs (h0u.y - h0b.y) < 0.05;
+
+  if (mirror_ok && nontrivial && undo_ok) {
+    g_snprintf (buf, sizeof (buf), _("flip OK (mirror+undo)"));
+  } else {
+    g_snprintf (buf, sizeof (buf), _("flip FAIL (m=%d nt=%d u=%d)"),
+                mirror_ok, nontrivial, undo_ok);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5596,6 +5742,8 @@ static const GActionEntry dia_actions[] = {
   { "to-back",    action_to_back,    NULL, NULL, NULL },
   { "raise",      action_raise,      NULL, NULL, NULL },
   { "lower",      action_lower,      NULL, NULL, NULL },
+  { "flip-horizontal", action_flip_h, NULL, NULL, NULL },
+  { "flip-vertical",   action_flip_v, NULL, NULL, NULL },
   { "align",      action_align,      "s",  NULL, NULL },
   { "delete",     action_delete,     NULL, NULL, NULL },
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
@@ -5758,6 +5906,8 @@ build_primary_menu_button (void)
   g_menu_append (edit, _("Send to _Back"), "dia.to-back");
   g_menu_append (edit, _("_Raise"), "dia.raise");
   g_menu_append (edit, _("_Lower"), "dia.lower");
+  g_menu_append (edit, _("Flip _Horizontal"), "dia.flip-horizontal");
+  g_menu_append (edit, _("Flip _Vertical"), "dia.flip-vertical");
   {
     GMenu *align = g_menu_new ();
     g_menu_append (align, _("Left"), "dia.align::left");
@@ -6062,6 +6212,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *zf = gtk_button_new_with_label ("uitest-zoomfit");
     GtkWidget *st = gtk_button_new_with_label ("uitest-selecttype");
     GtkWidget *rs = gtk_button_new_with_label ("uitest-restack");
+    GtkWidget *fp = gtk_button_new_with_label ("uitest-flip");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -6100,6 +6251,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (zf), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (st), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (rs), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (fp), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -6138,6 +6290,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (zf, "clicked", G_CALLBACK (on_uitest_zoomfit), self);
     g_signal_connect (st, "clicked", G_CALLBACK (on_uitest_selecttype), self);
     g_signal_connect (rs, "clicked", G_CALLBACK (on_uitest_restack), self);
+    g_signal_connect (fp, "clicked", G_CALLBACK (on_uitest_flip), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -6176,6 +6329,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), zf);
     gtk_box_append (GTK_BOX (bar), st);
     gtk_box_append (GTK_BOX (bar), rs);
+    gtk_box_append (GTK_BOX (bar), fp);
   }
 
   return bar;
