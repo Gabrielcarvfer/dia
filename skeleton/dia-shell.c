@@ -5738,8 +5738,10 @@ on_obj_row_drag_prepare (GtkDragSource *src, double x, double y, DiaShell *self)
   if (!self->dnd_object) {
     return NULL;
   }
-  /* Local drag; the payload is a marker — the object is passed via self. */
-  return gdk_content_provider_new_typed (G_TYPE_STRING, "dia-object");
+  /* Local drag; the object is passed via self. Use a POINTER type (not a
+   * string) so an editable text widget — e.g. the layer-name GtkEditableLabel
+   * we drop over — doesn't accept the payload as text and rename itself. */
+  return gdk_content_provider_new_typed (G_TYPE_POINTER, self->dnd_object);
 }
 
 /* Clicking a group row selects the objects inside the group (its direct
@@ -5806,7 +5808,7 @@ append_object_rows (GtkWidget *vbox, GList *objects, int depth,
       if (obj && obj->type == &group_type) {
         /* a group row accepts a drop → move that object into the group, and a
          * click → select the group's contents */
-        GtkDropTarget *dt = gtk_drop_target_new (G_TYPE_STRING,
+        GtkDropTarget *dt = gtk_drop_target_new (G_TYPE_POINTER,
                                                  GDK_ACTION_MOVE);
         GtkGesture *click = gtk_gesture_click_new ();
 
@@ -5885,7 +5887,7 @@ refresh_layers_list (DiaShell *self)
      * the row is also a drop target → move a dragged object to this layer. */
     g_object_set_data (G_OBJECT (vbox), "dia-layer-index", GINT_TO_POINTER (i));
     {
-      GtkDropTarget *dt = gtk_drop_target_new (G_TYPE_STRING, GDK_ACTION_MOVE);
+      GtkDropTarget *dt = gtk_drop_target_new (G_TYPE_POINTER, GDK_ACTION_MOVE);
 
       g_signal_connect (dt, "drop", G_CALLBACK (on_layer_row_drop), self);
       gtk_widget_add_controller (vbox, GTK_EVENT_CONTROLLER (dt));
