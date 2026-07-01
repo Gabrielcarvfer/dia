@@ -37,6 +37,20 @@
 #include "geometry.h"
 #include "register-objects.h"
 
+/* pango/fontconfig populate process-global caches on first font use that are
+ * never freed; LeakSanitizer flags them as leaks (unrelated to this test).
+ * Suppress just those so a genuine leak in our own code is still caught. */
+const char *__lsan_default_suppressions (void);
+
+const char *
+__lsan_default_suppressions (void)
+{
+  return "leak:libfontconfig\n"
+         "leak:libpangoft2\n"
+         "leak:libpango-\n"
+         "leak:libglib-\n";
+}
+
 /* 60 wide glyphs: many cm of text at any sane font size, vastly wider than the
  * 1 cm shape below, so the threshold check is robust to the test font. */
 #define LONG_LABEL "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"

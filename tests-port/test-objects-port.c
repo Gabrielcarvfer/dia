@@ -22,6 +22,20 @@
 #include "geometry.h"
 #include "register-objects.h"
 
+/* pango/fontconfig populate process-global caches on first font use that are
+ * never freed; LeakSanitizer flags them as leaks (unrelated to these tests).
+ * Suppress just those so a genuine leak in our own code is still caught. */
+const char *__lsan_default_suppressions (void);
+
+const char *
+__lsan_default_suppressions (void)
+{
+  return "leak:libfontconfig\n"
+         "leak:libpangoft2\n"
+         "leak:libpango-\n"
+         "leak:libglib-\n";
+}
+
 
 static void
 exercise_type (gconstpointer user_data)
