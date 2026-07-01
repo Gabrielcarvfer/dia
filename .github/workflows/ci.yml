@@ -152,10 +152,14 @@ jobs:
           cp .github/packaging/Info.plist "$APP/Contents/Info.plist"
           cp build/skeleton/dia "$APP/Contents/MacOS/dia"
           # Copy & rewrite the Homebrew dylib dependencies into the bundle.
+          # -s adds the meson build dir so dylibbundler can find the bundled
+          # xpm-pixbuf subproject's libxpm-pixbuf.0.dylib (not on a standard
+          # path); otherwise it prompts interactively and hangs the CI.
           dylibbundler -od -b -cd \
             -x "$APP/Contents/MacOS/dia" \
             -d "$APP/Contents/libs" \
-            -p "@executable_path/../libs"
+            -p "@executable_path/../libs" \
+            -s "$PWD/build/subprojects/xpm-pixbuf"
           # Best-effort runtime data: gdk-pixbuf loaders + compiled GSettings schemas.
           GLIB_PREFIX="$(brew --prefix glib)"
           PIXBUF_PREFIX="$(brew --prefix gdk-pixbuf)"
@@ -222,6 +226,10 @@ jobs:
           # ldd resolves the full DLL closure; copy every dependency from UCRT64.
           ldd dist/dia/bin/dia.exe | awk '/ucrt64/ {print $3}' | sort -u \
             | while read -r dll; do cp -u "$dll" dist/dia/bin/; done
+          # The bundled xpm-pixbuf subproject DLL lives in the build tree, not
+          # UCRT64, so ldd's /ucrt64/ filter misses it — copy it explicitly.
+          cp -u build/subprojects/xpm-pixbuf/libxpm-pixbuf*.dll dist/dia/bin/ \
+            2>/dev/null || true
           # GTK4 runtime data: GdkPixbuf loaders, compiled GSettings schemas, icons.
           mkdir -p dist/dia/lib dist/dia/share/glib-2.0/schemas
           cp -r /ucrt64/lib/gdk-pixbuf-2.0 dist/dia/lib/ 2>/dev/null || true
