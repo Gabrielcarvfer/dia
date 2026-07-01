@@ -455,14 +455,18 @@ message_update_data(Message *message)
   connection_update_handles(conn);
   connection_update_boundingbox(conn);
 
-  message->text_width =
-    dia_font_string_width(message->text, message->font, message->font_height);
+  message->text_width = 0.0;
+  rect.top = message->text_pos.y;
+  if (message->text && message->text[0]) {
+    message->text_width =
+      dia_font_string_width(message->text, message->font, message->font_height);
+    rect.top -=
+      dia_font_ascent(message->text, message->font, message->font_height);
+  }
 
   /* Add boundingbox for text: */
   rect.left = message->text_pos.x-message->text_width/2;
   rect.right = rect.left + message->text_width;
-  rect.top = message->text_pos.y -
-      dia_font_ascent(message->text, message->font, message->font_height);
   rect.bottom = rect.top + message->font_height;
   rectangle_union(&obj->bounding_box, &rect);
 }

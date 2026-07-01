@@ -302,10 +302,10 @@ dependency_update_data(Dependency *dep)
   }
 
   dep->text_width = 0.0;
-  if (dep->name)
+  if (dep->name && dep->name[0])
     dep->text_width = dia_font_string_width(dep->name, dep->font,
 					dep->font_height);
-  if (dep->stereotype)
+  if (dep->stereotype && dep->stereotype[0])
     dep->text_width = MAX(dep->text_width,
 			  dia_font_string_width(dep->stereotype, dep->font,
 					    dep->font_height));
@@ -336,7 +336,7 @@ dependency_update_data(Dependency *dep)
       dep->text_align = DIA_ALIGN_CENTRE;
       dep->text_pos.x = 0.5*(points[i].x+points[i+1].x);
       dep->text_pos.y = points[i].y;
-      if (dep->name)
+      if (dep->name && dep->name[0])
         dep->text_pos.y -= dia_font_descent (dep->name,
                                              dep->font,
                                              dep->font_height);
@@ -346,7 +346,7 @@ dependency_update_data(Dependency *dep)
       dep->text_pos.x = points[i].x + 0.1;
       dep->text_pos.y =
         0.5*(points[i].y+points[i+1].y);
-      if (dep->name)
+      if (dep->name && dep->name[0])
         dep->text_pos.y -= dia_font_descent (dep->name,
                                              dep->font,
                                              dep->font_height);
@@ -361,7 +361,7 @@ dependency_update_data(Dependency *dep)
     rect.left -= dep->text_width/2.0;
   rect.right = rect.left + dep->text_width;
   rect.top = dep->text_pos.y;
-  if (dep->name)
+  if (dep->name && dep->name[0])
     rect.top -= dia_font_ascent(dep->name,
 				dep->font,
 				dep->font_height);

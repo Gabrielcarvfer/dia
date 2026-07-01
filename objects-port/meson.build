@@ -39,6 +39,20 @@ libdia_objects_sources = files(
   objs / 'ER' / 'entity.c',
   objs / 'ER' / 'participation.c',
   objs / 'ER' / 'relationship.c',
+  # UML (uml.c excluded -- its dia_plugin_init would clash and it defines the
+  # shared _uml_visibilities/_uml_inheritances arrays, which we redefine in
+  # register-objects.c instead). Only GTK4-clean objects are listed here.
+  objs / 'UML' / 'stereotype.c',      # shared helper, no GTK
+  objs / 'UML' / 'umlattribute.c',    # UMLAttribute boxed type + visible_char[]
+  # connection-based relationship objects (generic StdProp dialog, no custom UI)
+  objs / 'UML' / 'association.c',
+  objs / 'UML' / 'dependency.c',
+  objs / 'UML' / 'generalization.c',
+  objs / 'UML' / 'realizes.c',
+  objs / 'UML' / 'implements.c',
+  objs / 'UML' / 'constraint.c',
+  objs / 'UML' / 'message.c',
+  objs / 'UML' / 'transition.c',
   # custom-shapes engine: loads .shape XML files as object types (custom.c's
   # dia_plugin_init is the only one linked now and is left unused; we call
   # custom_object_load ourselves from register-objects.c).

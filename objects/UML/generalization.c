@@ -301,7 +301,7 @@ generalization_update_data(Generalization *genlz)
   descent = 0.0;
   ascent = 0.0;
 
-  if (genlz->name) {
+  if (genlz->name && genlz->name[0]) {
     genlz->text_width = dia_font_string_width(genlz->name, genlz->font,
                                               genlz->font_height);
     descent = dia_font_descent(genlz->name,
@@ -309,12 +309,12 @@ generalization_update_data(Generalization *genlz)
     ascent = dia_font_ascent(genlz->name,
                              genlz->font,genlz->font_height);
   }
-  if (genlz->stereotype) {
+  if (genlz->stereotype && genlz->stereotype[0]) {
     genlz->text_width = MAX(genlz->text_width,
                             dia_font_string_width(genlz->stereotype,
                                                   genlz->font,
                                                   genlz->font_height));
-    if (!genlz->name) {
+    if (!genlz->name || !genlz->name[0]) {
       descent = dia_font_descent(genlz->stereotype,
                                 genlz->font,genlz->font_height);
     }

@@ -9,9 +9,33 @@
  */
 #include "config.h"
 
+#include <glib/gi18n-lib.h>
+
 #include "object.h"
 #include "group.h"
+#include "properties.h"
 #include "register-objects.h"
+
+/* --- UML shared enum data -----------------------------------------------
+ * The UML set's registration file objects/UML/uml.c is excluded (its
+ * dia_plugin_init would clash with custom.c's), but it also defines these two
+ * PropEnumData arrays referenced by several UML objects (association.c,
+ * umloperation.c, umlattribute.c). Provide them here. Keep in sync with uml.h
+ * (DiaUmlVisibility / DiaUmlInheritanceType). */
+PropEnumData _uml_visibilities[] = {
+  { N_("Public"), 0 /* DIA_UML_PUBLIC */ },
+  { N_("Private"), 1 /* DIA_UML_PRIVATE */ },
+  { N_("Protected"), 2 /* DIA_UML_PROTECTED */ },
+  { N_("Implementation"), 3 /* DIA_UML_IMPLEMENTATION */ },
+  { NULL, 0 }
+};
+
+PropEnumData _uml_inheritances[] = {
+  { N_("Abstract"), 0 /* DIA_UML_ABSTRACT */ },
+  { N_("Polymorphic (virtual)"), 1 /* DIA_UML_POLYMORPHIC */ },
+  { N_("Leaf (final)"), 2 /* DIA_UML_LEAF */ },
+  { NULL, 0 }
+};
 
 /* standard */
 extern DiaObjectType *_box_type;
@@ -31,6 +55,11 @@ extern DiaObjectType *_outline_type;
 extern DiaObjectType fc_box_type, diamond_type, fc_ellipse_type, pgram_type;
 extern DiaObjectType basestation_type, bus_type, radiocell_type, wanlink_type;
 extern DiaObjectType attribute_type, entity_type, participation_type, relationship_type;
+
+/* UML relationship (connection) objects */
+extern DiaObjectType association_type, dependency_type, generalization_type;
+extern DiaObjectType realizes_type, implements_type, constraint_type;
+extern DiaObjectType message_type, uml_transition_type;
 
 void
 dia_port_register_objects (void)
@@ -62,6 +91,16 @@ dia_port_register_objects (void)
   object_register_type (&entity_type);
   object_register_type (&participation_type);
   object_register_type (&relationship_type);
+
+  /* UML relationship (connection) objects */
+  object_register_type (&association_type);
+  object_register_type (&dependency_type);
+  object_register_type (&generalization_type);
+  object_register_type (&realizes_type);
+  object_register_type (&implements_type);
+  object_register_type (&constraint_type);
+  object_register_type (&message_type);
+  object_register_type (&uml_transition_type);
 
   object_register_type (&group_type);   /* so groups can be saved/loaded */
 }

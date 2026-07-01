@@ -301,10 +301,10 @@ realizes_update_data(Realizes *realize)
     realize->st_stereotype =  string_to_stereotype(realize->stereotype);
   }
 
-  if (realize->name)
+  if (realize->name && realize->name[0])
     realize->text_width = dia_font_string_width(realize->name, realize->font,
 					    realize->font_height);
-  if (realize->stereotype)
+  if (realize->stereotype && realize->stereotype[0])
     realize->text_width = MAX(realize->text_width,
 			      dia_font_string_width(realize->stereotype,
 						realize->font,
@@ -335,7 +335,7 @@ realizes_update_data(Realizes *realize)
       realize->text_align = DIA_ALIGN_CENTRE;
       realize->text_pos.x = 0.5*(points[i].x+points[i+1].x);
       realize->text_pos.y = points[i].y;
-      if (realize->name)
+      if (realize->name && realize->name[0])
         realize->text_pos.y -=
           dia_font_descent (realize->name,realize->font, realize->font_height);
       break;
@@ -343,7 +343,7 @@ realizes_update_data(Realizes *realize)
       realize->text_align = DIA_ALIGN_LEFT;
       realize->text_pos.x = points[i].x + 0.1;
       realize->text_pos.y = 0.5*(points[i].y+points[i+1].y);
-      if (realize->name)
+      if (realize->name && realize->name[0])
         realize->text_pos.y -=
           dia_font_descent (realize->name, realize->font, realize->font_height);
       break;
@@ -358,7 +358,7 @@ realizes_update_data(Realizes *realize)
   }
   rect.right = rect.left + realize->text_width;
   rect.top = realize->text_pos.y;
-  if (realize->name)
+  if (realize->name && realize->name[0])
     rect.top -= dia_font_ascent(realize->name,realize->font, realize->font_height);
   rect.bottom = rect.top + 2*realize->font_height;
 

@@ -569,7 +569,7 @@ association_set_state(Association *assoc, AssociationState *state)
   assoc->text_width = 0.0;
   assoc->ascent = 0.0;
   assoc->descent = 0.0;
-  if (assoc->name != NULL) {
+  if (assoc->name != NULL && *assoc->name) {
     assoc->text_width =
       dia_font_string_width(assoc->name, assoc->font, assoc->font_height);
     assoc->ascent =
@@ -603,7 +603,7 @@ association_set_state(Association *assoc, AssociationState *state)
       end->role_descent =
           dia_font_ascent(end->role, assoc->font, assoc->font_height);
     }
-    if (end->multiplicity != NULL) {
+    if (end->multiplicity != NULL && *end->multiplicity) {
       end->text_width = MAX(end->text_width,
                             dia_font_string_width(end->multiplicity,
                                                   assoc->font,

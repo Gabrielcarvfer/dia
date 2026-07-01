@@ -374,7 +374,7 @@ implements_update_data(Implements *implements)
   DiaRectangle rect;
 
   implements->text_width = 0.0;
-  if (implements->text)
+  if (implements->text && implements->text[0])
     implements->text_width = dia_font_string_width(implements->text,
                                                    implements->font,
                                                    implements->font_height);
@@ -417,7 +417,7 @@ implements_update_data(Implements *implements)
   rect.left = implements->text_pos.x;
   rect.right = rect.left + implements->text_width;
   rect.top = implements->text_pos.y;
-  if (implements->text)
+  if (implements->text && implements->text[0])
     rect.top -= dia_font_ascent(implements->text,
 				implements->font,
 				implements->font_height);
