@@ -601,6 +601,16 @@ def main():
         ok = any('flip OK' in (lab.name or '') for lab in labels)
         check("Flip mirrors geometry and undoes cleanly", ok)
 
+    # 3ap. Select Connected grows the selection along connections.
+    sc = find(app, name='uitest-selconnected', roleName='push button')
+    check("DIA_UITEST selconnected trigger present", sc)
+    if sc:
+        do_click(sc)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('selconnected OK' in (lab.name or '') for lab in labels)
+        check("Select Connected follows connections", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)

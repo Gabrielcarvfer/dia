@@ -2601,6 +2601,9 @@ on_canvas_key (GtkEventControllerKey *controller,
       }
       return TRUE;
     }
+    case GDK_KEY_F11:          /* toggle fullscreen */
+      g_action_group_activate_action (self->actions, "fullscreen", NULL);
+      return TRUE;
     case GDK_KEY_Page_Up:      /* raise the selection one step */
       g_action_group_activate_action (self->actions, "raise", NULL);
       return TRUE;
@@ -2968,6 +2971,63 @@ action_select_same_type (GSimpleAction *a, GVariant *p, gpointer data)
   gtk_widget_queue_draw (self->canvas);
   g_snprintf (buf, sizeof (buf), _("Selected %d × %s"), count, t->name);
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+/* Add to the selection every object directly connected to it — via one of its
+ * handles (outgoing) or via one of its connection points (incoming). */
+static void
+action_select_connected (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GHashTable *add = g_hash_table_new (g_direct_hash, g_direct_equal);
+  GHashTableIter it;
+  gpointer key;
+  int count = 0;
+  char buf[64];
+
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    DiaObject *o = l->data;
+
+    for (int h = 0; h < o->num_handles; h++) {
+      if (o->handles[h]->connected_to) {
+        g_hash_table_add (add, o->handles[h]->connected_to->object);
+      }
+    }
+    for (int c = 0; c < o->num_connections; c++) {
+      for (GList *cc = o->connections[c]->connected; cc; cc = cc->next) {
+        g_hash_table_add (add, cc->data);
+      }
+    }
+  }
+  g_hash_table_iter_init (&it, add);
+  while (g_hash_table_iter_next (&it, &key, NULL)) {
+    if (!g_list_find (self->diagram->selected, key)) {
+      data_select (self->diagram, key);
+      self->selected = key;
+      count++;
+    }
+  }
+  g_hash_table_destroy (add);
+  gtk_widget_queue_draw (self->canvas);
+  g_snprintf (buf, sizeof (buf), _("Added %d connected"), count);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+/* Toggle the window between fullscreen and normal (F11). */
+static void
+action_fullscreen (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GtkWidget *root = GTK_WIDGET (gtk_widget_get_root (self->canvas));
+
+  if (!GTK_IS_WINDOW (root)) {
+    return;
+  }
+  if (gtk_window_is_fullscreen (GTK_WINDOW (root))) {
+    gtk_window_unfullscreen (GTK_WINDOW (root));
+  } else {
+    gtk_window_fullscreen (GTK_WINDOW (root));
+  }
 }
 
 /* Combine the selected objects into a Group (unlink them from the layer, wrap
@@ -5550,6 +5610,36 @@ on_uitest_flip (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): Select Connected from a box picks up the line
+ * joined to it. */
+static void
+on_uitest_selconnected (GtkButton *button, DiaShell *self)
+{
+  DiaObject *bx, *line;
+  int cnt;
+  char buf[80];
+
+  dia_shell_set_new_diagram (self);
+  bx = diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  line = diagram_create_object (self, "Standard - Line", (Point) { 2, 2 });
+  if (bx && line && line->num_handles > 0 && bx->num_connections > 0) {
+    object_connect (line, line->handles[0], bx->connections[0]);
+  }
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, bx);
+  self->selected = bx;
+
+  g_action_group_activate_action (self->actions, "select-connected", NULL);
+  cnt = g_list_length (self->diagram->selected);
+
+  g_snprintf (buf, sizeof (buf),
+              cnt == 2 ? _("selconnected OK (%d)")
+                       : _("selconnected FAIL (%d)"), cnt);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5736,6 +5826,8 @@ static const GActionEntry dia_actions[] = {
   { "select-none", action_select_none, NULL, NULL, NULL },
   { "select-invert", action_select_invert, NULL, NULL, NULL },
   { "select-same-type", action_select_same_type, NULL, NULL, NULL },
+  { "select-connected", action_select_connected, NULL, NULL, NULL },
+  { "fullscreen", action_fullscreen, NULL, NULL, NULL },
   { "group",      action_group,      NULL, NULL, NULL },
   { "ungroup",    action_ungroup,    NULL, NULL, NULL },
   { "to-front",   action_to_front,   NULL, NULL, NULL },
@@ -5900,6 +5992,7 @@ build_primary_menu_button (void)
   g_menu_append (edit, _("Select _None"), "dia.select-none");
   g_menu_append (edit, _("_Invert Selection"), "dia.select-invert");
   g_menu_append (edit, _("Select Same _Type"), "dia.select-same-type");
+  g_menu_append (edit, _("Select _Connected"), "dia.select-connected");
   g_menu_append (edit, _("_Group"), "dia.group");
   g_menu_append (edit, _("_Ungroup"), "dia.ungroup");
   g_menu_append (edit, _("Bring to _Front"), "dia.to-front");
@@ -5928,6 +6021,7 @@ build_primary_menu_button (void)
   g_menu_append (view, _("Zoom _Out"), "dia.zoom-out");
   g_menu_append (view, _("_Reset Zoom"), "dia.zoom-reset");
   g_menu_append (view, _("Zoom to _Fit"), "dia.zoom-fit");
+  g_menu_append (view, _("_Fullscreen"), "dia.fullscreen");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (view));
 
   g_menu_append (app, _("_About Dia"), "app.about");
@@ -6213,6 +6307,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *st = gtk_button_new_with_label ("uitest-selecttype");
     GtkWidget *rs = gtk_button_new_with_label ("uitest-restack");
     GtkWidget *fp = gtk_button_new_with_label ("uitest-flip");
+    GtkWidget *sc = gtk_button_new_with_label ("uitest-selconnected");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -6252,6 +6347,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (st), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (rs), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (fp), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (sc), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -6291,6 +6387,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (st, "clicked", G_CALLBACK (on_uitest_selecttype), self);
     g_signal_connect (rs, "clicked", G_CALLBACK (on_uitest_restack), self);
     g_signal_connect (fp, "clicked", G_CALLBACK (on_uitest_flip), self);
+    g_signal_connect (sc, "clicked", G_CALLBACK (on_uitest_selconnected), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -6330,6 +6427,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), st);
     gtk_box_append (GTK_BOX (bar), rs);
     gtk_box_append (GTK_BOX (bar), fp);
+    gtk_box_append (GTK_BOX (bar), sc);
   }
 
   return bar;
