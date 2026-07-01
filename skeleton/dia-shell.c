@@ -5794,6 +5794,9 @@ append_object_rows (GtkWidget *vbox, GList *objects, int depth,
     if (depth == 0) {   /* only top-level objects can be moved between layers */
       GtkDragSource *ds = gtk_drag_source_new ();
 
+      /* MUST match the layer/group drop targets' GDK_ACTION_MOVE, else the
+       * drop is rejected as an incompatible action. */
+      gtk_drag_source_set_actions (ds, GDK_ACTION_MOVE);
       g_object_set_data (G_OBJECT (ol), "dnd-obj", obj);
       g_object_set_data (G_OBJECT (ol), "dnd-layer", layer);
       g_signal_connect (ds, "prepare",
