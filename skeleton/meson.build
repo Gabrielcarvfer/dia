@@ -145,3 +145,31 @@ if get_option('tests') and python3_prog.found()
     env: {'DIA_BIN': dia_skeleton_exe.full_path()},
   )
 endif
+
+# Packaging-metadata validation. The port build doesn't descend into data/
+# (where upstream runs these), yet the AppImage ships a .desktop and the
+# AppStream metainfo — validate both so a malformed one is caught here rather
+# than by linuxdeploy or a software centre. Optional: skipped if the validators
+# aren't installed.
+if get_option('tests')
+  desktop_file_validate = find_program('desktop-file-validate', required: false)
+  if desktop_file_validate.found()
+    test(
+      'validate-desktop',
+      desktop_file_validate,
+      args: [meson.project_source_root() / '.github' / 'packaging'
+             / 'org.gnome.Dia.desktop'],
+    )
+  endif
+  appstreamcli = find_program('appstreamcli', required: false)
+  if appstreamcli.found()
+    test(
+      'validate-appstream',
+      appstreamcli,
+      args: [
+        'validate', '--no-net',
+        meson.project_source_root() / 'data' / 'org.gnome.Dia.metainfo.xml.in',
+      ],
+    )
+  endif
+endif
