@@ -41,6 +41,14 @@
 
 #include "debug.h"
 
+/* GTK4 port: the bespoke class property dialog (class_dialog.c and the
+ * attribute/operation/template pages) is heavy, not-yet-ported GTK3 code, so
+ * it is excluded from the port build. Fall back to the generic StdProp dialog
+ * (object_create_props_dialog / object_apply_props_from_dialog): UMLClass fully
+ * describes its properties via umlclass_describe_props, so this is a working
+ * (if less specialised) editor. Flip to 1 once the custom dialog is ported. */
+#define UMLCLASS_CUSTOM_DIALOG 0
+
 #define UMLCLASS_BORDER 0.1
 #define UMLCLASS_UNDERLINEWIDTH 0.05
 #define UMLCLASS_TEMPLATE_OVERLAY_X 2.3
@@ -84,8 +92,10 @@ static void umlclass_set_props(UMLClass *umlclass, GPtrArray *props);
 static void fill_in_fontdata(UMLClass *umlclass);
 static int umlclass_num_dynamic_connectionpoints(UMLClass *class);
 
+#if UMLCLASS_CUSTOM_DIALOG
 static DiaObjectChange *_umlclass_apply_props_from_dialog (UMLClass  *umlclass,
                                                            GtkWidget *widget);
+#endif
 
 static ObjectTypeOps umlclass_type_ops =
 {
@@ -125,7 +135,7 @@ static ObjectOps umlclass_ops = {
   (CopyFunc)            umlclass_copy,
   (MoveFunc)            umlclass_move,
   (MoveHandleFunc)      umlclass_move_handle,
-#if 1
+#if UMLCLASS_CUSTOM_DIALOG
   (GetPropertiesFunc)   umlclass_get_properties,
   (ApplyPropertiesDialogFunc) _umlclass_apply_props_from_dialog,
 #else
@@ -253,6 +263,7 @@ static PropDescription umlclass_props[] = {
 };
 
 
+#if UMLCLASS_CUSTOM_DIALOG
 DiaObjectChange *
 _umlclass_apply_props_from_dialog(UMLClass *umlclass, GtkWidget *widget)
 {
@@ -263,6 +274,7 @@ _umlclass_apply_props_from_dialog(UMLClass *umlclass, GtkWidget *widget)
   else
     return umlclass_apply_props_from_dialog (umlclass, widget);
 }
+#endif
 
 
 static PropDescription *
@@ -2031,9 +2043,11 @@ umlclass_destroy(UMLClass *umlclass)
 
   g_clear_pointer (&umlclass->stereotype_string, g_free);
 
+#if UMLCLASS_CUSTOM_DIALOG
   if (umlclass->properties_dialog != NULL) {
     umlclass_dialog_free (umlclass->properties_dialog);
   }
+#endif
 }
 
 static DiaObject *

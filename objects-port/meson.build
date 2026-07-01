@@ -70,6 +70,14 @@ libdia_objects_sources = files(
   objs / 'UML' / 'activity.c',
   objs / 'UML' / 'object.c',
   objs / 'UML' / 'classicon.c',
+  # UML Class: the object + its data sub-types. The bespoke property dialog
+  # (class_dialog.c and the attribute/operation/template pages) is heavy GTK3
+  # code and is NOT compiled; class.c falls back to the generic StdProp dialog
+  # (see UMLCLASS_CUSTOM_DIALOG in class.c).
+  objs / 'UML' / 'umloperation.c',
+  objs / 'UML' / 'umlparameter.c',
+  objs / 'UML' / 'umlformalparameter.c',
+  objs / 'UML' / 'class.c',
   # custom-shapes engine: loads .shape XML files as object types (custom.c's
   # dia_plugin_init is the only one linked now and is left unused; we call
   # custom_object_load ourselves from register-objects.c).

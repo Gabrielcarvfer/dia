@@ -68,6 +68,9 @@ extern DiaObjectType branch_type, fork_type, lifeline_type, state_type;
 extern DiaObjectType state_term_type, activity_type, objet_type, umlobject_type;
 extern DiaObjectType classicon_type;
 
+/* UML Class (custom dialog excluded; uses the generic StdProp dialog) */
+extern DiaObjectType umlclass_type;
+
 void
 dia_port_register_objects (void)
 {
@@ -127,6 +130,8 @@ dia_port_register_objects (void)
   object_register_type (&objet_type);
   object_register_type (&umlobject_type);
   object_register_type (&classicon_type);
+
+  object_register_type (&umlclass_type);
 
   object_register_type (&group_type);   /* so groups can be saved/loaded */
 }
