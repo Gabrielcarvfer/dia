@@ -76,6 +76,8 @@ typedef struct {
   Handle     *drag_handle;       /* handle being dragged, or NULL for a move */
   int         drag_handle_idx;   /* its index in selected->handles (for undo) */
   Point       drag_handle_start; /* the handle's position at drag start */
+  double      drag_angle;        /* selected object's rotation at drag start */
+  Point       drag_center;       /* its rotation centre at drag start */
   /* Multi-select: a rubber-band on empty canvas, and a snapshot of the moving
    * objects' start positions so a drag moves the whole selection together. */
   gboolean    rubber_band;
@@ -431,8 +433,56 @@ draw_diagram (cairo_t *cr, DiagramData *diagram)
 }
 
 
+/* The bbox centre of @obj (its natural rotation centre). For a rotated element
+ * the bbox stays axis-aligned around the un-rotated extent, so this is exactly
+ * the centre the object rotates its geometry about. */
+static Point
+object_center (DiaObject *obj)
+{
+  Point c = {
+    (obj->bounding_box.left + obj->bounding_box.right) / 2.0,
+    (obj->bounding_box.top + obj->bounding_box.bottom) / 2.0,
+  };
+  return c;
+}
+
+/* The object's rotation angle in degrees via its "angle" StdProp (0 if it has
+ * none, e.g. lines/polygons or an unrotated box). */
+static double
+object_angle (DiaObject *obj)
+{
+  static PropDescription d[] = { { "angle", PROP_TYPE_REAL }, PROP_DESC_END };
+  GPtrArray *props = prop_list_from_descs (d, pdtpp_true);
+  double a;
+
+  dia_object_get_properties (obj, props);
+  a = ((RealProperty *) g_ptr_array_index (props, 0))->real_data;
+  prop_list_free (props);
+  return a;
+}
+
+/* Rotate @p about @c by @deg degrees, using the SAME matrix convention the
+ * element objects draw with (_box_get_poly / *_update_data), so rotated handle
+ * positions line up exactly with the drawn shape. */
+static Point
+rotate_about_deg (Point p, Point c, double deg)
+{
+  DiaMatrix m = { 1, 0, 0, 1, c.x, c.y };
+  DiaMatrix t = { 1, 0, 0, 1, -c.x, -c.y };
+
+  if (deg == 0.0) {
+    return p;
+  }
+  dia_matrix_set_angle_and_scales (&m, G_PI * deg / 180.0, 1.0, 1.0);
+  dia_matrix_multiply (&m, &t, &m);
+  transform_point (&p, &m);
+  return p;
+}
+
 /* Draw small squares at each selected object's handles, at a fixed pixel size
- * in DEVICE space: (ox,oy) is the device px of cm 0, scale is px/cm. */
+ * in DEVICE space: (ox,oy) is the device px of cm 0, scale is px/cm. Handles of
+ * a rotated element are drawn at their rotated positions so they sit on the
+ * shape as drawn. */
 static void
 draw_selection_handles (cairo_t *cr, DiagramData *diagram,
                         double ox, double oy, double scale)
@@ -441,11 +491,13 @@ draw_selection_handles (cairo_t *cr, DiagramData *diagram,
 
   for (GList *l = diagram->selected; l; l = l->next) {
     DiaObject *obj = l->data;
+    double angle = object_angle (obj);
+    Point center = object_center (obj);
 
     for (int i = 0; i < obj->num_handles; i++) {
-      Handle *h = obj->handles[i];
-      double dx = ox + h->pos.x * scale;
-      double dy = oy + h->pos.y * scale;
+      Point hp = rotate_about_deg (obj->handles[i]->pos, center, angle);
+      double dx = ox + hp.x * scale;
+      double dy = oy + hp.y * scale;
       cairo_rectangle (cr, dx - s, dy - s, 2 * s, 2 * s);
     }
     cairo_set_source_rgb (cr, 0.10, 0.45, 0.90);
@@ -1231,14 +1283,20 @@ handle_at (DiaObject *obj, Point p, double tol)
 {
   int best = -1;
   double best2 = tol * tol;
+  double angle;
+  Point center;
 
   if (obj == NULL) {
     return -1;
   }
+  angle = object_angle (obj);
+  center = object_center (obj);
   for (int i = 0; i < obj->num_handles; i++) {
-    Handle *h = obj->handles[i];
-    double dx = h->pos.x - p.x;
-    double dy = h->pos.y - p.y;
+    /* hit-test against the handle where it is DRAWN (rotated for a rotated
+     * element), so clicking a tilted box's corner grabs it */
+    Point hp = rotate_about_deg (obj->handles[i]->pos, center, angle);
+    double dx = hp.x - p.x;
+    double dy = hp.y - p.y;
     double d2 = dx * dx + dy * dy;
 
     if (d2 <= best2) {
@@ -1586,17 +1644,6 @@ rotate_object_about (DiaObject *obj, double degrees, Point center)
   return dia_object_transform (obj, &m);
 }
 
-/* The bbox centre of @obj (its natural rotation centre). */
-static Point
-object_center (DiaObject *obj)
-{
-  Point c = {
-    (obj->bounding_box.left + obj->bounding_box.right) / 2.0,
-    (obj->bounding_box.top + obj->bounding_box.bottom) / 2.0,
-  };
-  return c;
-}
-
 /* Rotate every selected object by @degrees (each about its own centre), and
  * record each as an undoable op. */
 static void
@@ -1807,6 +1854,10 @@ on_canvas_drag_begin (GtkGestureDrag *gesture,
     self->drag_handle = self->selected->handles[hi];
     self->drag_handle_idx = hi;
     self->drag_handle_start = self->drag_handle->pos;
+    /* remember the rotation frame so the drag can be mapped back to the
+     * object's local (un-rotated) space, where move_handle operates */
+    self->drag_angle = object_angle (self->selected);
+    self->drag_center = object_center (self->selected);
     if (self->drag_handle->connected_to != NULL) {
       object_unconnect (self->selected, self->drag_handle);
     }
@@ -1834,6 +1885,22 @@ on_canvas_drag_begin (GtkGestureDrag *gesture,
   }
 }
 
+/* Map a handle drag (pixel offset from drag start) into the object's local
+ * (un-rotated) frame, where dia_object_move_handle operates: the handle is
+ * grabbed at its drawn (rotated) position, moved by the screen offset, then
+ * rotated back by -angle about the drag centre. Reduces to start+offset when
+ * the object isn't rotated. */
+static Point
+drag_handle_target (DiaShell *self, double offset_x, double offset_y)
+{
+  Point drawn_start = rotate_about_deg (self->drag_handle_start,
+                                        self->drag_center, self->drag_angle);
+  Point drawn_new = { drawn_start.x + offset_x / self->page_scale,
+                      drawn_start.y + offset_y / self->page_scale };
+
+  return rotate_about_deg (drawn_new, self->drag_center, -self->drag_angle);
+}
+
 static void
 on_canvas_drag_update (GtkGestureDrag *gesture,
                        double          offset_x,
@@ -1854,10 +1921,9 @@ on_canvas_drag_update (GtkGestureDrag *gesture,
   }
 
   if (self->drag_handle && self->selected) {
-    /* Absolute target relative to the handle's start, so repeated updates are
-     * not cumulative. */
-    to.x = self->drag_handle_start.x + offset_x / self->page_scale;
-    to.y = self->drag_handle_start.y + offset_y / self->page_scale;
+    /* Absolute target relative to the handle's start (in the object's local
+     * frame), so repeated updates are not cumulative. */
+    to = drag_handle_target (self, offset_x, offset_y);
     snap_to_grid (self, &to);
     change = dia_object_move_handle (self->selected, self->drag_handle, &to,
                                      NULL, HANDLE_MOVE_USER, 0);
@@ -1952,8 +2018,7 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
   }
 
   if (self->drag_handle && self->selected) {
-    to.x = self->drag_handle_start.x + offset_x / self->page_scale;
-    to.y = self->drag_handle_start.y + offset_y / self->page_scale;
+    to = drag_handle_target (self, offset_x, offset_y);
     snap_to_grid (self, &to);
     change = dia_object_move_handle (self->selected, self->drag_handle, &to,
                                      NULL, HANDLE_MOVE_USER_FINAL, 0);
@@ -3963,6 +4028,55 @@ on_uitest_undo_edit (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): give a box an arbitrary angle and confirm its
+ * handles hit-test at their DRAWN (rotated) positions — so a tilted shape stays
+ * grabbable — rather than the un-rotated element positions. */
+static void
+on_uitest_rothandle (GtkButton *button, DiaShell *self)
+{
+  DiaObject *box = diagram_create_object (self, "Standard - Box",
+                                          (Point) { 30, 10 });
+  Point local, center, rotated;
+  int at_rotated;
+  double moved;
+  char buf[128];
+
+  if (!box || box->num_handles < 1) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("rothandle FAIL (no box)"));
+    return;
+  }
+  push_op (self, OP_CREATE, box, (Point) { 30, 10 }, (Point) { 30, 10 });
+
+  {   /* rotate the box 30° via its angle property */
+    static PropDescription ad[] = { { "angle", PROP_TYPE_REAL }, PROP_DESC_END };
+    GPtrArray *props = prop_list_from_descs (ad, pdtpp_true);
+
+    ((RealProperty *) g_ptr_array_index (props, 0))->real_data = 30.0;
+    dia_object_set_properties (box, props);
+    prop_list_free (props);
+  }
+
+  local = box->handles[0]->pos;          /* un-rotated corner (element frame) */
+  center = object_center (box);
+  rotated = rotate_about_deg (local, center, 30.0);
+  moved = hypot (rotated.x - local.x, rotated.y - local.y);
+
+  /* clicking where the handle is DRAWN (rotated) must grab handle 0 */
+  at_rotated = handle_at (box, rotated, 0.3);
+
+  if (at_rotated == 0 && moved > 0.3) {
+    g_snprintf (buf, sizeof (buf), _("rothandle OK (moved %.2fcm, grabbed)"),
+                moved);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("rothandle FAIL (hit=%d moved=%.2f)"),
+                at_rotated, moved);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -4521,6 +4635,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *ng = gtk_button_new_with_label ("uitest-nestedgroup");
     GtkWidget *ro = gtk_button_new_with_label ("uitest-rotate");
     GtkWidget *ue = gtk_button_new_with_label ("uitest-undoedit");
+    GtkWidget *rh = gtk_button_new_with_label ("uitest-rothandle");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -4549,6 +4664,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (ng), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ro), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ue), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (rh), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -4577,6 +4693,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (ng, "clicked", G_CALLBACK (on_uitest_nestedgroup), self);
     g_signal_connect (ro, "clicked", G_CALLBACK (on_uitest_rotate), self);
     g_signal_connect (ue, "clicked", G_CALLBACK (on_uitest_undo_edit), self);
+    g_signal_connect (rh, "clicked", G_CALLBACK (on_uitest_rothandle), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -4605,6 +4722,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), ng);
     gtk_box_append (GTK_BOX (bar), ro);
     gtk_box_append (GTK_BOX (bar), ue);
+    gtk_box_append (GTK_BOX (bar), rh);
   }
 
   return bar;

@@ -501,6 +501,16 @@ def main():
         ok = any('undoedit OK' in (lab.name or '') for lab in labels)
         check("Undo/redo of rotate + property/menu edit", ok)
 
+    # 3ae. A tilted (arbitrary-angle) box's handles hit-test where they're drawn.
+    rh = find(app, name='uitest-rothandle', roleName='push button')
+    check("DIA_UITEST rothandle trigger present", rh)
+    if rh:
+        do_click(rh)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('rothandle OK' in (lab.name or '') for lab in labels)
+        check("Rotated-object handles are grabbable at drawn positions", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
