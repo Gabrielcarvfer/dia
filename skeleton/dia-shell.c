@@ -2025,6 +2025,8 @@ on_canvas_secondary (GtkGestureClick *gesture,
                   gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
   ctx_add_action (box, self, _("Bring to _Front"), "dia.to-front", NULL);
   ctx_add_action (box, self, _("Send to _Back"), "dia.to-back", NULL);
+  ctx_add_action (box, self, _("Raise"), "dia.raise", NULL);
+  ctx_add_action (box, self, _("Lower"), "dia.lower", NULL);
   ctx_add_action (box, self, _("_Group"), "dia.group", NULL);
   ctx_add_action (box, self, _("_Ungroup"), "dia.ungroup", NULL);
 
@@ -2511,6 +2513,12 @@ on_canvas_key (GtkEventControllerKey *controller,
       }
       return TRUE;
     }
+    case GDK_KEY_Page_Up:      /* raise the selection one step */
+      g_action_group_activate_action (self->actions, "raise", NULL);
+      return TRUE;
+    case GDK_KEY_Page_Down:    /* lower it one step */
+      g_action_group_activate_action (self->actions, "lower", NULL);
+      return TRUE;
     case GDK_KEY_Delete:
     case GDK_KEY_BackSpace:
       delete_selected (self);
@@ -2984,10 +2992,72 @@ restack_selected (DiaShell *self, gboolean to_front)
   gtk_widget_queue_draw (self->canvas);
 }
 
+/* Move the selection one step in the draw order (@up = forward/toward the top).
+ * The object list is back-to-front, so "up" swaps each selected object with the
+ * next UNselected neighbour toward the end; scanning away from that end keeps a
+ * multi-object selection moving together without leapfrogging itself. */
+static void
+restack_step (DiaShell *self, gboolean up)
+{
+  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  GList *sel = self->diagram->selected;
+  GPtrArray *arr;
+  GList *new_list = NULL;
+
+  if (!sel || !layer) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg), _("Nothing selected"));
+    return;
+  }
+  arr = g_ptr_array_new ();
+  for (GList *l = dia_layer_get_object_list (layer); l; l = l->next) {
+    g_ptr_array_add (arr, l->data);
+  }
+  if (up) {
+    for (int i = (int) arr->len - 2; i >= 0; i--) {
+      if (g_list_find (sel, arr->pdata[i]) &&
+          !g_list_find (sel, arr->pdata[i + 1])) {
+        gpointer t = arr->pdata[i];
+        arr->pdata[i] = arr->pdata[i + 1];
+        arr->pdata[i + 1] = t;
+      }
+    }
+  } else {
+    for (int i = 1; i < (int) arr->len; i++) {
+      if (g_list_find (sel, arr->pdata[i]) &&
+          !g_list_find (sel, arr->pdata[i - 1])) {
+        gpointer t = arr->pdata[i];
+        arr->pdata[i] = arr->pdata[i - 1];
+        arr->pdata[i - 1] = t;
+      }
+    }
+  }
+  for (guint i = 0; i < arr->len; i++) {
+    new_list = g_list_append (new_list, arr->pdata[i]);
+  }
+  dia_layer_set_object_list (layer, new_list);   /* takes ownership, frees old */
+  g_ptr_array_free (arr, TRUE);
+
+  gtk_label_set_text (GTK_LABEL (self->status_msg),
+                      up ? _("Raised") : _("Lowered"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
 static void
 action_to_front (GSimpleAction *a, GVariant *p, gpointer data)
 {
   restack_selected (data, TRUE);
+}
+
+static void
+action_raise (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  restack_step (data, TRUE);
+}
+
+static void
+action_lower (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  restack_step (data, FALSE);
 }
 
 static void
@@ -5303,6 +5373,37 @@ on_uitest_selecttype (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): raising the middle of three boxes moves it to the
+ * top of the back-to-front object list. */
+static void
+on_uitest_restack (GtkButton *button, DiaShell *self)
+{
+  DiaLayer *layer;
+  DiaObject *b;
+  int n;
+  gboolean ok;
+  char buf[80];
+
+  dia_shell_set_new_diagram (self);
+  diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  b = diagram_create_object (self, "Standard - Box", (Point) { 4, 4 });
+  diagram_create_object (self, "Standard - Box", (Point) { 6, 6 });
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, b);
+  self->selected = b;
+
+  restack_step (self, TRUE);   /* raise B one step → now the front-most */
+  layer = dia_diagram_data_get_active_layer (self->diagram);
+  n = dia_layer_object_count (layer);
+  ok = (n == 3 && dia_layer_object_get_nth (layer, n - 1) == b);
+
+  g_snprintf (buf, sizeof (buf),
+              ok ? _("restack OK (raised to front)") : _("restack FAIL"));
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5493,6 +5594,8 @@ static const GActionEntry dia_actions[] = {
   { "ungroup",    action_ungroup,    NULL, NULL, NULL },
   { "to-front",   action_to_front,   NULL, NULL, NULL },
   { "to-back",    action_to_back,    NULL, NULL, NULL },
+  { "raise",      action_raise,      NULL, NULL, NULL },
+  { "lower",      action_lower,      NULL, NULL, NULL },
   { "align",      action_align,      "s",  NULL, NULL },
   { "delete",     action_delete,     NULL, NULL, NULL },
   { "zoom-in",    action_zoom_in,    NULL, NULL, NULL },
@@ -5653,6 +5756,8 @@ build_primary_menu_button (void)
   g_menu_append (edit, _("_Ungroup"), "dia.ungroup");
   g_menu_append (edit, _("Bring to _Front"), "dia.to-front");
   g_menu_append (edit, _("Send to _Back"), "dia.to-back");
+  g_menu_append (edit, _("_Raise"), "dia.raise");
+  g_menu_append (edit, _("_Lower"), "dia.lower");
   {
     GMenu *align = g_menu_new ();
     g_menu_append (align, _("Left"), "dia.align::left");
@@ -5956,6 +6061,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *kb = gtk_button_new_with_label ("uitest-keyboard");
     GtkWidget *zf = gtk_button_new_with_label ("uitest-zoomfit");
     GtkWidget *st = gtk_button_new_with_label ("uitest-selecttype");
+    GtkWidget *rs = gtk_button_new_with_label ("uitest-restack");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -5993,6 +6099,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (kb), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (zf), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (st), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (rs), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -6030,6 +6137,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (kb, "clicked", G_CALLBACK (on_uitest_keyboard), self);
     g_signal_connect (zf, "clicked", G_CALLBACK (on_uitest_zoomfit), self);
     g_signal_connect (st, "clicked", G_CALLBACK (on_uitest_selecttype), self);
+    g_signal_connect (rs, "clicked", G_CALLBACK (on_uitest_restack), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -6067,6 +6175,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), kb);
     gtk_box_append (GTK_BOX (bar), zf);
     gtk_box_append (GTK_BOX (bar), st);
+    gtk_box_append (GTK_BOX (bar), rs);
   }
 
   return bar;

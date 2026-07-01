@@ -581,6 +581,16 @@ def main():
         ok = any('selecttype OK' in (lab.name or '') for lab in labels)
         check("Select Same Type selects matching objects", ok)
 
+    # 3an. Raise moves the middle object to the front of the draw order.
+    rs = find(app, name='uitest-restack', roleName='push button')
+    check("DIA_UITEST restack trigger present", rs)
+    if rs:
+        do_click(rs)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('restack OK' in (lab.name or '') for lab in labels)
+        check("Raise moves object up one step in draw order", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)
