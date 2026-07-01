@@ -161,6 +161,15 @@ jobs:
           meson compile -C build
 
       - name: Assemble .app and DMG
+        # Uncomment together with the signing/notarization blocks in the script
+        # below to expose the secrets to them:
+        # env:
+        #   MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+        #   MACOS_CERT_PWD: ${{ secrets.MACOS_CERT_PWD }}
+        #   MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+        #   APPLE_ID: ${{ secrets.APPLE_ID }}
+        #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        #   APPLE_APP_PWD: ${{ secrets.APPLE_APP_PWD }}
         run: |
           set -eux
           APP=Dia.app
@@ -191,6 +200,41 @@ jobs:
           cp -R shapes "$APP/Contents/share/dia/shapes"
           rm -f "$APP/Contents/share/dia/shapes/meson.build" \
                 "$APP/Contents/share/dia/shapes/make-midpoint.pl"
+
+          # --- OPTIONAL: code-sign the .app (uncomment + add the secrets) ------
+          # Signing + notarizing (below) is the durable fix for the VirusTotal
+          # "unsigned app" heuristic false positives and lets Gatekeeper open it
+          # without the right-click dance. Add these repo secrets, then map them
+          # into this step's env: (see the commented `env:` on the step above):
+          #   MACOS_CERT_P12      base64 of your "Developer ID Application" .p12
+          #   MACOS_CERT_PWD      password for that .p12
+          #   MACOS_KEYCHAIN_PWD  any throwaway temp-keychain password
+          # # Import the cert into a temporary keychain.
+          # echo "$MACOS_CERT_P12" | base64 --decode > /tmp/cert.p12
+          # security create-keychain -p "$MACOS_KEYCHAIN_PWD" build.keychain
+          # security default-keychain -s build.keychain
+          # security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" build.keychain
+          # security import /tmp/cert.p12 -k build.keychain -P "$MACOS_CERT_PWD" \
+          #   -T /usr/bin/codesign
+          # security set-key-partition-list -S apple-tool:,apple: -s \
+          #   -k "$MACOS_KEYCHAIN_PWD" build.keychain
+          # IDENTITY="$(security find-identity -v -p codesigning build.keychain \
+          #   | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          # # Hardened runtime + library-validation disabled (the bundled dylibs
+          # # are third-party and had their install names rewritten). printf (not
+          # # a heredoc) so this survives the YAML indentation when uncommented.
+          # printf '%s\n' \
+          #   '<?xml version="1.0" encoding="UTF-8"?>' \
+          #   '<plist version="1.0"><dict>' \
+          #   '<key>com.apple.security.cs.disable-library-validation</key><true/>' \
+          #   '</dict></plist>' > entitlements.plist
+          # # Sign inside-out: every bundled dylib first, then the app.
+          # find "$APP/Contents/libs" -name '*.dylib' -exec \
+          #   codesign --force --options runtime --timestamp --sign "$IDENTITY" {} +
+          # codesign --force --deep --options runtime --timestamp \
+          #   --entitlements entitlements.plist --sign "$IDENTITY" "$APP"
+          # codesign --verify --strict --verbose=2 "$APP"
+
           # Package into a compressed DMG with an Applications shortcut.
           mkdir -p dmgroot
           cp -R "$APP" dmgroot/
@@ -198,6 +242,18 @@ jobs:
           mkdir -p dist
           hdiutil create -volname Dia -srcfolder dmgroot \
             -ov -format UDZO dist/Dia.dmg
+
+          # --- OPTIONAL: notarize + staple the DMG (uncomment + add secrets) ---
+          # Needs, in addition to the signing secrets above:
+          #   APPLE_ID        your Apple ID email
+          #   APPLE_TEAM_ID   your 10-char Developer Team ID
+          #   APPLE_APP_PWD   an app-specific password (appleid.apple.com)
+          # # Submit for notarization and wait, then staple the ticket so the DMG
+          # # verifies offline.
+          # xcrun notarytool submit dist/Dia.dmg \
+          #   --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+          #   --password "$APPLE_APP_PWD" --wait
+          # xcrun stapler staple dist/Dia.dmg
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
