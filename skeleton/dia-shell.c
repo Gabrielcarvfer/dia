@@ -63,6 +63,8 @@ typedef struct {
   DiaLayer  *dnd_src_layer;  /* the layer it came from */
   GtkWidget *modify_toggle;  /* the Modify tool toggle, for switching back */
   gboolean   skip_layer_select;  /* a group row was clicked; don't select the whole layer */
+  GtkWidget *font_btn;       /* top-bar text font+size (GtkFontDialogButton) */
+  gulong     font_btn_handler;   /* notify::font-desc, blocked during sync */
   double     cursor_x, cursor_y;  /* pointer position over the canvas (px) */
   gboolean   cursor_valid;
   double     zoom;        /* 1.0 == 100% */
@@ -713,6 +715,7 @@ static void update_zoom (DiaShell *self, double factor);
 static void zoom_about (DiaShell *self, double factor, double cx, double cy);
 static void refresh_layers_list (DiaShell *self);
 static void on_zoom_entry_activate (GtkEntry *entry, DiaShell *self);
+static void sync_font_button_to_selection (DiaShell *self);
 static void lp_move_to_layer (DiaShell *self, DiaObject *obj, DiaLayer *src,
                               DiaLayer *dst);
 static void lp_move_into_group (DiaShell *self, DiaObject *obj, DiaLayer *src,
@@ -1230,6 +1233,7 @@ select_at (DiaShell *self, Point p, gboolean add)
   } else {
     g_snprintf (buf, sizeof (buf), _("Nothing selected"));
   }
+  sync_font_button_to_selection (self);   /* reflect its font in the top bar */
   gtk_widget_queue_draw (self->canvas);
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
@@ -1348,16 +1352,120 @@ open_text_editor (DiaShell *self, DiaObject *obj)
 
 /* Create a Standard - Text with the entered text, font and size (from the New
  * Text dialog). */
+/* Apply a Pango font description (family + size) to @obj's text via StdProp
+ * (ignored by objects without text_font/text_height). */
+static void
+apply_font_desc_to_object (DiaObject *obj, PangoFontDescription *desc)
+{
+  static PropDescription d[] = { PROP_STD_TEXT_FONT, PROP_STD_TEXT_HEIGHT,
+                                 PROP_DESC_END };
+  GPtrArray *props;
+  FontProperty *fp;
+  FontsizeProperty *hp;
+  const char *family;
+  int sz;
+  double pts, height_cm;
+  DiaFont *font;
+
+  if (!obj || !desc) {
+    return;
+  }
+  props = prop_list_from_descs (d, pdtpp_true);
+  fp = g_ptr_array_index (props, 0);
+  hp = g_ptr_array_index (props, 1);
+  family = pango_font_description_get_family (desc);
+  sz = pango_font_description_get_size (desc);
+  pts = pango_font_description_get_size_is_absolute (desc)
+          ? sz / (double) PANGO_SCALE * 72.0 / 96.0   /* px -> pt */
+          : sz / (double) PANGO_SCALE;                /* already pt */
+  height_cm = pts * 2.54 / 72.0;                       /* pt -> cm */
+  if (height_cm < 0.05) {
+    height_cm = 0.8;
+  }
+  font = dia_font_new_from_style (DIA_FONT_SANS, height_cm);
+  if (family) {
+    dia_font_set_any_family (font, family);
+  }
+  fp->font_data = font;
+  hp->fontsize_data = height_cm;
+  dia_object_set_properties (obj, props);
+  prop_list_free (props);
+}
+
+/* The current top-bar font description (family + size), or NULL. */
+static PangoFontDescription *
+shell_font_desc (DiaShell *self)
+{
+  if (!self->font_btn) {
+    return NULL;
+  }
+  return gtk_font_dialog_button_get_font_desc (
+           GTK_FONT_DIALOG_BUTTON (self->font_btn));
+}
+
+/* Top-bar font/size changed → restyle every selected (text) object. */
+static void
+on_font_desc_changed (GObject *btn, GParamSpec *ps, DiaShell *self)
+{
+  PangoFontDescription *desc = shell_font_desc (self);
+
+  if (!desc) {
+    return;
+  }
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    apply_font_desc_to_object (l->data, desc);
+  }
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+}
+
+/* Reflect the primary selection's text font/size in the top-bar control (so it
+ * shows the selected object's values). No-op for objects without a text font.
+ * Blocks the change handler so this doesn't restyle the object back. */
+static void
+sync_font_button_to_selection (DiaShell *self)
+{
+  static PropDescription d[] = { PROP_STD_TEXT_FONT, PROP_STD_TEXT_HEIGHT,
+                                 PROP_DESC_END };
+  GPtrArray *props;
+  FontProperty *fp;
+  FontsizeProperty *hp;
+
+  if (!self->font_btn || !self->selected) {
+    return;
+  }
+  props = prop_list_from_descs (d, pdtpp_true);
+  dia_object_get_properties (self->selected, props);
+  fp = g_ptr_array_index (props, 0);
+  hp = g_ptr_array_index (props, 1);
+  if (fp->font_data) {
+    PangoFontDescription *desc = pango_font_description_new ();
+    const char *fam = dia_font_get_family (fp->font_data);
+
+    if (fam) {
+      pango_font_description_set_family (desc, fam);
+    }
+    if (hp->fontsize_data > 0.05) {
+      pango_font_description_set_size (
+        desc, (int) (hp->fontsize_data * 72.0 / 2.54 * PANGO_SCALE));
+    }
+    g_signal_handler_block (self->font_btn, self->font_btn_handler);
+    gtk_font_dialog_button_set_font_desc (
+      GTK_FONT_DIALOG_BUTTON (self->font_btn), desc);
+    g_signal_handler_unblock (self->font_btn, self->font_btn_handler);
+    pango_font_description_free (desc);
+  }
+  prop_list_free (props);
+}
+
 static void
 on_new_text_response (AdwAlertDialog *dlg, const char *response, DiaShell *self)
 {
   GtkWidget *entry = g_object_get_data (G_OBJECT (dlg), "entry");
-  GtkWidget *fbtn = g_object_get_data (G_OBJECT (dlg), "font");
   Point *pt = g_object_get_data (G_OBJECT (dlg), "pt");
   DiaObject *obj;
-  PangoFontDescription *desc;
 
-  if (g_strcmp0 (response, "ok") != 0 || !entry || !fbtn || !pt) {
+  if (g_strcmp0 (response, "ok") != 0 || !entry || !pt) {
     return;
   }
   obj = diagram_create_object (self, "Standard - Text", *pt);
@@ -1365,34 +1473,7 @@ on_new_text_response (AdwAlertDialog *dlg, const char *response, DiaShell *self)
     return;
   }
   set_object_text (obj, gtk_editable_get_text (GTK_EDITABLE (entry)));
-
-  desc = gtk_font_dialog_button_get_font_desc (GTK_FONT_DIALOG_BUTTON (fbtn));
-  if (desc) {
-    static PropDescription d[] = { PROP_STD_TEXT_FONT, PROP_STD_TEXT_HEIGHT,
-                                   PROP_DESC_END };
-    GPtrArray *props = prop_list_from_descs (d, pdtpp_true);
-    FontProperty *fp = g_ptr_array_index (props, 0);
-    FontsizeProperty *hp = g_ptr_array_index (props, 1);
-    const char *family = pango_font_description_get_family (desc);
-    int sz = pango_font_description_get_size (desc);
-    double pts = pango_font_description_get_size_is_absolute (desc)
-                   ? sz / (double) PANGO_SCALE * 72.0 / 96.0   /* px -> pt */
-                   : sz / (double) PANGO_SCALE;                /* already pt */
-    double height_cm = pts * 2.54 / 72.0;                      /* pt -> cm */
-    DiaFont *font;
-
-    if (height_cm < 0.05) {
-      height_cm = 0.8;   /* sane fallback */
-    }
-    font = dia_font_new_from_style (DIA_FONT_SANS, height_cm);
-    if (family) {
-      dia_font_set_any_family (font, family);   /* arbitrary family name */
-    }
-    fp->font_data = font;             /* handed to the property */
-    hp->fontsize_data = height_cm;
-    dia_object_set_properties (obj, props);
-    prop_list_free (props);
-  }
+  apply_font_desc_to_object (obj, shell_font_desc (self));   /* top-bar font */
 
   push_op (self, OP_CREATE, obj, *pt, *pt);
   data_remove_all_selected (self->diagram);
@@ -1403,28 +1484,20 @@ on_new_text_response (AdwAlertDialog *dlg, const char *response, DiaShell *self)
   gtk_label_set_text (GTK_LABEL (self->status_msg), _("Text added"));
 }
 
-/* Ask for the text, font and size, then create a Standard - Text at @p. Used by
- * the Text tool (click or drag) so adding text is explicit and styleable. */
+/* Ask for the text string, then create a Standard - Text at @p using the
+ * current top-bar font and size. */
 static void
 open_new_text_dialog (DiaShell *self, Point p)
 {
-  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   GtkWidget *entry = gtk_entry_new ();
-  GtkFontDialog *fd = gtk_font_dialog_new ();
-  GtkWidget *fbtn = gtk_font_dialog_button_new (fd);   /* takes ownership */
-  PangoFontDescription *desc = pango_font_description_from_string ("Sans 18");
   AdwDialog *dlg;
   GtkRoot *root;
   Point *pp = g_new (Point, 1);
 
   gtk_entry_set_placeholder_text (GTK_ENTRY (entry), _("Text…"));
-  gtk_font_dialog_button_set_font_desc (GTK_FONT_DIALOG_BUTTON (fbtn), desc);
-  pango_font_description_free (desc);
-  gtk_box_append (GTK_BOX (box), entry);
-  gtk_box_append (GTK_BOX (box), fbtn);
 
   dlg = adw_alert_dialog_new (_("New Text"), NULL);
-  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), box);
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), entry);
   adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "cancel", _("Cancel"));
   adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "ok", _("Add"));
   adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "ok");
@@ -1432,7 +1505,6 @@ open_new_text_dialog (DiaShell *self, Point p)
   *pp = p;
   g_object_set_data_full (G_OBJECT (dlg), "pt", pp, g_free);
   g_object_set_data (G_OBJECT (dlg), "entry", entry);
-  g_object_set_data (G_OBJECT (dlg), "font", fbtn);
   g_signal_connect (dlg, "response", G_CALLBACK (on_new_text_response), self);
 
   root = gtk_widget_get_root (self->canvas);
@@ -1743,7 +1815,25 @@ rotate_object_about (DiaObject *obj, double degrees, Point center)
   if (!obj->ops || !obj->ops->transform) {
     return FALSE;
   }
-  return dia_object_transform (obj, &m);
+  if (!dia_object_transform (obj, &m)) {
+    return FALSE;
+  }
+  /* An asymmetric shape's axis-aligned bbox centre is NOT preserved by a
+   * rotation about it, so repeated rotations would walk the object across the
+   * canvas. Pin the new bbox centre back to @center so it rotates in place. */
+  {
+    double cx1 = (obj->bounding_box.left + obj->bounding_box.right) / 2.0;
+    double cy1 = (obj->bounding_box.top + obj->bounding_box.bottom) / 2.0;
+
+    if (fabs (cx1 - center.x) > 1e-6 || fabs (cy1 - center.y) > 1e-6) {
+      Point to = { obj->position.x + (center.x - cx1),
+                   obj->position.y + (center.y - cy1) };
+      DiaObjectChange *ch = dia_object_move (obj, &to);
+
+      g_clear_pointer (&ch, dia_object_change_unref);
+    }
+  }
+  return TRUE;
 }
 
 /* Rotate every selected object by @degrees (each about its own centre), and
@@ -5119,6 +5209,26 @@ build_action_toolbar (DiaShell *self)
   gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
   gtk_box_append (GTK_BOX (bar), build_page_size_dropdown (self));
 
+  /* Text font + size: sets new text's style, restyles a selected text object,
+   * and mirrors the selected object's font. */
+  {
+    GtkFontDialog *fd = gtk_font_dialog_new ();
+    PangoFontDescription *desc = pango_font_description_from_string ("Sans 18");
+
+    self->font_btn = gtk_font_dialog_button_new (fd);   /* takes ownership */
+    gtk_font_dialog_button_set_font_desc (GTK_FONT_DIALOG_BUTTON (self->font_btn),
+                                          desc);
+    pango_font_description_free (desc);
+    gtk_widget_set_tooltip_text (self->font_btn, _("Text font and size"));
+    set_a11y_label (self->font_btn, "text-font");
+    self->font_btn_handler = g_signal_connect (self->font_btn,
+                                               "notify::font-desc",
+                                               G_CALLBACK (on_font_desc_changed),
+                                               self);
+    gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
+    gtk_box_append (GTK_BOX (bar), self->font_btn);
+  }
+
   /* Snapping toggles: grid (functional), object & guide (state for now). */
   gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
   gtk_box_append (GTK_BOX (bar),
@@ -5953,6 +6063,26 @@ on_group_row_clicked (GtkGestureClick *gesture, int n_press,
   }
 }
 
+/* Right-click an object row → select it and open its properties dialog. */
+static void
+on_obj_row_secondary (GtkGestureClick *gesture, int n_press,
+                      double x, double y, DiaShell *self)
+{
+  GtkWidget *w = gtk_event_controller_get_widget (GTK_EVENT_CONTROLLER (gesture));
+  DiaObject *obj = g_object_get_data (G_OBJECT (w), "obj");
+
+  if (!obj) {
+    return;
+  }
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+  self->skip_layer_select = TRUE;
+  sync_font_button_to_selection (self);
+  gtk_widget_queue_draw (self->canvas);
+  open_properties_dialog (self, obj);
+}
+
 /* One "• type" row per object in @objects, recursing into groups (indented).
  * Top-level rows (depth 0) are drag sources so they can be moved to another
  * layer by dropping on that layer's row. */
@@ -5970,6 +6100,18 @@ append_object_rows (GtkWidget *vbox, GList *objects, int depth,
     gtk_widget_set_margin_start (ol, 12 + depth * 12);
     gtk_widget_add_css_class (ol, "dim-label");
     gtk_widget_add_css_class (ol, "caption");
+
+    /* Right-click any object row → open its properties. */
+    g_object_set_data (G_OBJECT (ol), "obj", obj);
+    {
+      GtkGesture *rc = gtk_gesture_click_new ();
+
+      gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (rc),
+                                     GDK_BUTTON_SECONDARY);
+      g_signal_connect (rc, "pressed",
+                        G_CALLBACK (on_obj_row_secondary), self);
+      gtk_widget_add_controller (ol, GTK_EVENT_CONTROLLER (rc));
+    }
 
     if (depth == 0) {   /* only top-level objects can be moved between layers */
       GtkDragSource *ds = gtk_drag_source_new ();
