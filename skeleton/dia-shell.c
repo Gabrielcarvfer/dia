@@ -831,13 +831,18 @@ draw_canvas (GtkDrawingArea *area,
     int gx0 = (int) floor (cm_x0 / g), gx1 = (int) ceil (cm_x1 / g);
     int gy0 = (int) floor (cm_y0 / g), gy1 = (int) ceil (cm_y1 / g);
 
+    /* Minor (per-cell) lines are fine and dotted; every 5th is a solid,
+     * heavier "major" rule — the engineering-paper look. */
+    static const double dot[] = { 1.0, 2.0 };
+
     for (int gx = gx0; gx <= gx1; gx++) {
       gboolean major = (gx % 5 == 0);
       double dx = ox + gx * g * pxcm;
       cairo_set_line_width (cr, major ? 1.0 : 0.5);
-      cairo_set_source_rgb (cr, major ? 0.60 : 0.82,
-                                major ? 0.70 : 0.88,
-                                major ? 0.85 : 0.94);
+      cairo_set_dash (cr, major ? NULL : dot, major ? 0 : 2, 0.0);
+      cairo_set_source_rgb (cr, major ? 0.60 : 0.78,
+                                major ? 0.70 : 0.85,
+                                major ? 0.85 : 0.92);
       cairo_move_to (cr, dx, 0);
       cairo_line_to (cr, dx, height);
       cairo_stroke (cr);
@@ -846,13 +851,15 @@ draw_canvas (GtkDrawingArea *area,
       gboolean major = (gy % 5 == 0);
       double dy = oy + gy * g * pxcm;
       cairo_set_line_width (cr, major ? 1.0 : 0.5);
-      cairo_set_source_rgb (cr, major ? 0.60 : 0.82,
-                                major ? 0.70 : 0.88,
-                                major ? 0.85 : 0.94);
+      cairo_set_dash (cr, major ? NULL : dot, major ? 0 : 2, 0.0);
+      cairo_set_source_rgb (cr, major ? 0.60 : 0.78,
+                                major ? 0.70 : 0.85,
+                                major ? 0.85 : 0.92);
       cairo_move_to (cr, 0, dy);
       cairo_line_to (cr, width, dy);
       cairo_stroke (cr);
     }
+    cairo_set_dash (cr, NULL, 0, 0.0);   /* reset for later strokes */
   }
 
   /* Diagram shapes in cm: scale to px/cm, then shift the origin into place. */
@@ -3013,6 +3020,67 @@ action_select_connected (GSimpleAction *a, GVariant *p, gpointer data)
   g_hash_table_destroy (add);
   gtk_widget_queue_draw (self->canvas);
   g_snprintf (buf, sizeof (buf), _("Added %d connected"), count);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+/* Collect @obj's directly-connected neighbours (both directions) into @seen,
+ * queueing any newly-seen ones on @q for further traversal. */
+static void
+enqueue_connected (DiaObject *obj, GHashTable *seen, GQueue *q)
+{
+  for (int h = 0; h < obj->num_handles; h++) {
+    DiaObject *nb = obj->handles[h]->connected_to
+                      ? obj->handles[h]->connected_to->object : NULL;
+
+    if (nb && !g_hash_table_contains (seen, nb)) {
+      g_hash_table_add (seen, nb);
+      g_queue_push_tail (q, nb);
+    }
+  }
+  for (int c = 0; c < obj->num_connections; c++) {
+    for (GList *cc = obj->connections[c]->connected; cc; cc = cc->next) {
+      if (!g_hash_table_contains (seen, cc->data)) {
+        g_hash_table_add (seen, cc->data);
+        g_queue_push_tail (q, cc->data);
+      }
+    }
+  }
+}
+
+/* Select the whole transitive closure of the current selection: every object
+ * reachable through connections, directly or via a chain (A→B→C). */
+static void
+action_select_transitive (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GHashTable *seen = g_hash_table_new (g_direct_hash, g_direct_equal);
+  GQueue *q = g_queue_new ();
+  GHashTableIter it;
+  gpointer key;
+  int count = 0;
+  char buf[64];
+
+  for (GList *l = self->diagram->selected; l; l = l->next) {
+    if (!g_hash_table_contains (seen, l->data)) {
+      g_hash_table_add (seen, l->data);
+      g_queue_push_tail (q, l->data);
+    }
+  }
+  while (!g_queue_is_empty (q)) {
+    enqueue_connected (g_queue_pop_head (q), seen, q);
+  }
+  data_remove_all_selected (self->diagram);
+  self->selected = NULL;
+  g_hash_table_iter_init (&it, seen);
+  while (g_hash_table_iter_next (&it, &key, NULL)) {
+    data_select (self->diagram, key);
+    self->selected = key;
+    count++;
+  }
+  g_queue_free (q);
+  g_hash_table_destroy (seen);
+  gtk_widget_queue_draw (self->canvas);
+  g_snprintf (buf, sizeof (buf), _("Selected %d (connected)"), count);
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
 }
 
@@ -5735,6 +5803,44 @@ on_uitest_gridprops (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): Select Transitive from box A grabs the whole
+ * A→B→C chain (2 boxes + connecting lines) = 5 objects. */
+static void
+on_uitest_seltransitive (GtkButton *button, DiaShell *self)
+{
+  DiaObject *a, *b, *c, *l1, *l2;
+  int cnt;
+  char buf[80];
+
+  dia_shell_set_new_diagram (self);
+  a = diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  b = diagram_create_object (self, "Standard - Box", (Point) { 9, 2 });
+  c = diagram_create_object (self, "Standard - Box", (Point) { 16, 2 });
+  l1 = diagram_create_object (self, "Standard - Line", (Point) { 4, 2 });
+  l2 = diagram_create_object (self, "Standard - Line", (Point) { 11, 2 });
+  if (a && b && c && l1 && l2 &&
+      a->num_connections && b->num_connections && c->num_connections &&
+      l1->num_handles > 1 && l2->num_handles > 1) {
+    object_connect (l1, l1->handles[0], a->connections[0]);
+    object_connect (l1, l1->handles[1], b->connections[0]);
+    object_connect (l2, l2->handles[0], b->connections[0]);
+    object_connect (l2, l2->handles[1], c->connections[0]);
+  }
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, a);
+  self->selected = a;
+
+  g_action_group_activate_action (self->actions, "select-transitive", NULL);
+  cnt = g_list_length (self->diagram->selected);
+
+  g_snprintf (buf, sizeof (buf),
+              cnt == 5 ? _("seltransitive OK (%d)")
+                       : _("seltransitive FAIL (%d)"), cnt);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5922,6 +6028,7 @@ static const GActionEntry dia_actions[] = {
   { "select-invert", action_select_invert, NULL, NULL, NULL },
   { "select-same-type", action_select_same_type, NULL, NULL, NULL },
   { "select-connected", action_select_connected, NULL, NULL, NULL },
+  { "select-transitive", action_select_transitive, NULL, NULL, NULL },
   { "fullscreen", action_fullscreen, NULL, NULL, NULL },
   { "diagram-properties", action_diagram_properties, NULL, NULL, NULL },
   { "group",      action_group,      NULL, NULL, NULL },
@@ -6089,6 +6196,7 @@ build_primary_menu_button (void)
   g_menu_append (edit, _("_Invert Selection"), "dia.select-invert");
   g_menu_append (edit, _("Select Same _Type"), "dia.select-same-type");
   g_menu_append (edit, _("Select _Connected"), "dia.select-connected");
+  g_menu_append (edit, _("Select _Transitive"), "dia.select-transitive");
   g_menu_append (edit, _("_Group"), "dia.group");
   g_menu_append (edit, _("_Ungroup"), "dia.ungroup");
   g_menu_append (edit, _("Bring to _Front"), "dia.to-front");
@@ -6406,6 +6514,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *fp = gtk_button_new_with_label ("uitest-flip");
     GtkWidget *sc = gtk_button_new_with_label ("uitest-selconnected");
     GtkWidget *gp = gtk_button_new_with_label ("uitest-gridprops");
+    GtkWidget *tr2 = gtk_button_new_with_label ("uitest-seltransitive");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -6447,6 +6556,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (fp), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (sc), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (gp), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (tr2), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -6488,6 +6598,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (fp, "clicked", G_CALLBACK (on_uitest_flip), self);
     g_signal_connect (sc, "clicked", G_CALLBACK (on_uitest_selconnected), self);
     g_signal_connect (gp, "clicked", G_CALLBACK (on_uitest_gridprops), self);
+    g_signal_connect (tr2, "clicked", G_CALLBACK (on_uitest_seltransitive), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -6529,6 +6640,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), fp);
     gtk_box_append (GTK_BOX (bar), sc);
     gtk_box_append (GTK_BOX (bar), gp);
+    gtk_box_append (GTK_BOX (bar), tr2);
   }
 
   return bar;

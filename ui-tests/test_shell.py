@@ -621,6 +621,16 @@ def main():
         ok = any('gridprops OK' in (lab.name or '') for lab in labels)
         check("Grid spacing controls snapping", ok)
 
+    # 3ar. Select Transitive grabs the whole connected chain.
+    tr2 = find(app, name='uitest-seltransitive', roleName='push button')
+    check("DIA_UITEST seltransitive trigger present", tr2)
+    if tr2:
+        do_click(tr2)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('seltransitive OK' in (lab.name or '') for lab in labels)
+        check("Select Transitive follows the whole chain", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)
