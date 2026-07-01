@@ -54,7 +54,7 @@ typedef struct {
   GtkWidget *hruler;
   GtkWidget *vruler;
   GtkWidget *colour_area;
-  GtkWidget *fill_area;
+  int        colour_region;   /* which swatch square was last pressed: 0 fg, 1 bg */
   GtkWidget *status_msg;
   GtkWidget *pos_label;
   GtkWidget *zoom_label;
@@ -985,22 +985,6 @@ draw_color_area (GtkDrawingArea *area,
   cairo_set_source_rgb (cr, 0.3, 0.3, 0.3);
   cairo_stroke (cr);
 }
-
-/* A single swatch of the current fill colour (self->bg). */
-static void
-draw_fill_swatch (GtkDrawingArea *area, cairo_t *cr, int width, int height,
-                  gpointer user_data)
-{
-  DiaShell *self = user_data;
-
-  cairo_rectangle (cr, 2, 2, width - 4, height - 4);
-  gdk_cairo_set_source_rgba (cr, &self->bg);
-  cairo_fill_preserve (cr);
-  cairo_set_source_rgb (cr, 0.3, 0.3, 0.3);
-  cairo_set_line_width (cr, 1.0);
-  cairo_stroke (cr);
-}
-
 
 /* --- event handlers ------------------------------------------------------ */
 
@@ -2048,6 +2032,27 @@ on_canvas_drag_end (GtkGestureDrag *gesture,
     self->drag_handle_idx = -1;
     gtk_widget_queue_draw (self->canvas);
     return;
+  }
+}
+
+
+/* Middle-mouse-button drag pans the view, whatever the active tool — a separate
+ * gesture from the primary-button drag, so it works while Modify/create/etc. is
+ * selected. Reuses pan_view (and pan_x0/pan_y0). */
+static void
+on_canvas_pan_begin (GtkGestureDrag *gesture, double x, double y,
+                     DiaShell *self)
+{
+  self->pan_x0 = self->origin_x;
+  self->pan_y0 = self->origin_y;
+}
+
+static void
+on_canvas_pan_update (GtkGestureDrag *gesture, double offset_x, double offset_y,
+                      DiaShell *self)
+{
+  if (self->page_scale > 0.0) {
+    pan_view (self, offset_x, offset_y);
   }
 }
 
@@ -4367,20 +4372,48 @@ on_colour_chosen (GObject *source, GAsyncResult *result, gpointer user_data)
 }
 
 
+static void on_fill_chosen (GObject *source, GAsyncResult *result,
+                            gpointer user_data);
+
+/* The single fg/bg swatch: opens the foreground picker when the front
+ * (top-left) square was pressed, or the background picker for the back
+ * (bottom-right) square — chosen by on_colour_area_pressed. */
 static void
 on_colour_clicked (GtkButton *button, DiaShell *self)
 {
   GtkColorDialog *dialog = gtk_color_dialog_new ();
   GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (button));
+  gboolean is_bg = (self->colour_region == 1);
 
-  gtk_color_dialog_set_title (dialog, _("Line Colour"));
+  gtk_color_dialog_set_title (dialog,
+                              is_bg ? _("Fill Colour") : _("Line Colour"));
   gtk_color_dialog_choose_rgba (dialog,
                                 GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
-                                &self->fg,
+                                is_bg ? &self->bg : &self->fg,
                                 NULL,
-                                on_colour_chosen,
+                                is_bg ? on_fill_chosen : on_colour_chosen,
                                 self);
   g_object_unref (dialog);
+}
+
+/* Record which square of the swatch a real pointer press landed on (the front
+ * foreground square is drawn on top, so it wins in the overlap). Runs in the
+ * capture phase so it observes the press without stealing it from the button. */
+static void
+on_colour_area_pressed (GtkGestureClick *gesture, int n_press,
+                        double x, double y, DiaShell *self)
+{
+  int w = gtk_widget_get_width (self->colour_area);
+  int h = gtk_widget_get_height (self->colour_area);
+  double s = MIN (w, h) * 0.62;
+
+  if (x <= s && y <= s) {
+    self->colour_region = 0;                 /* foreground (front square) */
+  } else if (x >= w - s && y >= h - s) {
+    self->colour_region = 1;                 /* background (back square) */
+  } else {
+    self->colour_region = 0;
+  }
 }
 
 static void
@@ -4397,26 +4430,9 @@ on_fill_chosen (GObject *source, GAsyncResult *result, gpointer user_data)
     apply_colour_to_selected (self, c, TRUE);
     attributes_set_background (&c);
     gtk_widget_queue_draw (self->colour_area);
-    if (self->fill_area) gtk_widget_queue_draw (self->fill_area);
     gtk_widget_queue_draw (self->canvas);
     gtk_label_set_text (GTK_LABEL (self->status_msg), _("Fill colour set"));
   }
-}
-
-static void
-on_fill_clicked (GtkButton *button, DiaShell *self)
-{
-  GtkColorDialog *dialog = gtk_color_dialog_new ();
-  GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (button));
-
-  gtk_color_dialog_set_title (dialog, _("Fill Colour"));
-  gtk_color_dialog_choose_rgba (dialog,
-                                GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
-                                &self->bg,
-                                NULL,
-                                on_fill_chosen,
-                                self);
-  g_object_unref (dialog);
 }
 
 
@@ -5040,7 +5056,6 @@ build_toolbox (DiaShell *self)
   GtkWidget *grid = gtk_grid_new ();
   GtkWidget *colour;
   GtkWidget *colour_btn;
-  GtkWidget *fill_btn;
   GtkToggleButton *first = NULL;
 
   gtk_widget_set_margin_start (box, 4);
@@ -5097,22 +5112,19 @@ build_toolbox (DiaShell *self)
   gtk_button_set_child (GTK_BUTTON (colour_btn), colour);
   gtk_button_set_has_frame (GTK_BUTTON (colour_btn), FALSE);
   set_a11y_label (colour_btn, "colour-area");
-  gtk_widget_set_tooltip_text (colour_btn, _("Line colour (of the selection)"));
+  gtk_widget_set_tooltip_text (colour_btn,
+                               _("Click the front square for line colour, the "
+                                 "back square for fill colour"));
   g_signal_connect (colour_btn, "clicked", G_CALLBACK (on_colour_clicked), self);
-
   {
-    GtkWidget *fill = gtk_drawing_area_new ();
+    /* Capture the press position (which square) before the button acts on it. */
+    GtkGesture *cg = gtk_gesture_click_new ();
 
-    self->fill_area = fill;
-    gtk_widget_set_size_request (fill, 24, 24);
-    gtk_drawing_area_set_draw_func (GTK_DRAWING_AREA (fill),
-                                    draw_fill_swatch, self, NULL);
-    fill_btn = gtk_button_new ();
-    gtk_button_set_child (GTK_BUTTON (fill_btn), fill);
-    gtk_button_set_has_frame (GTK_BUTTON (fill_btn), FALSE);
-    set_a11y_label (fill_btn, "fill-colour");
-    gtk_widget_set_tooltip_text (fill_btn, _("Fill colour (of the selection)"));
-    g_signal_connect (fill_btn, "clicked", G_CALLBACK (on_fill_clicked), self);
+    gtk_event_controller_set_propagation_phase (GTK_EVENT_CONTROLLER (cg),
+                                                GTK_PHASE_CAPTURE);
+    g_signal_connect (cg, "pressed",
+                      G_CALLBACK (on_colour_area_pressed), self);
+    gtk_widget_add_controller (colour_btn, GTK_EVENT_CONTROLLER (cg));
   }
 
   /* Line attributes. Changing these restyles the current selection and becomes
@@ -5152,7 +5164,6 @@ build_toolbox (DiaShell *self)
     gtk_widget_set_halign (wl, GTK_ALIGN_START);
     gtk_widget_set_hexpand (lw, TRUE);
     gtk_box_append (GTK_BOX (wrow), colour_btn);
-    gtk_box_append (GTK_BOX (wrow), fill_btn);
     gtk_box_append (GTK_BOX (wrow), wl);
     gtk_box_append (GTK_BOX (wrow), lw);
     gtk_box_append (GTK_BOX (box), wrow);
@@ -5196,6 +5207,7 @@ build_canvas_area (DiaShell *self)
   GtkGesture *click;
   GtkGesture *secondary;
   GtkGesture *drag;
+  GtkGesture *pan_drag;
 
   self->canvas = canvas;
   self->hscroll = hscroll;
@@ -5243,6 +5255,16 @@ build_canvas_area (DiaShell *self)
   g_signal_connect (drag, "drag-update", G_CALLBACK (on_canvas_drag_update), self);
   g_signal_connect (drag, "drag-end", G_CALLBACK (on_canvas_drag_end), self);
   gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (drag));
+
+  /* Middle-button drag pans regardless of the active tool. */
+  pan_drag = gtk_gesture_drag_new ();
+  gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (pan_drag),
+                                 GDK_BUTTON_MIDDLE);
+  g_signal_connect (pan_drag, "drag-begin",
+                    G_CALLBACK (on_canvas_pan_begin), self);
+  g_signal_connect (pan_drag, "drag-update",
+                    G_CALLBACK (on_canvas_pan_update), self);
+  gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (pan_drag));
 
   keys = gtk_event_controller_key_new ();
   g_signal_connect (keys, "key-pressed", G_CALLBACK (on_canvas_key), self);
