@@ -3238,11 +3238,12 @@ diagram_to_file (DiaShell *self, GFile *file)
 {
   DiaContext *ctx = dia_context_new ("Save Diagram");
   xmlDocPtr doc = xmlNewDoc ((const xmlChar *) "1.0");
-  xmlNodePtr root, layer_node;
+  xmlNodePtr root;
   xmlNsPtr ns;
-  DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
+  DiaLayer *active = dia_diagram_data_get_active_layer (self->diagram);
   char *path = g_file_get_path (file);
-  int n = layer ? dia_layer_object_count (layer) : 0;
+  int nl = data_layer_count (self->diagram);
+  int obj_id = 0;   /* object ids are unique across the whole diagram */
   gboolean ok;
 
   doc->encoding = xmlStrdup ((const xmlChar *) "UTF-8");
@@ -3252,24 +3253,39 @@ diagram_to_file (DiaShell *self, GFile *file)
                  (const xmlChar *) "dia");
   xmlSetNs (root, ns);
 
-  layer_node = xmlNewChild (root, ns, (const xmlChar *) "layer", NULL);
-  xmlSetProp (layer_node, (const xmlChar *) "name", (const xmlChar *) "Background");
-  xmlSetProp (layer_node, (const xmlChar *) "visible", (const xmlChar *) "true");
+  /* Write every layer (name/visibility/active) with its objects, mirroring the
+   * loader — saving only the active layer silently dropped the others. */
+  for (int li = 0; li < nl; li++) {
+    DiaLayer *layer = data_layer_get_nth (self->diagram, li);
+    int n = dia_layer_object_count (layer);
+    xmlNodePtr layer_node = xmlNewChild (root, ns,
+                                         (const xmlChar *) "layer", NULL);
 
-  for (int i = 0; i < n; i++) {
-    DiaObject *obj = dia_layer_object_get_nth (layer, i);
-    xmlNodePtr obj_node = xmlNewChild (layer_node, ns,
-                                       (const xmlChar *) "object", NULL);
-    char buf[16];
+    xmlSetProp (layer_node, (const xmlChar *) "name",
+                (const xmlChar *) dia_layer_get_name (layer));
+    xmlSetProp (layer_node, (const xmlChar *) "visible",
+                (const xmlChar *) (dia_layer_is_visible (layer) ? "true"
+                                                                : "false"));
+    if (layer == active) {
+      xmlSetProp (layer_node, (const xmlChar *) "active",
+                  (const xmlChar *) "true");
+    }
 
-    xmlSetProp (obj_node, (const xmlChar *) "type",
-                (const xmlChar *) obj->type->name);
-    g_snprintf (buf, sizeof (buf), "%d", obj->type->version);
-    xmlSetProp (obj_node, (const xmlChar *) "version", (const xmlChar *) buf);
-    g_snprintf (buf, sizeof (buf), "O%d", i);
-    xmlSetProp (obj_node, (const xmlChar *) "id", (const xmlChar *) buf);
+    for (int i = 0; i < n; i++) {
+      DiaObject *obj = dia_layer_object_get_nth (layer, i);
+      xmlNodePtr obj_node = xmlNewChild (layer_node, ns,
+                                         (const xmlChar *) "object", NULL);
+      char buf[16];
 
-    obj->type->ops->save (obj, obj_node, ctx);
+      xmlSetProp (obj_node, (const xmlChar *) "type",
+                  (const xmlChar *) obj->type->name);
+      g_snprintf (buf, sizeof (buf), "%d", obj->type->version);
+      xmlSetProp (obj_node, (const xmlChar *) "version", (const xmlChar *) buf);
+      g_snprintf (buf, sizeof (buf), "O%d", obj_id++);
+      xmlSetProp (obj_node, (const xmlChar *) "id", (const xmlChar *) buf);
+
+      obj->type->ops->save (obj, obj_node, ctx);
+    }
   }
 
   ok = dia_io_save_document (path, doc, FALSE, ctx);
@@ -4743,6 +4759,49 @@ on_uitest_textrotate (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): a two-layer diagram must survive save→load with
+ * both layers (save used to write only the active layer). */
+static void
+on_uitest_saveload (GtkButton *button, DiaShell *self)
+{
+  char *path = g_build_filename (g_get_tmp_dir (),
+                                 "dia-uitest-multilayer.dia", NULL);
+  GFile *file = g_file_new_for_path (path);
+  DiaLayer *l1;
+  DiagramData *reloaded;
+  int nl = -1, saved_nl;
+  char buf[80];
+
+  /* Fresh diagram so the count is deterministic (earlier triggers leave stray
+   * layers/objects). L0 gets a box, a new L1 gets an ellipse. */
+  dia_shell_set_new_diagram (self);
+  diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  l1 = dia_layer_new ("Second", self->diagram);
+  data_add_layer (self->diagram, l1);
+  g_object_unref (l1);
+  data_set_active_layer (self->diagram, l1);
+  diagram_create_object (self, "Standard - Ellipse", (Point) { 6, 6 });
+
+  saved_nl = data_layer_count (self->diagram);   /* 2 */
+  diagram_to_file (self, file);
+  reloaded = diagram_load_standalone (path);
+  if (reloaded) {
+    nl = data_layer_count (reloaded);
+    g_object_unref (reloaded);
+  }
+  if (saved_nl == 2 && nl == 2) {
+    g_snprintf (buf, sizeof (buf), _("saveload OK (%d layers)"), nl);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("saveload FAIL (saved=%d reloaded=%d)"),
+                saved_nl, nl);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  refresh_layers_list (self);
+  g_object_unref (file);
+  g_free (path);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5383,6 +5442,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *ts = gtk_button_new_with_label ("uitest-textstyle");
     GtkWidget *nt = gtk_button_new_with_label ("uitest-newtext");
     GtkWidget *tr = gtk_button_new_with_label ("uitest-textrotate");
+    GtkWidget *sl = gtk_button_new_with_label ("uitest-saveload");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -5416,6 +5476,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (ts), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (nt), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (tr), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (sl), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -5449,6 +5510,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (ts, "clicked", G_CALLBACK (on_uitest_textstyle), self);
     g_signal_connect (nt, "clicked", G_CALLBACK (on_uitest_newtext), self);
     g_signal_connect (tr, "clicked", G_CALLBACK (on_uitest_textrotate), self);
+    g_signal_connect (sl, "clicked", G_CALLBACK (on_uitest_saveload), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -5482,6 +5544,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), ts);
     gtk_box_append (GTK_BOX (bar), nt);
     gtk_box_append (GTK_BOX (bar), tr);
+    gtk_box_append (GTK_BOX (bar), sl);
   }
 
   return bar;

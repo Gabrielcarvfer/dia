@@ -541,6 +541,16 @@ def main():
         ok = any('textrotate OK' in (lab.name or '') for lab in labels)
         check("Text rotation accumulates (90+90=180)", ok)
 
+    # 3aj. A two-layer diagram survives save->load with both layers.
+    sl = find(app, name='uitest-saveload', roleName='push button')
+    check("DIA_UITEST saveload trigger present", sl)
+    if sl:
+        do_click(sl)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('saveload OK' in (lab.name or '') for lab in labels)
+        check("Multi-layer diagram round-trips through save/load", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)
