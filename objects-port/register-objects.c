@@ -61,6 +61,13 @@ extern DiaObjectType association_type, dependency_type, generalization_type;
 extern DiaObjectType realizes_type, implements_type, constraint_type;
 extern DiaObjectType message_type, uml_transition_type;
 
+/* UML element objects */
+extern DiaObjectType actor_type, usecase_type, node_type, component_type;
+extern DiaObjectType compfeat_type, note_type, smallpackage_type, largepackage_type;
+extern DiaObjectType branch_type, fork_type, lifeline_type, state_type;
+extern DiaObjectType state_term_type, activity_type, objet_type, umlobject_type;
+extern DiaObjectType classicon_type;
+
 void
 dia_port_register_objects (void)
 {
@@ -101,6 +108,25 @@ dia_port_register_objects (void)
   object_register_type (&constraint_type);
   object_register_type (&message_type);
   object_register_type (&uml_transition_type);
+
+  /* UML element objects */
+  object_register_type (&actor_type);
+  object_register_type (&usecase_type);
+  object_register_type (&node_type);
+  object_register_type (&component_type);
+  object_register_type (&compfeat_type);
+  object_register_type (&note_type);
+  object_register_type (&smallpackage_type);
+  object_register_type (&largepackage_type);
+  object_register_type (&branch_type);
+  object_register_type (&fork_type);
+  object_register_type (&lifeline_type);
+  object_register_type (&state_type);
+  object_register_type (&state_term_type);
+  object_register_type (&activity_type);
+  object_register_type (&objet_type);
+  object_register_type (&umlobject_type);
+  object_register_type (&classicon_type);
 
   object_register_type (&group_type);   /* so groups can be saved/loaded */
 }

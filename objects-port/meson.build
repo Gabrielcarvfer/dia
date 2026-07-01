@@ -53,6 +53,23 @@ libdia_objects_sources = files(
   objs / 'UML' / 'constraint.c',
   objs / 'UML' / 'message.c',
   objs / 'UML' / 'transition.c',
+  # element objects (all use the generic StdProp dialog, no custom GTK UI)
+  objs / 'UML' / 'actor.c',
+  objs / 'UML' / 'usecase.c',
+  objs / 'UML' / 'node.c',
+  objs / 'UML' / 'component.c',
+  objs / 'UML' / 'component_feature.c',
+  objs / 'UML' / 'note.c',
+  objs / 'UML' / 'small_package.c',
+  objs / 'UML' / 'large_package.c',
+  objs / 'UML' / 'branch.c',
+  objs / 'UML' / 'fork.c',
+  objs / 'UML' / 'lifeline.c',
+  objs / 'UML' / 'state.c',
+  objs / 'UML' / 'state_term.c',
+  objs / 'UML' / 'activity.c',
+  objs / 'UML' / 'object.c',
+  objs / 'UML' / 'classicon.c',
   # custom-shapes engine: loads .shape XML files as object types (custom.c's
   # dia_plugin_init is the only one linked now and is left unused; we call
   # custom_object_load ourselves from register-objects.c).
