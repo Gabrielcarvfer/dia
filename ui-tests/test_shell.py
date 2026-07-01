@@ -521,6 +521,16 @@ def main():
         ok = any('layermove OK' in (lab.name or '') for lab in labels)
         check("Move object between layers and into a group", ok)
 
+    # 3ag. Text font + size set via StdProp round-trips (New Text dialog path).
+    ts = find(app, name='uitest-textstyle', roleName='push button')
+    check("DIA_UITEST textstyle trigger present", ts)
+    if ts:
+        do_click(ts)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('textstyle OK' in (lab.name or '') for lab in labels)
+        check("Text font and size are settable", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
