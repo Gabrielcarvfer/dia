@@ -235,8 +235,21 @@ dia_relativize_filename (const char *master, const char *slave)
   bp1 = g_path_get_dirname (master);
   bp2 = g_path_get_dirname (slave);
 
-  /* the slave path has to be included in master to become relative */
-  if (g_str_has_prefix (bp2, bp1)) {
+  /* The slave path has to be included in master to become relative. A plain
+   * string prefix is not enough: the sibling "/foo/barbaz" must not be treated
+   * as living inside "/foo/bar", so the shared prefix has to end on a path
+   * component boundary -- either bp1 already ends in a separator (the root
+   * path), or the character right after the prefix in bp2 is a separator (or
+   * bp2 is exactly bp1). Otherwise the offset below would slice bp2 mid-name
+   * and produce a bogus, leading-characters-chopped path (see #392, #456). */
+  if (g_str_has_prefix (bp2, bp1)
+      && (g_str_has_suffix (bp1, G_DIR_SEPARATOR_S)
+          || bp2[strlen (bp1)] == '\0'
+          || bp2[strlen (bp1)] == G_DIR_SEPARATOR
+#ifdef G_OS_WIN32
+          || bp2[strlen (bp1)] == '/'
+#endif
+         )) {
     char *p;
     /* We have do deal with the special meaning of Windows drives, where 'c:' is
      * a reference to the current directory, but c:\ is the root path. For other

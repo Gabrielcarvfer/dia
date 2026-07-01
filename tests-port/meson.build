@@ -82,3 +82,17 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Regression test for #456 / #392: dia_relativize_filename() must only strip the
+# diagram's directory prefix when it ends on a path-component boundary, so a
+# sibling directory sharing a name prefix ("/foo/bar" vs "/foo/barbaz") is not
+# mistaken for a child and the embedded-image path isn't chopped mid-component.
+test(
+  'lib-dia-dirs',
+  executable(
+    'test-dia-dirs-port',
+    ['test-dia-dirs-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
