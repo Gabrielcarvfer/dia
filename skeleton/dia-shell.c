@@ -165,15 +165,38 @@ diagram_create_object (DiaShell *self, const char *type_name, Point p)
  * A small history of create/move ops. Removing an object from a layer only
  * unlinks it (it isn't destroyed), so undo/redo can move objects in and out.
  */
-typedef enum { OP_CREATE, OP_DELETE, OP_MOVE, OP_HANDLE } OpKind;
+typedef enum {
+  OP_CREATE, OP_DELETE, OP_MOVE, OP_HANDLE,
+  OP_CHANGE,   /* a libdia DiaObjectChange (property edit, add/del corner, …) */
+  OP_ROTATE,   /* a rotation by `degrees` about `from` (the stored centre) */
+} OpKind;
 
 typedef struct {
   OpKind     kind;
   DiaObject *obj;
-  Point      from;   /* OP_MOVE/OP_HANDLE: handle/object position before */
+  Point      from;   /* OP_MOVE/OP_HANDLE: pos before; OP_ROTATE: rotate centre */
   Point      to;     /* OP_MOVE/OP_HANDLE: handle/object position after */
   int        handle; /* OP_HANDLE: index of the moved handle in obj->handles */
+  DiaObjectChange *change;  /* OP_CHANGE: the applied change (owned) */
+  double     degrees;       /* OP_ROTATE: the forward rotation angle */
 } UndoOp;
+
+/* rotate one object by @degrees about the given centre (fwd decl; defined with
+ * the other rotation helpers). */
+static gboolean rotate_object_about (DiaObject *obj, double degrees,
+                                     Point center);
+static void update_connections_for (DiaObject *obj);
+
+static void
+undo_op_free (gpointer data)
+{
+  UndoOp *op = data;
+
+  if (op->kind == OP_CHANGE) {
+    g_clear_pointer (&op->change, dia_object_change_unref);
+  }
+  g_free (op);
+}
 
 static void
 update_undo_actions (DiaShell *self)
@@ -223,6 +246,35 @@ push_op_handle (DiaShell *self, DiaObject *obj, int handle_idx,
   op->handle = handle_idx;
 }
 
+/* Record an already-applied libdia DiaObjectChange (property-dialog apply,
+ * object-menu action, …) so it becomes undoable. Takes ownership of @change. */
+static void
+push_op_change (DiaShell *self, DiaObject *obj, DiaObjectChange *change)
+{
+  UndoOp *op;
+
+  if (!change) {
+    return;
+  }
+  push_op (self, OP_MOVE, obj, obj->position, obj->position);
+  op = g_ptr_array_index (self->undo, self->undo_pos - 1);
+  op->kind = OP_CHANGE;
+  op->change = change;
+}
+
+/* Record a rotation (by @degrees about @center) as an undoable op. */
+static void
+push_op_rotate (DiaShell *self, DiaObject *obj, double degrees, Point center)
+{
+  UndoOp *op;
+
+  push_op (self, OP_MOVE, obj, center, center);
+  op = g_ptr_array_index (self->undo, self->undo_pos - 1);
+  op->kind = OP_ROTATE;
+  op->degrees = degrees;
+  op->from = center;
+}
+
 /* Move op->obj's recorded handle to @p (used by both apply and revert). */
 static void
 op_move_handle (UndoOp *op, Point *p)
@@ -261,6 +313,14 @@ op_apply (DiaShell *self, UndoOp *op)   /* redo direction */
     case OP_HANDLE:
       op_move_handle (op, &op->to);
       break;
+    case OP_CHANGE:
+      dia_object_change_apply (op->change, op->obj);
+      update_connections_for (op->obj);
+      break;
+    case OP_ROTATE:
+      rotate_object_about (op->obj, op->degrees, op->from);
+      update_connections_for (op->obj);
+      break;
     default:
       break;
   }
@@ -289,6 +349,15 @@ op_revert (DiaShell *self, UndoOp *op)  /* undo direction */
       break;
     case OP_HANDLE:
       op_move_handle (op, &op->from);
+      break;
+    case OP_CHANGE:
+      dia_object_change_revert (op->change, op->obj);
+      update_connections_for (op->obj);
+      break;
+    case OP_ROTATE:
+      /* inverse rotation about the same stored centre → exact undo */
+      rotate_object_about (op->obj, 360.0 - op->degrees, op->from);
+      update_connections_for (op->obj);
       break;
     default:
       break;
@@ -1236,9 +1305,9 @@ on_props_dialog_response (AdwAlertDialog *dlg, const char *response,
   if (g_strcmp0 (response, "ok") == 0 && editor && obj) {
     DiaObjectChange *change = dia_object_apply_editor (obj, editor);
 
-    /* apply_editor already mutated the object; we don't thread property edits
-     * through the skeleton's simple undo stack yet, so just release it. */
-    g_clear_pointer (&change, dia_object_change_unref);
+    /* apply_editor already mutated the object; record the change so the edit
+     * is undoable (push_op_change takes ownership). */
+    push_op_change (self, obj, change);
     update_connections_for (obj);
     gtk_widget_queue_draw (self->canvas);
     refresh_layers_list (self);
@@ -1385,11 +1454,10 @@ on_obj_menu_item (GtkButton *btn, gpointer data)
     return;
   }
   if (c->item->callback) {
-    /* The callback applies the change immediately and returns it. We don't
-     * thread object-menu edits through the skeleton's simple undo stack yet,
-     * so just release it. */
+    /* The callback applies the change immediately and returns it; record it so
+     * the object-menu edit (add/delete corner, …) is undoable. */
     change = c->item->callback (c->obj, &c->pos, c->item->callback_data);
-    g_clear_pointer (&change, dia_object_change_unref);
+    push_op_change (c->self, c->obj, change);
     update_connections_for (c->obj);
     gtk_widget_queue_draw (c->self->canvas);
     refresh_layers_list (c->self);
@@ -1443,9 +1511,10 @@ ctx_add_action (GtkWidget *box, DiaShell *self, const char *label,
  * resize handles keep wrapping the shape exactly (unlike libdia's angle field,
  * which leaves an axis-aligned bbox around a drawn-rotated rectangle). Reads and
  * writes the element via StdProp so it works for any object exposing
- * elem_corner/elem_width/elem_height. Returns FALSE for non-elements. */
+ * elem_corner/elem_width/elem_height. Repositions about @center (the caller's
+ * fixed rotation centre). Returns FALSE for non-elements. */
 static gboolean
-rotate_element_clean (DiaObject *obj, int degrees)
+rotate_element_clean (DiaObject *obj, int degrees, Point center)
 {
   static PropDescription edescs[] = {
     { "elem_corner", PROP_TYPE_POINT },
@@ -1460,7 +1529,6 @@ rotate_element_clean (DiaObject *obj, int degrees)
   RealProperty  *hp = g_ptr_array_index (props, 2);
   RealProperty  *ap = g_ptr_array_index (props, 3);
   double w, h, nw, nh;
-  Point center;
 
   dia_object_get_properties (obj, props);
   w = wp->real_data;
@@ -1469,8 +1537,6 @@ rotate_element_clean (DiaObject *obj, int degrees)
     prop_list_free (props);
     return FALSE;   /* not an element — caller uses the geometry transform */
   }
-  center.x = cp->point_data.x + w / 2.0;
-  center.y = cp->point_data.y + h / 2.0;
 
   if (degrees == 90 || degrees == 270) {
     nw = h; nh = w;   /* a right-angle turn swaps the axes */
@@ -1488,19 +1554,21 @@ rotate_element_clean (DiaObject *obj, int degrees)
   return TRUE;
 }
 
-/* Rotate one object by @degrees about its own centre. Elements take the
- * pixel-clean axis-aligned path at right angles; everything else (lines,
+/* Rotate one object by @degrees about the fixed point @center. Elements take
+ * the pixel-clean axis-aligned path at right angles; everything else (lines,
  * polygons, béziers, groups) rotates its real geometry via libdia's transform
- * op (groups recurse into their children). Returns FALSE if neither applies. */
+ * op (groups recurse into their children). Rotating about an explicit centre
+ * (rather than the recomputed bbox centre) makes it exactly invertible, so the
+ * undo path can restore the original by rotating back about the same centre.
+ * Returns FALSE if neither path applies. */
 static gboolean
-rotate_object (DiaObject *obj, double degrees)
+rotate_object_about (DiaObject *obj, double degrees, Point center)
 {
-  int deg = (int) degrees;
+  int deg = ((int) degrees % 360 + 360) % 360;
   double rad = degrees * G_PI / 180.0;
   double c = cos (rad), s = sin (rad);
-  double cx = (obj->bounding_box.left + obj->bounding_box.right) / 2.0;
-  double cy = (obj->bounding_box.top + obj->bounding_box.bottom) / 2.0;
-  /* x' = c*x - s*y + x0 ; y' = s*x + c*y + y0, chosen so the centre is fixed */
+  double cx = center.x, cy = center.y;
+  /* x' = c*x - s*y + x0 ; y' = s*x + c*y + y0, chosen so @center is fixed */
   DiaMatrix m = {
     .xx = c, .xy = -s,
     .yx = s, .yy = c,
@@ -1509,7 +1577,7 @@ rotate_object (DiaObject *obj, double degrees)
   };
 
   if ((deg == 90 || deg == 180 || deg == 270) &&
-      rotate_element_clean (obj, deg)) {
+      rotate_element_clean (obj, deg, center)) {
     return TRUE;
   }
   if (!obj->ops || !obj->ops->transform) {
@@ -1518,7 +1586,19 @@ rotate_object (DiaObject *obj, double degrees)
   return dia_object_transform (obj, &m);
 }
 
-/* Rotate every selected object by @degrees (each about its own centre). */
+/* The bbox centre of @obj (its natural rotation centre). */
+static Point
+object_center (DiaObject *obj)
+{
+  Point c = {
+    (obj->bounding_box.left + obj->bounding_box.right) / 2.0,
+    (obj->bounding_box.top + obj->bounding_box.bottom) / 2.0,
+  };
+  return c;
+}
+
+/* Rotate every selected object by @degrees (each about its own centre), and
+ * record each as an undoable op. */
 static void
 rotate_selected (DiaShell *self, double degrees)
 {
@@ -1526,9 +1606,12 @@ rotate_selected (DiaShell *self, double degrees)
   char buf[64];
 
   for (GList *l = self->diagram->selected; l; l = l->next) {
+    Point center = object_center (l->data);
+
     total++;
-    if (rotate_object (l->data, degrees)) {
+    if (rotate_object_about (l->data, degrees, center)) {
       update_connections_for (l->data);
+      push_op_rotate (self, l->data, degrees, center);
       done++;
     }
   }
@@ -3798,6 +3881,88 @@ on_uitest_rotate (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): undo + redo of a rotation (OP_ROTATE) and of an
+ * add-corner object-menu edit (OP_CHANGE), confirming both are reversible. */
+static void
+on_uitest_undo_edit (GtkButton *button, DiaShell *self)
+{
+  DiaObject *box = diagram_create_object (self, "Standard - Box",
+                                          (Point) { 22, 10 });
+  DiaObject *poly;
+  double bw0, bw_rot, bw_undo, bw_redo;
+  int n0, n_add, n_undo, n_redo;
+  gboolean rot_ok, corner_ok;
+  DiaMenu *m;
+  char buf[128];
+
+  if (!box) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("undoedit FAIL (no box)"));
+    return;
+  }
+  push_op (self, OP_CREATE, box, (Point) { 22, 10 }, (Point) { 22, 10 });
+  {   /* stretch to a non-square 4x2 */
+    Point se = { box->bounding_box.left + 4.0, box->bounding_box.top + 2.0 };
+    DiaObjectChange *ch = dia_object_move_handle (
+        box, box->handles[box->num_handles - 1], &se, NULL,
+        HANDLE_MOVE_USER_FINAL, 0);
+    g_clear_pointer (&ch, dia_object_change_unref);
+  }
+  bw0 = box->bounding_box.right - box->bounding_box.left;   /* ~4 */
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, box);
+  self->selected = box;
+  rotate_selected (self, 90);                               /* pushes OP_ROTATE */
+  bw_rot = box->bounding_box.right - box->bounding_box.left; /* ~2 */
+
+  self->undo_pos--;                                          /* undo the rotate */
+  op_revert (self, g_ptr_array_index (self->undo, self->undo_pos));
+  bw_undo = box->bounding_box.right - box->bounding_box.left; /* ~4 */
+  op_apply (self, g_ptr_array_index (self->undo, self->undo_pos)); /* redo */
+  self->undo_pos++;
+  bw_redo = box->bounding_box.right - box->bounding_box.left; /* ~2 */
+
+  rot_ok = (fabs (bw0 - 4.0) < 0.2 && fabs (bw_rot - 2.0) < 0.2 &&
+            fabs (bw_undo - 4.0) < 0.2 && fabs (bw_redo - 2.0) < 0.2);
+
+  /* add-corner (OP_CHANGE) undo/redo on a polygon */
+  poly = diagram_create_object (self, "Standard - Polygon", (Point) { 26, 10 });
+  corner_ok = FALSE;
+  if (poly) {
+    push_op (self, OP_CREATE, poly, (Point) { 26, 10 }, (Point) { 26, 10 });
+    n0 = poly->num_handles;
+    m = dia_object_get_menu (poly, &(Point) { 26, 10 });
+    for (int i = 0; m && i < m->num_items; i++) {
+      DiaMenuItem *it = &m->items[i];
+
+      if (it->text && it->callback && strstr (it->text, "Add Corner")) {
+        DiaObjectChange *ch = it->callback (poly, &(Point) { 26, 10 },
+                                            it->callback_data);
+        push_op_change (self, poly, ch);   /* OP_CHANGE */
+        break;
+      }
+    }
+    n_add = poly->num_handles;
+    self->undo_pos--;
+    op_revert (self, g_ptr_array_index (self->undo, self->undo_pos));
+    n_undo = poly->num_handles;
+    op_apply (self, g_ptr_array_index (self->undo, self->undo_pos));
+    self->undo_pos++;
+    n_redo = poly->num_handles;
+    corner_ok = (n_add == n0 + 1 && n_undo == n0 && n_redo == n0 + 1);
+  }
+
+  g_snprintf (buf, sizeof (buf),
+              (rot_ok && corner_ok) ? _("undoedit OK (rotate + add-corner)")
+                                    : _("undoedit FAIL (rot=%d corner=%d)"),
+              rot_ok, corner_ok);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+  update_undo_actions (self);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -4355,6 +4520,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *pn = gtk_button_new_with_label ("uitest-pan");
     GtkWidget *ng = gtk_button_new_with_label ("uitest-nestedgroup");
     GtkWidget *ro = gtk_button_new_with_label ("uitest-rotate");
+    GtkWidget *ue = gtk_button_new_with_label ("uitest-undoedit");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -4382,6 +4548,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (pn), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ng), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ro), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (ue), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -4409,6 +4576,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (pn, "clicked", G_CALLBACK (on_uitest_pan), self);
     g_signal_connect (ng, "clicked", G_CALLBACK (on_uitest_nestedgroup), self);
     g_signal_connect (ro, "clicked", G_CALLBACK (on_uitest_rotate), self);
+    g_signal_connect (ue, "clicked", G_CALLBACK (on_uitest_undo_edit), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -4436,6 +4604,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), pn);
     gtk_box_append (GTK_BOX (bar), ng);
     gtk_box_append (GTK_BOX (bar), ro);
+    gtk_box_append (GTK_BOX (bar), ue);
   }
 
   return bar;
@@ -5311,7 +5480,7 @@ dia_shell_new (void)
   libdia_init (DIA_INTERACTIVE);
   register_standard_object_types ();
   self->diagram = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
-  self->undo = g_ptr_array_new_with_free_func (g_free);
+  self->undo = g_ptr_array_new_with_free_func (undo_op_free);
   dia_shell_seed_sample (self);
 
   /* Install the "dia" action group on the content so the toolbar buttons and

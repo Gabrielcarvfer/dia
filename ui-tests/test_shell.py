@@ -491,6 +491,16 @@ def main():
         ok = any('rotate OK' in (lab.name or '') for lab in labels)
         check("Rotate 90° (line geometry + pixel-clean box swap)", ok)
 
+    # 3ad. Undo/redo of a rotation (OP_ROTATE) and add-corner edit (OP_CHANGE).
+    ue = find(app, name='uitest-undoedit', roleName='push button')
+    check("DIA_UITEST undoedit trigger present", ue)
+    if ue:
+        do_click(ue)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('undoedit OK' in (lab.name or '') for lab in labels)
+        check("Undo/redo of rotate + property/menu edit", ok)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)
