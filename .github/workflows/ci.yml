@@ -201,39 +201,36 @@ jobs:
           rm -f "$APP/Contents/share/dia/shapes/meson.build" \
                 "$APP/Contents/share/dia/shapes/make-midpoint.pl"
 
-          # --- OPTIONAL: code-sign the .app (uncomment + add the secrets) ------
-          # Signing + notarizing (below) is the durable fix for the VirusTotal
-          # "unsigned app" heuristic false positives and lets Gatekeeper open it
-          # without the right-click dance. Add these repo secrets, then map them
-          # into this step's env: (see the commented `env:` on the step above):
-          #   MACOS_CERT_P12      base64 of your "Developer ID Application" .p12
-          #   MACOS_CERT_PWD      password for that .p12
-          #   MACOS_KEYCHAIN_PWD  any throwaway temp-keychain password
-          # # Import the cert into a temporary keychain.
-          # echo "$MACOS_CERT_P12" | base64 --decode > /tmp/cert.p12
-          # security create-keychain -p "$MACOS_KEYCHAIN_PWD" build.keychain
-          # security default-keychain -s build.keychain
-          # security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" build.keychain
-          # security import /tmp/cert.p12 -k build.keychain -P "$MACOS_CERT_PWD" \
-          #   -T /usr/bin/codesign
-          # security set-key-partition-list -S apple-tool:,apple: -s \
-          #   -k "$MACOS_KEYCHAIN_PWD" build.keychain
-          # IDENTITY="$(security find-identity -v -p codesigning build.keychain \
-          #   | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
-          # # Hardened runtime + library-validation disabled (the bundled dylibs
-          # # are third-party and had their install names rewritten). printf (not
-          # # a heredoc) so this survives the YAML indentation when uncommented.
-          # printf '%s\n' \
-          #   '<?xml version="1.0" encoding="UTF-8"?>' \
-          #   '<plist version="1.0"><dict>' \
-          #   '<key>com.apple.security.cs.disable-library-validation</key><true/>' \
-          #   '</dict></plist>' > entitlements.plist
-          # # Sign inside-out: every bundled dylib first, then the app.
-          # find "$APP/Contents/libs" -name '*.dylib' -exec \
-          #   codesign --force --options runtime --timestamp --sign "$IDENTITY" {} +
-          # codesign --force --deep --options runtime --timestamp \
-          #   --entitlements entitlements.plist --sign "$IDENTITY" "$APP"
-          # codesign --verify --strict --verbose=2 "$APP"
+          # De-duplicate LC_RPATH on the main binary. meson's build rpath and the
+          # rpath dylibbundler adds (-p @executable_path/../libs) can collide, and
+          # modern dyld ABORTS on a duplicate LC_RPATH ("termination reason: DYLD,
+          # duplicate LC_RPATH") — the app crashes on launch. Delete extra copies,
+          # keeping one of each. Must run BEFORE signing (which seals the binary).
+          BIN="$APP/Contents/MacOS/dia"
+          rpaths() { otool -l "$1" | awk '/cmd LC_RPATH/{r=1} r&&/ path /{print $2; r=0}'; }
+          for dup in $(rpaths "$BIN" | sort | uniq -d); do
+            while [ "$(rpaths "$BIN" | grep -Fxc "$dup")" -gt 1 ]; do
+              install_name_tool -delete_rpath "$dup" "$BIN"
+            done
+          done
+
+          # Ad-hoc code-sign (free, no Apple account). Apple Silicon refuses to
+          # run unsigned arm64 binaries at all, so this is required for the app to
+          # launch; it does NOT notarize, so Gatekeeper still shows the "unverified
+          # developer" prompt on first open (right-click ▸ Open, or run
+          # `xattr -dr com.apple.quarantine Dia.app`). Sign inside-out: bundled
+          # dylibs first, then the executable, then the .app bundle.
+          find "$APP/Contents/libs" -name '*.dylib' -exec \
+            codesign --force --timestamp=none --sign - {} + 2>/dev/null || true
+          codesign --force --timestamp=none --sign - "$BIN"
+          codesign --force --timestamp=none --sign - "$APP"
+          codesign --verify --verbose=2 "$APP" || true
+
+          # For a properly-signed + notarized build (removes the Gatekeeper prompt
+          # and most AV false positives) you need a paid "Developer ID Application"
+          # cert; wire that up by replacing the `--sign -` above with your identity
+          # (+ --options runtime + entitlements) and uncommenting the notarize step
+          # below. Not worth €99/yr for a hobby build — ad-hoc is fine.
 
           # Package into a compressed DMG with an Applications shortcut.
           mkdir -p dmgroot
