@@ -2998,9 +2998,12 @@ diagram_export_file (DiagramData *data, const char *path)
  * a new GList of top-level objects. A <dia:group> child is loaded recursively
  * and wrapped with group_create (which takes ownership of the child list). The
  * caller owns the returned list (free with g_list_free once the objects are
- * re-homed into a layer/group). */
+ * re-homed into a layer/group). Records every real object's id in @id_map (id
+ * string -> obj) and appends (obj, node) to @objs/@nodes, so connections can be
+ * resolved once the whole document is loaded. */
 static GList *
-load_objects_recursive (xmlNodePtr parent, DiaContext *ctx)
+load_objects_recursive (xmlNodePtr parent, DiaContext *ctx, GHashTable *id_map,
+                        GPtrArray *objs, GPtrArray *nodes)
 {
   GList *out = NULL;
 
@@ -3015,13 +3018,21 @@ load_objects_recursive (xmlNodePtr parent, DiaContext *ctx)
                                           version_str ? atoi (version_str) : 0,
                                           ctx);
         if (obj) {
+          char *id = (char *) xmlGetProp (on, (const xmlChar *) "id");
+
           out = g_list_append (out, obj);
+          if (id) {
+            g_hash_table_insert (id_map, g_strdup (id), obj);
+            xmlFree (id);
+          }
+          g_ptr_array_add (objs, obj);
+          g_ptr_array_add (nodes, on);
         }
       }
       if (type_name) xmlFree (type_name);
       if (version_str) xmlFree (version_str);
     } else if (xmlStrcmp (on->name, (const xmlChar *) "group") == 0) {
-      GList *children = load_objects_recursive (on, ctx);
+      GList *children = load_objects_recursive (on, ctx, id_map, objs, nodes);
 
       if (children) {
         out = g_list_append (out, group_create (children));   /* owns children */
@@ -3029,6 +3040,49 @@ load_objects_recursive (xmlNodePtr parent, DiaContext *ctx)
     }
   }
   return out;
+}
+
+/* Re-establish handle->connection-point links recorded in <dia:connections>,
+ * once every object is loaded and in @id_map (a connection may target an object
+ * saved later or in another layer). */
+static void
+resolve_connections (GPtrArray *objs, GPtrArray *nodes, GHashTable *id_map)
+{
+  for (guint k = 0; k < objs->len; k++) {
+    DiaObject *obj = g_ptr_array_index (objs, k);
+    xmlNodePtr node = g_ptr_array_index (nodes, k);
+    xmlNodePtr conns = node->children;
+
+    while (conns &&
+           xmlStrcmp (conns->name, (const xmlChar *) "connections") != 0) {
+      conns = conns->next;
+    }
+    if (!conns) {
+      continue;
+    }
+    for (xmlNodePtr c = conns->children; c; c = c->next) {
+      char *hs, *tos, *cs;
+
+      if (xmlStrcmp (c->name, (const xmlChar *) "connection") != 0) {
+        continue;
+      }
+      hs = (char *) xmlGetProp (c, (const xmlChar *) "handle");
+      tos = (char *) xmlGetProp (c, (const xmlChar *) "to");
+      cs = (char *) xmlGetProp (c, (const xmlChar *) "connection");
+      if (hs && tos && cs) {
+        int h = atoi (hs), cn = atoi (cs);
+        DiaObject *to = g_hash_table_lookup (id_map, tos);
+
+        if (to && h >= 0 && h < obj->num_handles &&
+            cn >= 0 && cn < to->num_connections) {
+          object_connect (obj, obj->handles[h], to->connections[cn]);
+        }
+      }
+      if (hs) xmlFree (hs);
+      if (tos) xmlFree (tos);
+      if (cs) xmlFree (cs);
+    }
+  }
 }
 
 /* Populate @data with the layers and objects under XML @root, recreating the
@@ -3040,6 +3094,10 @@ load_diagram_layers (DiagramData *data, xmlNodePtr root, DiaContext *ctx)
 {
   gboolean first_layer = TRUE;
   DiaLayer *active = NULL;
+  GHashTable *id_map = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                              g_free, NULL);
+  GPtrArray *objs = g_ptr_array_new ();
+  GPtrArray *nodes = g_ptr_array_new ();
 
   for (xmlNodePtr ln = root ? root->children : NULL; ln; ln = ln->next) {
     char *lname, *lvisible, *lactive;
@@ -3071,21 +3129,25 @@ load_diagram_layers (DiagramData *data, xmlNodePtr root, DiaContext *ctx)
     }
 
     {
-      GList *objs = load_objects_recursive (ln, ctx);
+      GList *loaded = load_objects_recursive (ln, ctx, id_map, objs, nodes);
 
-      for (GList *o = objs; o; o = o->next) {
+      for (GList *o = loaded; o; o = o->next) {
         dia_layer_add_object (layer, o->data);
       }
-      g_list_free (objs);   /* the objects are now owned by the layer */
+      g_list_free (loaded);   /* the objects are now owned by the layer */
     }
 
     if (lname) xmlFree (lname);
     if (lvisible) xmlFree (lvisible);
     if (lactive) xmlFree (lactive);
   }
+  resolve_connections (objs, nodes, id_map);   /* all ids now known */
   if (active) {
     data_set_active_layer (data, active);
   }
+  g_hash_table_destroy (id_map);
+  g_ptr_array_free (objs, TRUE);
+  g_ptr_array_free (nodes, TRUE);
 }
 
 /* Load a .dia file into a fresh DiagramData (no shell/GUI). Caller unrefs.
@@ -3260,10 +3322,13 @@ dia_shell_export_cli (const char *const *infiles, int n_infiles,
 /* Serialize @objects under @parent: a group becomes a <dia:group> with its
  * children recursively (groups carry NO type->ops->save — they're a structural
  * element, like upstream write_objects); every other object is a <dia:object>
- * saved by its own ops. */
+ * saved by its own ops. Records each real object's integer id in @ids
+ * (obj -> id) and appends it (and its node) to @objs/@nodes so connections can
+ * be written afterwards, once every object has an id. */
 static void
 save_objects_recursive (xmlNodePtr parent, xmlNsPtr ns, GList *objects,
-                        DiaContext *ctx, int *obj_id)
+                        DiaContext *ctx, int *obj_id, GHashTable *ids,
+                        GPtrArray *objs, GPtrArray *nodes)
 {
   for (GList *l = objects; l; l = l->next) {
     DiaObject *obj = l->data;
@@ -3272,20 +3337,77 @@ save_objects_recursive (xmlNodePtr parent, xmlNsPtr ns, GList *objects,
       xmlNodePtr gnode = xmlNewChild (parent, ns, (const xmlChar *) "group",
                                       NULL);
 
-      save_objects_recursive (gnode, ns, group_objects (obj), ctx, obj_id);
+      save_objects_recursive (gnode, ns, group_objects (obj), ctx, obj_id,
+                              ids, objs, nodes);
     } else {
       xmlNodePtr obj_node = xmlNewChild (parent, ns,
                                          (const xmlChar *) "object", NULL);
+      int this_id = (*obj_id)++;
       char buf[16];
 
       xmlSetProp (obj_node, (const xmlChar *) "type",
                   (const xmlChar *) obj->type->name);
       g_snprintf (buf, sizeof (buf), "%d", obj->type->version);
       xmlSetProp (obj_node, (const xmlChar *) "version", (const xmlChar *) buf);
-      g_snprintf (buf, sizeof (buf), "O%d", (*obj_id)++);
+      g_snprintf (buf, sizeof (buf), "O%d", this_id);
       xmlSetProp (obj_node, (const xmlChar *) "id", (const xmlChar *) buf);
 
       obj->type->ops->save (obj, obj_node, ctx);
+
+      g_hash_table_insert (ids, obj, GINT_TO_POINTER (this_id));
+      g_ptr_array_add (objs, obj);
+      g_ptr_array_add (nodes, obj_node);
+    }
+  }
+}
+
+/* After every object has an id, write each object's <dia:connections>: one
+ * <dia:connection handle= to= connection=> per handle bound to another object's
+ * connection point (cross-object refs the per-object save can't emit). */
+static void
+save_connections (xmlNsPtr ns, GHashTable *ids, GPtrArray *objs,
+                  GPtrArray *nodes)
+{
+  for (guint k = 0; k < objs->len; k++) {
+    DiaObject *obj = g_ptr_array_index (objs, k);
+    xmlNodePtr obj_node = g_ptr_array_index (nodes, k);
+    xmlNodePtr connections = NULL;
+
+    for (int h = 0; h < obj->num_handles; h++) {
+      ConnectionPoint *cp = obj->handles[h]->connected_to;
+      DiaObject *other;
+      gpointer idp;
+      int cpn;
+      char buf[16];
+      xmlNodePtr cnode;
+
+      if (!cp) {
+        continue;
+      }
+      other = cp->object;
+      if (!g_hash_table_lookup_extended (ids, other, NULL, &idp)) {
+        continue;   /* target not saved (shouldn't happen) */
+      }
+      for (cpn = 0; cpn < other->num_connections; cpn++) {
+        if (other->connections[cpn] == cp) {
+          break;
+        }
+      }
+      if (cpn >= other->num_connections) {
+        continue;
+      }
+      if (!connections) {
+        connections = xmlNewChild (obj_node, ns,
+                                   (const xmlChar *) "connections", NULL);
+      }
+      cnode = xmlNewChild (connections, ns, (const xmlChar *) "connection",
+                           NULL);
+      g_snprintf (buf, sizeof (buf), "%d", h);
+      xmlSetProp (cnode, (const xmlChar *) "handle", (const xmlChar *) buf);
+      g_snprintf (buf, sizeof (buf), "O%d", GPOINTER_TO_INT (idp));
+      xmlSetProp (cnode, (const xmlChar *) "to", (const xmlChar *) buf);
+      g_snprintf (buf, sizeof (buf), "%d", cpn);
+      xmlSetProp (cnode, (const xmlChar *) "connection", (const xmlChar *) buf);
     }
   }
 }
@@ -3301,6 +3423,9 @@ diagram_to_file (DiaShell *self, GFile *file)
   char *path = g_file_get_path (file);
   int nl = data_layer_count (self->diagram);
   int obj_id = 0;   /* object ids are unique across the whole diagram */
+  GHashTable *ids = g_hash_table_new (g_direct_hash, g_direct_equal);
+  GPtrArray *objs = g_ptr_array_new ();
+  GPtrArray *nodes = g_ptr_array_new ();
   gboolean ok;
 
   doc->encoding = xmlStrdup ((const xmlChar *) "UTF-8");
@@ -3328,11 +3453,15 @@ diagram_to_file (DiaShell *self, GFile *file)
     }
 
     save_objects_recursive (layer_node, ns, dia_layer_get_object_list (layer),
-                            ctx, &obj_id);
+                            ctx, &obj_id, ids, objs, nodes);
   }
+  save_connections (ns, ids, objs, nodes);   /* now that all ids exist */
 
   ok = dia_io_save_document (path, doc, FALSE, ctx);
 
+  g_hash_table_destroy (ids);
+  g_ptr_array_free (objs, TRUE);
+  g_ptr_array_free (nodes, TRUE);
   xmlFreeDoc (doc);
   dia_context_release (ctx);
   g_free (path);
@@ -4756,14 +4885,19 @@ on_uitest_saveload (GtkButton *button, DiaShell *self)
   int nl = -1, saved_nl;
   char buf[80];
 
-  DiaObject *b, *c;
-  gboolean group_ok = FALSE;
+  DiaObject *b, *c, *bx, *line;
+  gboolean group_ok = FALSE, conn_ok = FALSE;
 
   /* Fresh diagram so the count is deterministic (earlier triggers leave stray
-   * layers/objects). L0 gets a box + a GROUP of two boxes; a new L1 gets an
-   * ellipse. The group exercises <dia:group> save/load. */
+   * layers/objects). L0 gets a box, a line connected to it, and a GROUP of two
+   * boxes; a new L1 gets an ellipse. Exercises <dia:group> + <dia:connections>
+   * save/load. */
   dia_shell_set_new_diagram (self);
-  diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  bx = diagram_create_object (self, "Standard - Box", (Point) { 2, 2 });
+  line = diagram_create_object (self, "Standard - Line", (Point) { 2, 2 });
+  if (bx && line && line->num_handles > 0 && bx->num_connections > 0) {
+    object_connect (line, line->handles[0], bx->connections[0]);
+  }
   b = diagram_create_object (self, "Standard - Box", (Point) { 4, 4 });
   c = diagram_create_object (self, "Standard - Box", (Point) { 5, 5 });
   data_remove_all_selected (self->diagram);
@@ -4793,16 +4927,22 @@ on_uitest_saveload (GtkButton *button, DiaShell *self)
         if (o->type == &group_type && g_list_length (group_objects (o)) == 2) {
           group_ok = TRUE;
         }
+        for (int h = 0; h < o->num_handles; h++) {
+          if (o->handles[h]->connected_to != NULL) {
+            conn_ok = TRUE;   /* a handle got re-linked to a CP */
+          }
+        }
       }
     }
     g_object_unref (reloaded);
   }
-  if (saved_nl == 2 && nl == 2 && group_ok) {
-    g_snprintf (buf, sizeof (buf), _("saveload OK (%d layers + group)"), nl);
+  if (saved_nl == 2 && nl == 2 && group_ok && conn_ok) {
+    g_snprintf (buf, sizeof (buf),
+                _("saveload OK (%d layers + group + connection)"), nl);
   } else {
     g_snprintf (buf, sizeof (buf),
-                _("saveload FAIL (saved=%d reloaded=%d group=%d)"),
-                saved_nl, nl, group_ok);
+                _("saveload FAIL (saved=%d reloaded=%d group=%d conn=%d)"),
+                saved_nl, nl, group_ok, conn_ok);
   }
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
   refresh_layers_list (self);
