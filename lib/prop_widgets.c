@@ -107,10 +107,10 @@ frame_beginprop_get_widget (FrameProperty *prop, PropDialog *dialog)
   GtkWidget *vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
 
   gtk_expander_set_expanded (GTK_EXPANDER (frame), TRUE);
-  gtk_widget_show (frame);
+  gtk_widget_set_visible (frame, TRUE);
 
   gtk_expander_set_child (GTK_EXPANDER (frame), vbox);
-  gtk_widget_show (vbox);
+  gtk_widget_set_visible (vbox, TRUE);
 
   prop_dialog_add_raw (dialog, frame);
 
@@ -166,7 +166,7 @@ static WIDGET *
 multicol_beginprop_get_widget(MulticolProperty *prop, PropDialog *dialog)
 {
   GtkWidget *multicol = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 1);
-  gtk_widget_show(multicol);
+  gtk_widget_set_visible (multicol, TRUE);
 
   prop_dialog_add_raw(dialog,multicol);
 
@@ -180,7 +180,7 @@ static WIDGET *
 multicol_columnprop_get_widget(MulticolProperty *prop, PropDialog *dialog)
 {
   GtkWidget *col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
-  gtk_widget_show(col);
+  gtk_widget_set_visible (col, TRUE);
 
   prop_dialog_container_pop(dialog); /* NULL or the previous column */
 
@@ -256,7 +256,7 @@ notebook_beginprop_get_widget(NotebookProperty *prop, PropDialog *dialog)
   GtkWidget *notebook = gtk_notebook_new();
 
   gtk_notebook_set_tab_pos(GTK_NOTEBOOK(notebook),GTK_POS_TOP);
-  gtk_widget_show(notebook);
+  gtk_widget_set_visible (notebook, TRUE);
 
   prop_dialog_add_raw(dialog,notebook);
 
@@ -271,8 +271,8 @@ notebook_pageprop_get_widget(NotebookProperty *prop, PropDialog *dialog)
 {
   GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
   GtkWidget *label = gtk_label_new(_(prop->common.descr->description));
-  gtk_widget_show(page);
-  gtk_widget_show(label);
+  gtk_widget_set_visible (page, TRUE);
+  gtk_widget_set_visible (label, TRUE);
 
   prop_dialog_container_pop(dialog); /* NULL or the previous page */
 

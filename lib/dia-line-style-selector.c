@@ -140,7 +140,7 @@ dia_line_style_selector_init (DiaLineStyleSelector *fs)
                                   NULL);
 
   gtk_box_append (GTK_BOX (fs), fs->combo);
-  gtk_widget_show (fs->combo);
+  gtk_widget_set_visible (fs->combo, TRUE);
 
   box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
   /*  fs->sizebox = GTK_HBOX(box); */
@@ -149,7 +149,7 @@ dia_line_style_selector_init (DiaLineStyleSelector *fs)
   fs->lengthlabel = GTK_LABEL (label);
   gtk_widget_set_hexpand (label, TRUE);
   gtk_box_append (GTK_BOX (box), label);
-  gtk_widget_show (label);
+  gtk_widget_set_visible (label, TRUE);
 
   adj = GTK_ADJUSTMENT (gtk_adjustment_new (0.1, 0.00, 10.0, 0.1, 1.0, 0));
   length = gtk_spin_button_new (adj, DEFAULT_LINESTYLE_DASHLEN, 2);
@@ -158,7 +158,7 @@ dia_line_style_selector_init (DiaLineStyleSelector *fs)
   fs->dashlength = GTK_SPIN_BUTTON (length);
   gtk_widget_set_hexpand (length, TRUE);
   gtk_box_append (GTK_BOX (box), length);
-  gtk_widget_show (length);
+  gtk_widget_set_visible (length, TRUE);
 
   g_signal_connect (G_OBJECT (length),
                     "changed", G_CALLBACK (linestyle_dashlength_change_callback),
@@ -167,7 +167,7 @@ dia_line_style_selector_init (DiaLineStyleSelector *fs)
   set_linestyle_sensitivity (fs);
   gtk_widget_set_hexpand (box, TRUE);
   gtk_box_append (GTK_BOX (fs), box);
-  gtk_widget_show (box);
+  gtk_widget_set_visible (box, TRUE);
 }
 
 

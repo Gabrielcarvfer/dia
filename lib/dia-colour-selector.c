@@ -257,7 +257,7 @@ more_colours (DiaColourSelector *self)
                            self,
                            G_CONNECT_DEFAULT);
 
-  gtk_widget_show (GTK_WIDGET (self->dialog));
+  gtk_widget_set_visible (GTK_WIDGET (self->dialog), TRUE);
 }
 
 

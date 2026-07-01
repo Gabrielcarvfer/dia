@@ -769,7 +769,7 @@ persistence_register_window (GtkWindow *window)
     }
 
     if (wininfo->isopen) {
-      gtk_widget_show (GTK_WIDGET (window));
+      gtk_widget_set_visible (GTK_WIDGET (window), TRUE);
     }
   } else {
     wininfo = g_new0 (PersistentWindow, 1);

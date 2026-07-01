@@ -147,7 +147,7 @@ dia_arrow_chooser_dialog_response (GtkWidget       *dialog,
     dia_arrow_selector_set_arrow (chooser->selector, chooser->arrow);
   }
 
-  gtk_widget_hide (chooser->dialog);
+  gtk_widget_set_visible (chooser->dialog, FALSE);
 }
 
 
@@ -206,7 +206,7 @@ dia_arrow_chooser_dialog_show (GtkWidget *widget, DiaArrowChooser *chooser)
 
   dia_arrow_chooser_dialog_new (chooser);
   dia_arrow_selector_set_arrow (chooser->selector, chooser->arrow);
-  gtk_widget_show (chooser->dialog);
+  gtk_widget_set_visible (chooser->dialog, TRUE);
 }
 
 

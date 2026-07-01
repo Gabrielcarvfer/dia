@@ -485,7 +485,7 @@ dia_font_selector_init (DiaFontSelector *fs)
 
   priv->fonts = gtk_combo_box_new_with_model (GTK_TREE_MODEL (priv->fonts_store));
   gtk_widget_set_hexpand (priv->fonts, TRUE);
-  gtk_widget_show (priv->fonts);
+  gtk_widget_set_visible (priv->fonts, TRUE);
 
   g_signal_connect (priv->fonts,
                     "changed",
@@ -510,7 +510,7 @@ dia_font_selector_init (DiaFontSelector *fs)
                                            G_TYPE_STRING,
                                            G_TYPE_INT);
   priv->styles = gtk_combo_box_new_with_model (GTK_TREE_MODEL (priv->styles_store));
-  gtk_widget_show (priv->styles);
+  gtk_widget_set_visible (priv->styles, TRUE);
 
   g_signal_connect (priv->styles,
                     "changed",

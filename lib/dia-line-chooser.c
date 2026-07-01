@@ -74,7 +74,7 @@ static void
 dia_line_chooser_show_dialog (GtkButton *button, DiaLineChooser *self)
 {
   gtk_popover_popdown (GTK_POPOVER (self->popover));
-  gtk_widget_show (self->dialog);
+  gtk_widget_set_visible (self->dialog, TRUE);
 }
 
 
@@ -117,7 +117,7 @@ dia_line_chooser_dialog_response (GtkWidget      *dialog,
                                            lchooser->dash_length);
   }
 
-  gtk_widget_hide (lchooser->dialog);
+  gtk_widget_set_visible (lchooser->dialog, FALSE);
 }
 
 

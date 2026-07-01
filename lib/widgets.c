@@ -80,11 +80,11 @@ dia_toggle_button_new(GtkWidget *on_widget, GtkWidget *off_widget)
    * sink them. */
   images->on = on_widget;
   g_object_ref_sink(images->on);
-  gtk_widget_show(images->on);
+  gtk_widget_set_visible (images->on, TRUE);
 
   images->off = off_widget;
   g_object_ref_sink(images->off);
-  gtk_widget_show(images->off);
+  gtk_widget_set_visible (images->off, TRUE);
 
   /* GTK4: GtkMisc and can-default are gone; margins default to 0. */
   gtk_widget_set_can_focus (GTK_WIDGET (button), FALSE);

@@ -121,7 +121,7 @@ prop_dialog_make_curtable(PropDialog *dialog)
   GtkWidget *table = gtk_grid_new();
   gtk_grid_set_row_spacing(GTK_GRID(table), 6);
   gtk_grid_set_column_spacing(GTK_GRID(table), 6);
-  gtk_widget_show(table);
+  gtk_widget_set_visible (table, TRUE);
   prop_dialog_add_raw(dialog,table);
 
   dialog->currow = 0;
@@ -143,7 +143,7 @@ prop_dialog_add_widget(PropDialog *dialog, GtkWidget *label, GtkWidget *widget)
   if (GTK_IS_SWITCH (widget)) {
     GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_append (GTK_BOX (box), widget);
-    gtk_widget_show (widget);
+    gtk_widget_set_visible (widget, TRUE);
     widget = box;
   }
 
@@ -151,8 +151,8 @@ prop_dialog_add_widget(PropDialog *dialog, GtkWidget *label, GtkWidget *widget)
 
   gtk_grid_attach(GTK_GRID(dialog->curtable), widget,
                   1, dialog->currow, 1, 1);
-  gtk_widget_show(label);
-  gtk_widget_show(widget);
+  gtk_widget_set_visible (label, TRUE);
+  gtk_widget_set_visible (widget, TRUE);
   dialog->currow++;
 }
 
@@ -325,10 +325,10 @@ prop_dialog_add_properties(PropDialog *dialog, GPtrArray *props)
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_widget_set_hexpand (swin, TRUE);
   gtk_box_append (GTK_BOX (dialog->widget), swin);
-    gtk_widget_show (swin);
+    gtk_widget_set_visible (swin, TRUE);
     /* GTK4: set_child (auto-wraps in a viewport); viewport shadow is gone. */
     gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (swin), vbox);
-    gtk_widget_show (vbox);
+    gtk_widget_set_visible (vbox, TRUE);
     gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (swin), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     prop_dialog_container_push (dialog, swin);
     prop_dialog_container_push (dialog, vbox);

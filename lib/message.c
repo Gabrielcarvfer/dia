@@ -48,9 +48,9 @@ gtk_message_toggle_repeats(GtkWidget *button, gpointer *userdata)
 {
   DiaMessageInfo *msginfo = (DiaMessageInfo*)userdata;
   if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(button)))
-    gtk_widget_show(msginfo->repeat_view);
+    gtk_widget_set_visible (msginfo->repeat_view, TRUE);
   else {
-    gtk_widget_hide(msginfo->repeat_view);
+    gtk_widget_set_visible (msginfo->repeat_view, FALSE);
   }
 }
 
@@ -113,7 +113,7 @@ message_create_dialog(const gchar *title, DiaMessageInfo *msginfo, gchar *buf)
     gtk_window_set_title (GTK_WINDOW (dialog), real_title);
     g_clear_pointer (&real_title, g_free);
   }
-  gtk_widget_show (dialog);
+  gtk_widget_set_visible (dialog, TRUE);
   g_signal_connect (G_OBJECT (dialog), "response",
                     G_CALLBACK (gtk_widget_hide),
                     NULL);
@@ -203,8 +203,8 @@ gtk_message_internal(const char* title, enum ShowAgainStyle showAgain,
     /* for repeated messages, show the last one */
     g_object_set (msginfo->dialog, "text", msg, NULL);
 
-    gtk_widget_show(msginfo->repeat_label);
-    gtk_widget_show(msginfo->show_repeats);
+    gtk_widget_set_visible (msginfo->repeat_label, TRUE);
+    gtk_widget_set_visible (msginfo->show_repeats, TRUE);
   }
 
   /* Insert in scrollable view, but only the repeated ones */
@@ -216,14 +216,14 @@ gtk_message_internal(const char* title, enum ShowAgainStyle showAgain,
   msginfo->repeats = g_list_prepend(msginfo->repeats, g_strdup(msg));
 
   if (askForShowAgain) {
-    gtk_widget_show(msginfo->no_show_again);
+    gtk_widget_set_visible (msginfo->no_show_again, TRUE);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(msginfo->no_show_again),
 				 showAgain == SUGGEST_NO_SHOW_AGAIN);
   } else {
-    gtk_widget_hide(msginfo->no_show_again);
+    gtk_widget_set_visible (msginfo->no_show_again, FALSE);
   }
 
-  gtk_widget_show (msginfo->dialog);
+  gtk_widget_set_visible (msginfo->dialog, TRUE);
   g_clear_pointer (&msg, g_free);
 }
 

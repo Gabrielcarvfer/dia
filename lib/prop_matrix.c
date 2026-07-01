@@ -177,7 +177,7 @@ matrixprop_get_widget (MatrixProperty *prop, PropDialog *dialog)
   sb = gtk_spin_button_new(adj, 1.0, 2);
   gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(sb),TRUE);
   prophandler_connect(&prop->common, G_OBJECT(sb), "changed");
-  gtk_widget_show(sb);
+  gtk_widget_set_visible (sb, TRUE);
   gtk_widget_set_hexpand (sb, TRUE);
   gtk_box_append (GTK_BOX(ret), sb);
   /* sx, sy */
@@ -186,7 +186,7 @@ matrixprop_get_widget (MatrixProperty *prop, PropDialog *dialog)
     sb = gtk_spin_button_new(GTK_ADJUSTMENT (adj), 1.0, 2);
     gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(sb),TRUE);
     prophandler_connect(&prop->common, G_OBJECT(sb), "changed");
-    gtk_widget_show(sb);
+    gtk_widget_set_visible (sb, TRUE);
     gtk_widget_set_hexpand (sb, TRUE);
   gtk_box_append (GTK_BOX(ret), sb);
   }

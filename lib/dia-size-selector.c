@@ -153,14 +153,14 @@ dia_size_selector_init (DiaSizeSelector *ss)
   gtk_spin_button_set_wrap (GTK_SPIN_BUTTON (ss->width), TRUE);
   gtk_spin_button_set_numeric (GTK_SPIN_BUTTON (ss->width), TRUE);
   gtk_box_append (GTK_BOX (ss), GTK_WIDGET (ss->width));
-  gtk_widget_show (GTK_WIDGET (ss->width));
+  gtk_widget_set_visible (GTK_WIDGET (ss->width), TRUE);
 
   adj = GTK_ADJUSTMENT (gtk_adjustment_new (1.0, 0.01, 10, 0.1, 1.0, 0));
   ss->height = GTK_SPIN_BUTTON (gtk_spin_button_new (adj, 1.0, 2));
   gtk_spin_button_set_wrap (GTK_SPIN_BUTTON (ss->height), TRUE);
   gtk_spin_button_set_numeric (GTK_SPIN_BUTTON (ss->height), TRUE);
   gtk_box_append (GTK_BOX (ss), GTK_WIDGET (ss->height));
-  gtk_widget_show (GTK_WIDGET (ss->height));
+  gtk_widget_set_visible (GTK_WIDGET (ss->height), TRUE);
 
   /* Replace label with images */
   /* should make sure they're both unallocated when the widget dies.
@@ -171,7 +171,7 @@ dia_size_selector_init (DiaSizeSelector *ss)
                                            "dia-chain-broken"));
   gtk_box_append (GTK_BOX (ss), GTK_WIDGET (ss->aspect_locked));
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (ss->aspect_locked), TRUE);
-  gtk_widget_show (GTK_WIDGET (ss->aspect_locked));
+  gtk_widget_set_visible (GTK_WIDGET (ss->aspect_locked), TRUE);
 
   g_signal_connect (G_OBJECT (ss->aspect_locked),
                     "clicked", G_CALLBACK (dia_size_selector_lock_pressed),

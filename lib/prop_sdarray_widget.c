@@ -505,7 +505,7 @@ _make_scrollable (GtkWidget *view)
   sw = gtk_scrolled_window_new ();
   gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
   gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (sw), view);
-  gtk_widget_show (sw);
+  gtk_widget_set_visible (sw, TRUE);
   gtk_widget_set_vexpand (sw, TRUE);
   gtk_widget_set_hexpand (sw, TRUE);
 
@@ -560,7 +560,7 @@ _arrayprop_get_widget (ArrayProperty *prop, PropDialog *dialog)
 
     gtk_box_append (GTK_BOX (hbox), vbox);
     if (!branch_view) {
-      gtk_widget_show (view);
+      gtk_widget_set_visible (view, TRUE);
       gtk_box_append (GTK_BOX (hbox), _make_scrollable (view));
     } else {
       /* almost the same once more */
