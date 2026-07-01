@@ -531,6 +531,16 @@ def main():
         ok = any('textstyle OK' in (lab.name or '') for lab in labels)
         check("Text font and size are settable", ok)
 
+    # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
+    nt = find(app, name='uitest-newtext', roleName='push button')
+    check("DIA_UITEST newtext trigger present", nt)
+    if nt:
+        do_click(nt)
+        time.sleep(1.0)
+        dlg = (find(app, roleName='dialog') or find(root, roleName='dialog')
+               or find(root, name='New Text'))
+        check("New Text dialog opens", dlg)
+
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')
     check("Colour area present", colour)

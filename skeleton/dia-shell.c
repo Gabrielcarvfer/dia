@@ -1533,13 +1533,16 @@ on_canvas_pressed (GtkGestureClick *gesture,
 
     zoom_about (self, out ? 1.0 / 1.5 : 1.5, p.x, p.y);
   } else if (g_strcmp0 (self->tool, "Text edit") == 0) {
-    /* Edit the text of the object under the cursor. */
+    /* Edit the text of the object under the cursor; on empty space, add a new
+     * text object (so this tool can also create text). */
     DiaLayer *layer = dia_diagram_data_get_active_layer (self->diagram);
     DiaObject *obj = layer ? dia_layer_find_closest_object (layer, &p, 0.5)
                            : NULL;
     if (obj) {
       select_at (self, p, FALSE);
       open_text_editor (self, obj);
+    } else {
+      open_new_text_dialog (self, p);
     }
   } else if (g_strcmp0 (self->tool, "Modify") == 0) {
     if (n_press >= 2) {
@@ -4497,6 +4500,15 @@ on_uitest_layermove (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): open the New Text dialog (verifies it presents
+ * without crashing — the GtkFontDialogButton path). */
+static void
+on_uitest_newtext (GtkButton *button, DiaShell *self)
+{
+  open_new_text_dialog (self, (Point) { 10, 10 });
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("newtext opened"));
+}
+
 /* UI-test hook (DIA_UITEST): set a text object's font and size via StdProp and
  * read them back — the model path the New Text dialog uses. */
 static void
@@ -5159,6 +5171,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *rh = gtk_button_new_with_label ("uitest-rothandle");
     GtkWidget *lm = gtk_button_new_with_label ("uitest-layermove");
     GtkWidget *ts = gtk_button_new_with_label ("uitest-textstyle");
+    GtkWidget *nt = gtk_button_new_with_label ("uitest-newtext");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -5190,6 +5203,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (rh), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (lm), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (ts), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (nt), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -5221,6 +5235,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (rh, "clicked", G_CALLBACK (on_uitest_rothandle), self);
     g_signal_connect (lm, "clicked", G_CALLBACK (on_uitest_layermove), self);
     g_signal_connect (ts, "clicked", G_CALLBACK (on_uitest_textstyle), self);
+    g_signal_connect (nt, "clicked", G_CALLBACK (on_uitest_newtext), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -5252,6 +5267,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), rh);
     gtk_box_append (GTK_BOX (bar), lm);
     gtk_box_append (GTK_BOX (bar), ts);
+    gtk_box_append (GTK_BOX (bar), nt);
   }
 
   return bar;
