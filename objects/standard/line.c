@@ -580,7 +580,7 @@ line_copy(Line *line)
   newline->absolute_start_gap = line->absolute_start_gap;
   newline->absolute_end_gap = line->absolute_end_gap;
 
-  line_update_data(line);
+  line_update_data(newline);
 
   return &newline->connection.object;
 }

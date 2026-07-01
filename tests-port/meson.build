@@ -217,6 +217,21 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for the same copy bug in "Standard - Line": line_copy() called
+# line_update_data() on the source line instead of the copy, so the copy's
+# mid-line connection point was left at the origin (0,0) rather than being
+# placed on the line.
+test(
+  'lib-line-copy',
+  executable(
+    'test-line-copy-port',
+    ['test-line-copy-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for #140 (broken-file crash): the numeric data_* node parsers
 # (data_int/data_enum/data_real/data_point/data_rectangle) dereferenced the
 # "val" attribute unconditionally, so a corrupt file with a val-less node (e.g. a
