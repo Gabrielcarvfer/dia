@@ -133,4 +133,15 @@ if get_option('tests') and python3_prog.found()
     env: {'DIA_BIN': dia_skeleton_exe.full_path()},
     timeout: 120,
   )
+  # Every standard object type (upstream's tests/exports corpus) must still
+  # export to sane PNG/SVG/PDF — the port's stand-in for test-export.c.
+  test(
+    'cli-export-objects',
+    python3_prog,
+    args: [
+      meson.project_source_root() / 'ui-tests' / 'test_cli_export_objects.py',
+      meson.project_source_root() / 'tests' / 'exports',
+    ],
+    env: {'DIA_BIN': dia_skeleton_exe.full_path()},
+  )
 endif

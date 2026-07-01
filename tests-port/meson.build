@@ -313,3 +313,16 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Upstream SVG path-data parser unit test (dia_svg_parse_path): validates that
+# our ported dia-svg.c reads SVG path strings correctly — part of "sane output".
+test(
+  'lib-svg',
+  executable(
+    'test-svg-port',
+    [tests_dir / 'test-svg.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+    include_directories: include_directories('../tests'),
+  ),
+  protocol: 'tap',
+)
