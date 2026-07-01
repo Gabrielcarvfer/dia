@@ -87,7 +87,13 @@ jobs:
       - name: Build and install into AppDir
         run: |
           set -eux
-          meson setup build --prefix=/usr --buildtype=release -Dtests=false
+          # Ship a clean release build: no sanitizers. ASan/UBSan instrumentation
+          # bloats the binary, needs the ASan runtime at load, and its
+          # interceptors/__asan_* symbols trip heuristic AV engines (false
+          # "trojan" hits on VirusTotal). The sanitized build is validated by the
+          # Linux `test` job; macOS/Windows already ship non-sanitized too.
+          meson setup build --prefix=/usr --buildtype=release -Dtests=false \
+            -Db_sanitize=none
           meson compile -C build
           DESTDIR="$PWD/AppDir" meson install -C build
           install -Dm644 .github/packaging/org.gnome.Dia.desktop \
@@ -103,6 +109,16 @@ jobs:
           wget -q "$base/linuxdeploy-x86_64.AppImage"
           wget -q "$gtkbase/linuxdeploy-plugin-gtk.sh"
           chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
+          # Don't let GIO dlopen the HOST's gio modules (gvfs, …): they're built
+          # against the host's GLib and reference newer symbols
+          # (g_variant_builder_init_static) our bundled GLib lacks, spewing
+          # "undefined symbol / failed to load module". dia needs no gvfs, so
+          # point GIO_MODULE_DIR at the (bundled, possibly empty) AppDir path.
+          # linuxdeploy's AppRun sources apprun-hooks/*.sh at startup.
+          mkdir -p AppDir/apprun-hooks
+          cat > AppDir/apprun-hooks/gio-modules.sh <<'HOOK'
+          export GIO_MODULE_DIR="${APPDIR}/usr/lib/x86_64-linux-gnu/gio/modules"
+          HOOK
           # The bundled xpm-pixbuf subproject installs libxpm-pixbuf.so.0 under
           # AppDir/usr/lib (on Ubuntu, the multiarch .../lib/x86_64-linux-gnu
           # subdir). Point linuxdeploy at wherever it landed so it can resolve +
