@@ -126,18 +126,22 @@ uml_formal_parameter_get_string (UMLFormalParameter *parameter)
 {
   int len;
   char *str;
+  /* A NULL *or empty* type means "type parameter": per the UML spec the
+   * "<name> : <kind>" form only applies when a kind/type is actually given,
+   * so an empty type must not produce a dangling "T:" (see #363). */
+  gboolean has_type = (parameter->type != NULL && parameter->type[0] != '\0');
 
   /* Calculate length: */
   len = parameter->name ? strlen (parameter->name) : 0;
 
-  if (parameter->type != NULL) {
+  if (has_type) {
     len += 1 + strlen (parameter->type);
   }
 
   /* Generate string: */
   str = g_new0 (char, len + 1);
   strcpy (str, parameter->name ? parameter->name : "");
-  if (parameter->type != NULL) {
+  if (has_type) {
     strcat (str, ":");
     strcat (str, parameter->type);
   }

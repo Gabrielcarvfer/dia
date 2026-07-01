@@ -123,6 +123,24 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for #363: a UML class template's formal parameter is drawn as
+# "<name> : <type>" only when a type/kind is given, but uml_formal_parameter_
+# get_string() keyed the ":" on "type != NULL"; the dialog stores an empty
+# string (not NULL) for a blank type, so a plain type parameter "T" rendered as
+# "T:". The UML object set isn't in the port's object lib yet, so this compiles
+# the single source file it needs directly.
+test(
+  'lib-uml-formalparam',
+  executable(
+    'test-uml-formalparam-port',
+    ['test-uml-formalparam-port.c',
+     meson.project_source_root() / 'objects/UML/umlformalparameter.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+    include_directories: include_directories('../objects/UML'),
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for #140 (broken-file crash): the numeric data_* node parsers
 # (data_int/data_enum/data_real/data_point/data_rectangle) dereferenced the
 # "val" attribute unconditionally, so a corrupt file with a val-less node (e.g. a
