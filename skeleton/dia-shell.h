@@ -28,6 +28,7 @@ gboolean diagram_export_file (DiagramData *data, const char *path);
 
 /* Headless: load @infile (.dia) and export to @outfile (format by extension).
  * Returns a process exit code. Used by `dia --export`. */
-int dia_shell_export_cli (const char *infile, const char *outfile);
+int dia_shell_export_cli (const char *infile, const char *outfile,
+                          const char *fmt, const char *size);
 
 G_END_DECLS

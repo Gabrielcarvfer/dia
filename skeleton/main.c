@@ -113,14 +113,24 @@ main (int argc, char *argv[])
   g_autoptr (GOptionContext) ctx = NULL;
   g_autoptr (GError) error = NULL;
   g_autofree char *export_to = NULL;
+  g_autofree char *filter = NULL;
+  g_autofree char *size = NULL;
   gboolean show_version = FALSE;
+  gboolean list_filters = FALSE;
   int status;
 
   /* Command-line options (upstream-compatible subset). --export renders the
    * input .dia to PNG/PDF/SVG headlessly and exits — no display required. */
   const GOptionEntry entries[] = {
     { "export", 'e', 0, G_OPTION_ARG_FILENAME, &export_to,
-      "Export the input diagram to FILE (.png/.pdf/.svg) and exit", "FILE" },
+      "Export the input diagram to FILE and exit", "FILE" },
+    { "filter", 't', 0, G_OPTION_ARG_STRING, &filter,
+      "Select the export format (png/svg/pdf); default: from FILE's extension",
+      "TYPE" },
+    { "size", 's', 0, G_OPTION_ARG_STRING, &size,
+      "Export at this pixel size (WxH; either side may be omitted)", "WxH" },
+    { "list-filters", 0, 0, G_OPTION_ARG_NONE, &list_filters,
+      "List the supported export formats and exit", NULL },
     { "version", 'v', 0, G_OPTION_ARG_NONE, &show_version,
       "Show the version and exit", NULL },
     { NULL }
@@ -136,12 +146,26 @@ main (int argc, char *argv[])
     g_print ("Dia (GTK4 port) %s\n", PACKAGE_VERSION);
     return 0;
   }
+  if (list_filters) {
+    g_print ("Supported export formats:\n"
+             "  png  Portable Network Graphics (cairo)\n"
+             "  svg  Scalable Vector Graphics (cairo)\n"
+             "  pdf  Portable Document Format (cairo)\n");
+    return 0;
+  }
   if (export_to) {
     if (argc < 2) {
       g_printerr ("dia: --export needs an input .dia file\n");
       return 2;
     }
-    return dia_shell_export_cli (argv[1], export_to);
+    if (filter && g_ascii_strcasecmp (filter, "png") != 0
+        && g_ascii_strcasecmp (filter, "svg") != 0
+        && g_ascii_strcasecmp (filter, "pdf") != 0) {
+      g_printerr ("dia: unknown export filter '%s' "
+                  "(try --list-filters)\n", filter);
+      return 2;
+    }
+    return dia_shell_export_cli (argv[1], export_to, filter, size);
   }
 
   /* WSLg's native-Wayland popovers are unreliable (the menu/popover surfaces

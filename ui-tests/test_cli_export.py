@@ -45,10 +45,42 @@ def main():
                 continue
             print("PASS: %s export (%d bytes)" % (ext, os.path.getsize(out)))
 
+        # --list-filters lists the cairo formats
+        res = subprocess.run([dia, "--list-filters"],
+                             capture_output=True, text=True)
+        if res.returncode != 0 or not all(f in res.stdout
+                                          for f in ("png", "svg", "pdf")):
+            print("FAIL: --list-filters output: %r" % res.stdout)
+            failures += 1
+        else:
+            print("PASS: --list-filters")
+
+        # -t chooses the format regardless of extension; -s bounds the size
+        out = os.path.join(tmp, "sized.out")
+        res = subprocess.run([dia, "-e", out, "-t", "png", "-s", "200x150",
+                              sample], capture_output=True, text=True)
+        ok = res.returncode == 0 and os.path.exists(out)
+        if ok:
+            with open(out, "rb") as fh:
+                ok = b"PNG" in fh.read(8)
+        if ok:
+            try:
+                from PIL import Image
+                w, h = Image.open(out).size
+                ok = w <= 200 and h <= 150   # fit within the requested box
+            except ImportError:
+                pass   # Pillow optional; signature check already passed
+        if not ok:
+            print("FAIL: -t png -s 200x150 (rc=%d)\n%s"
+                  % (res.returncode, res.stderr))
+            failures += 1
+        else:
+            print("PASS: -t png -s 200x150 (fit within bounds)")
+
     if failures:
         print("CLI export FAILED")
         return 1
-    print("CLI export OK (PNG + PDF)")
+    print("CLI export OK (PNG + PDF + filters + size)")
     return 0
 
 

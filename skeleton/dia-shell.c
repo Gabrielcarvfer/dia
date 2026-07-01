@@ -2588,31 +2588,51 @@ action_new (GSimpleAction *a, GVariant *p, gpointer data)
  * primitives app/load_save.c uses), then written via dia-io (handles encoding
  * and optional gzip). Produces files loadable by upstream Dia. */
 /* Render the whole diagram to an image/vector file, sized to its extents (plus
- * a small margin). Format is chosen by extension: .pdf, .svg, else PNG. Uses
- * the same DiaCairoRenderer the canvas draws with. This is the export backend
- * shared by the GUI Export action and the --export CLI option. */
-gboolean
-diagram_export_file (DiagramData *data, const char *path)
+ * a small margin). @fmt overrides the format ("png"/"svg"/"pdf"); NULL infers
+ * from the extension. @out_w/@out_h (px, 0 = auto) request an output size: the
+ * diagram is uniformly scaled to fit within whichever is given. Uses the same
+ * DiaCairoRenderer the canvas draws with. Shared by the GUI Export action and
+ * the --export CLI. */
+static gboolean
+diagram_export_file_full (DiagramData *data, const char *path,
+                          const char *fmt, int out_w, int out_h)
 {
-  char *lower = g_ascii_strdown (path, -1);
-  gboolean is_pdf = g_str_has_suffix (lower, ".pdf");
-  gboolean is_svg = g_str_has_suffix (lower, ".svg");
+  gboolean is_pdf, is_svg;
   DiaRectangle *ext;
   double margin = 0.5;                          /* cm */
-  double dpcm = (is_pdf || is_svg) ? (72.0 / 2.54) : 40.0;  /* pts/cm or px/cm */
+  double dpcm;
   double w_cm, h_cm;
   cairo_surface_t *surface;
   cairo_t *cr;
   DiaRenderer *renderer;
   gboolean ok = TRUE;
 
-  g_free (lower);
+  if (fmt) {
+    is_pdf = (g_ascii_strcasecmp (fmt, "pdf") == 0);
+    is_svg = (g_ascii_strcasecmp (fmt, "svg") == 0);
+  } else {
+    char *lower = g_ascii_strdown (path, -1);
+    is_pdf = g_str_has_suffix (lower, ".pdf");
+    is_svg = g_str_has_suffix (lower, ".svg");
+    g_free (lower);
+  }
+  dpcm = (is_pdf || is_svg) ? (72.0 / 2.54) : 40.0;  /* pts/cm or px/cm */
+
   data_update_extents (data);
   ext = &data->extents;
   w_cm = (ext->right - ext->left) + 2 * margin;
   h_cm = (ext->bottom - ext->top) + 2 * margin;
   if (w_cm < 1.0) w_cm = 1.0;
   if (h_cm < 1.0) h_cm = 1.0;
+
+  /* An explicit output size overrides the default resolution: scale uniformly
+   * to fit within whichever of width/height was given. */
+  if (out_w > 0 || out_h > 0) {
+    double sx = out_w > 0 ? out_w / w_cm : G_MAXDOUBLE;
+    double sy = out_h > 0 ? out_h / h_cm : G_MAXDOUBLE;
+
+    dpcm = MIN (sx, sy);
+  }
 
   if (is_pdf) {
     surface = cairo_pdf_surface_create (path, w_cm * dpcm, h_cm * dpcm);
@@ -2648,6 +2668,13 @@ diagram_export_file (DiagramData *data, const char *path)
   cairo_destroy (cr);
   cairo_surface_destroy (surface);
   return ok;
+}
+
+/* Convenience wrapper: format from the extension, default resolution. */
+gboolean
+diagram_export_file (DiagramData *data, const char *path)
+{
+  return diagram_export_file_full (data, path, NULL, 0, 0);
 }
 
 /* Load a .dia file into a fresh DiagramData (no shell/GUI). Caller unrefs.
@@ -2716,13 +2743,26 @@ cli_message (const char *title, enum ShowAgainStyle showAgain,
   g_free (body);
 }
 
-/* Headless CLI: load @infile (.dia) and export it to @outfile, format chosen by
- * @outfile's extension. Returns a process exit code. Needs no display. */
+/* Headless CLI: load @infile (.dia) and export it to @outfile. @fmt overrides
+ * the format ("png"/"svg"/"pdf"), NULL = infer from the extension. @size is an
+ * optional "WxH" (either side may be empty) giving the output size in pixels.
+ * Returns a process exit code. Needs no display. */
 int
-dia_shell_export_cli (const char *infile, const char *outfile)
+dia_shell_export_cli (const char *infile, const char *outfile,
+                      const char *fmt, const char *size)
 {
   DiagramData *data;
   gboolean ok;
+  int out_w = 0, out_h = 0;
+
+  if (size) {   /* "WxH", "Wx", "xH" */
+    const char *x = strchr (size, 'x');
+
+    out_w = atoi (size);
+    out_h = x ? atoi (x + 1) : 0;
+    if (out_w < 0) out_w = 0;
+    if (out_h < 0) out_h = 0;
+  }
 
   set_message_func (cli_message);   /* no GUI dialogs in headless mode */
   libdia_init (DIA_INTERACTIVE);
@@ -2733,7 +2773,7 @@ dia_shell_export_cli (const char *infile, const char *outfile)
     g_printerr ("dia: cannot load '%s'\n", infile);
     return 1;
   }
-  ok = diagram_export_file (data, outfile);
+  ok = diagram_export_file_full (data, outfile, fmt, out_w, out_h);
   g_object_unref (data);
 
   if (!ok) {
