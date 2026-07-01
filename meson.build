@@ -241,6 +241,15 @@ else
     subdir('tests-port')
   endif
 
+  # Ship the shape libraries (Cisco, network, Assorted, …) so an installed
+  # build / bundle has them. dia_port_load_shapes() finds them beside the binary
+  # at <prefix>/share/dia/shapes (see objects-port/register-objects.c).
+  install_subdir(
+    'shapes',
+    install_dir: get_option('datadir') / 'dia',
+    exclude_files: ['meson.build', 'make-midpoint.pl'],
+  )
+
   summary(
     {'Toolkit': 'GTK4 + libadwaita (port skeleton)'},
     section: 'Build mode',

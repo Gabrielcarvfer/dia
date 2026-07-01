@@ -169,6 +169,12 @@ jobs:
             glib-compile-schemas "$APP/Contents/Resources/share/glib-2.0/schemas/" || true
           cp -R "$PIXBUF_PREFIX/lib/gdk-pixbuf-2.0" \
             "$APP/Contents/Resources/" 2>/dev/null || true
+          # Shape libraries (Cisco/network/Assorted/…): the app looks for them
+          # beside the binary at <exe>/../share/dia/shapes -> Contents/share/….
+          mkdir -p "$APP/Contents/share/dia"
+          cp -R shapes "$APP/Contents/share/dia/shapes"
+          rm -f "$APP/Contents/share/dia/shapes/meson.build" \
+                "$APP/Contents/share/dia/shapes/make-midpoint.pl"
           # Package into a compressed DMG with an Applications shortcut.
           mkdir -p dmgroot
           cp -R "$APP" dmgroot/
@@ -221,21 +227,45 @@ jobs:
       - name: Assemble dist tree
         run: |
           set -eux
-          mkdir -p dist/dia/bin
+          mkdir -p dist/dia/bin dist/dia/lib
           cp build/skeleton/dia.exe dist/dia/bin/
-          # ldd resolves the full DLL closure; copy every dependency from UCRT64.
-          ldd dist/dia/bin/dia.exe | awk '/ucrt64/ {print $3}' | sort -u \
-            | while read -r dll; do cp -u "$dll" dist/dia/bin/; done
           # The bundled xpm-pixbuf subproject DLL lives in the build tree, not
-          # UCRT64, so ldd's /ucrt64/ filter misses it — copy it explicitly.
+          # UCRT64, so the ldd sweep below misses it — copy it explicitly.
           cp -u build/subprojects/xpm-pixbuf/libxpm-pixbuf*.dll dist/dia/bin/ \
             2>/dev/null || true
-          # GTK4 runtime data: GdkPixbuf loaders, compiled GSettings schemas, icons.
-          mkdir -p dist/dia/lib dist/dia/share/glib-2.0/schemas
+          # GdkPixbuf image loaders (png/jpeg/tiff/svg) are dlopen'd at runtime,
+          # so neither they nor their deps (libjpeg/libtiff/librsvg/…) show up in
+          # dia.exe's ldd. Bundle the loaders, then run the ldd sweep over BOTH
+          # dia.exe and every loader so the transitive closure is complete.
           cp -r /ucrt64/lib/gdk-pixbuf-2.0 dist/dia/lib/ 2>/dev/null || true
+          { echo dist/dia/bin/dia.exe
+            find dist/dia/lib/gdk-pixbuf-2.0 -name '*.dll' 2>/dev/null; } \
+            | while read -r mod; do ldd "$mod" 2>/dev/null; done \
+            | awk '/ucrt64/ {print $3}' | sort -u \
+            | while read -r dll; do cp -u "$dll" dist/dia/bin/; done
+          # Still-missing libs are dlopen'd where no ldd sees them (appstream via
+          # libadwaita's About dialog; some cairo/pixbuf backends). Copy the
+          # closure of each named lib present in UCRT64 too.
+          for lib in libappstream libjpeg libtiff libcairo libpixman librsvg \
+                     libpango libgdk_pixbuf; do
+            for f in /ucrt64/bin/${lib}*.dll; do
+              [ -e "$f" ] || continue
+              cp -u "$f" dist/dia/bin/
+              ldd "$f" 2>/dev/null | awk '/ucrt64/ {print $3}' \
+                | while read -r d; do cp -u "$d" dist/dia/bin/; done
+            done
+          done
+          # GTK4 runtime data: compiled GSettings schemas + icons.
+          mkdir -p dist/dia/share/glib-2.0/schemas
           glib-compile-schemas /ucrt64/share/glib-2.0/schemas \
             --targetdir dist/dia/share/glib-2.0/schemas || true
           cp -r /ucrt64/share/icons dist/dia/share/ 2>/dev/null || true
+          # Shape libraries (Cisco/network/…): the app looks for them beside the
+          # binary at <exe>/../share/dia/shapes -> dist/dia/share/dia/shapes.
+          mkdir -p dist/dia/share/dia
+          cp -r shapes dist/dia/share/dia/shapes
+          rm -f dist/dia/share/dia/shapes/meson.build \
+                dist/dia/share/dia/shapes/make-midpoint.pl
           cd dist && zip -r Dia-win64.zip dia
 
       - name: Upload ZIP

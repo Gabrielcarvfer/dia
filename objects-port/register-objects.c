@@ -11,6 +11,14 @@
 
 #include <glib/gi18n-lib.h>
 
+#ifdef G_OS_WIN32
+#include <windows.h>
+#endif
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <stdint.h>
+#endif
+
 #include "object.h"
 #include "group.h"
 #include "properties.h"
@@ -179,11 +187,86 @@ scan_shapes_in (const char *dir, const char *category)
   g_dir_close (dp);
 }
 
+/* Directory containing the running executable, or NULL. */
+static char *
+exe_dir (void)
+{
+#ifdef G_OS_WIN32
+  wchar_t wbuf[MAX_PATH];
+  DWORD n = GetModuleFileNameW (NULL, wbuf, MAX_PATH);
+  char *path, *dir;
+
+  if (n == 0 || n >= MAX_PATH) {
+    return NULL;
+  }
+  path = g_utf16_to_utf8 (wbuf, -1, NULL, NULL, NULL);
+  if (!path) {
+    return NULL;
+  }
+  dir = g_path_get_dirname (path);
+  g_free (path);
+  return dir;
+#elif defined(__APPLE__)
+  char buf[4096];
+  uint32_t size = sizeof (buf);
+
+  if (_NSGetExecutablePath (buf, &size) != 0) {
+    return NULL;
+  }
+  return g_path_get_dirname (buf);
+#else
+  char *exe = g_file_read_link ("/proc/self/exe", NULL);
+  char *dir;
+
+  if (!exe) {
+    return NULL;
+  }
+  dir = g_path_get_dirname (exe);
+  g_free (exe);
+  return dir;
+#endif
+}
+
+/* Where the shape categories live, resolved once: the $DIA_SHAPES_DIR override,
+ * else the installed layout beside the binary (<exedir>/../share/dia/shapes) so
+ * bundles (AppImage/.app/.zip) are relocatable, else the build-time source path
+ * (running from the tree). */
+static const char *
+shapes_dir (void)
+{
+  static char *dir = NULL;
+  const char *env;
+  char *exe;
+
+  if (dir) {
+    return dir;
+  }
+  env = g_getenv ("DIA_SHAPES_DIR");
+  if (env && *env && g_file_test (env, G_FILE_TEST_IS_DIR)) {
+    dir = g_strdup (env);
+    return dir;
+  }
+  exe = exe_dir ();
+  if (exe) {
+    char *cand = g_build_filename (exe, "..", "share", "dia", "shapes", NULL);
+
+    g_free (exe);
+    if (g_file_test (cand, G_FILE_TEST_IS_DIR)) {
+      dir = cand;
+      return dir;
+    }
+    g_free (cand);
+  }
+  dir = g_strdup (DIA_SHAPES_DIR);
+  return dir;
+}
+
 void
 dia_port_load_shapes (void)
 {
   GDir *dp;
   const char *name;
+  const char *root = shapes_dir ();
 
   if (shape_files) {
     return;   /* scan once */
@@ -192,13 +275,13 @@ dia_port_load_shapes (void)
                                        (GDestroyNotify) g_ptr_array_unref);
   shape_types = g_hash_table_new (g_str_hash, g_str_equal);
 
-  dp = g_dir_open (DIA_SHAPES_DIR, 0, NULL);
+  dp = g_dir_open (root, 0, NULL);
   if (!dp) {
     return;
   }
   /* each top-level subdirectory of shapes/ is a category (a "sheet"). */
   while ((name = g_dir_read_name (dp)) != NULL) {
-    char *path = g_build_filename (DIA_SHAPES_DIR, name, NULL);
+    char *path = g_build_filename (root, name, NULL);
 
     if (g_file_test (path, G_FILE_TEST_IS_DIR)) {
       scan_shapes_in (path, name);
