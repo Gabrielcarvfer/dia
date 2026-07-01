@@ -2074,6 +2074,57 @@ on_canvas_pan_update (GtkGestureDrag *gesture, double offset_x, double offset_y,
   }
 }
 
+/* Drop from the palette (a tool or sheet-shape button carrying a registered
+ * type name) onto the canvas → create that object at the drop point. */
+static gboolean
+on_canvas_drop (GtkDropTarget *dt, const GValue *value, double x, double y,
+                DiaShell *self)
+{
+  const char *tn;
+  DiaObject *obj;
+  Point p;
+
+  if (!G_VALUE_HOLDS_STRING (value) || self->page_scale <= 0.0) {
+    return FALSE;
+  }
+  tn = g_value_get_string (value);
+  if (!tn || !object_get_type ((char *) tn)) {
+    return FALSE;   /* not a known type (e.g. the layer-panel move marker) */
+  }
+  p.x = (x - self->page_x) / self->page_scale;
+  p.y = (y - self->page_y) / self->page_scale;
+  snap_to_grid (self, &p);
+
+  obj = diagram_create_object (self, tn, p);
+  if (!obj) {
+    return FALSE;
+  }
+  apply_line_props (self, obj);
+  push_op (self, OP_CREATE, obj, p, p);
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Placed by drag"));
+  return TRUE;
+}
+
+/* A palette button that creates @type_name becomes a drag source carrying that
+ * name, so it can be dropped onto the canvas to place the object. */
+static void
+add_type_drag_source (GtkWidget *button, const char *type_name)
+{
+  GtkDragSource *ds = gtk_drag_source_new ();
+  GdkContentProvider *cp = gdk_content_provider_new_typed (G_TYPE_STRING,
+                                                           type_name);
+
+  gtk_drag_source_set_content (ds, cp);
+  gtk_drag_source_set_actions (ds, GDK_ACTION_COPY);
+  gtk_widget_add_controller (button, GTK_EVENT_CONTROLLER (ds));
+  g_object_unref (cp);
+}
+
 
 /* Canvas key bindings: Delete/BackSpace remove the selection, Escape clears it. */
 static gboolean
@@ -5261,6 +5312,7 @@ rebuild_sheet_shapes (DiaShell *self)
     g_object_set_data_full (G_OBJECT (btn), "type-name", g_strdup (tn), g_free);
     g_signal_connect (btn, "clicked",
                       G_CALLBACK (on_sheet_shape_clicked), self);
+    add_type_drag_source (btn, tn);   /* drag onto the canvas to place it */
     gtk_flow_box_insert (fb, btn, -1);
   }
 }
@@ -5343,6 +5395,14 @@ build_toolbox (DiaShell *self)
      * and stash the tool name for the toggle handler. */
     set_a11y_label (btn, name);
     g_object_set_data (G_OBJECT (btn), "tool-name", (gpointer) name);
+    {
+      /* Create tools double as drag sources: drag onto the canvas to place. */
+      const char *type_name = tool_to_type_name (name);
+
+      if (type_name) {
+        add_type_drag_source (btn, type_name);
+      }
+    }
     if (first == NULL) {
       first = GTK_TOGGLE_BUTTON (btn);
       self->modify_toggle = btn;   /* entry 0 is Modify; used to switch back */
@@ -5526,6 +5586,14 @@ build_canvas_area (DiaShell *self)
   g_signal_connect (pan_drag, "drag-update",
                     G_CALLBACK (on_canvas_pan_update), self);
   gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (pan_drag));
+
+  /* Drop a palette tool/shape here to place it. */
+  {
+    GtkDropTarget *drop = gtk_drop_target_new (G_TYPE_STRING, GDK_ACTION_COPY);
+
+    g_signal_connect (drop, "drop", G_CALLBACK (on_canvas_drop), self);
+    gtk_widget_add_controller (canvas, GTK_EVENT_CONTROLLER (drop));
+  }
 
   keys = gtk_event_controller_key_new ();
   g_signal_connect (keys, "key-pressed", G_CALLBACK (on_canvas_key), self);
