@@ -639,6 +639,17 @@ data_string(DataNode data, DiaContext *ctx)
   if (data->xmlChildrenNode!=NULL) {
     p = (char *)xmlNodeListGetString(data->doc, data->xmlChildrenNode, TRUE);
 
+    /* A well-formed string value is framed by a leading and a trailing '#'.
+     * A highly broken file may carry a too-short (empty or single-character)
+     * node: stripping both frame characters would then run strlen(p)-1
+     * negative and write str[-1], so bail out with an empty string instead of
+     * reading/writing outside the buffer and crashing (see #140). */
+    if (p == NULL || strlen (p) < 2) {
+      dia_context_add_message (ctx, _("Error in file, string not starting with #"));
+      xmlFree (p);
+      return g_strdup ("");
+    }
+
     if (*p!='#')
       dia_context_add_message (ctx, _("Error in file, string not starting with #"));
 

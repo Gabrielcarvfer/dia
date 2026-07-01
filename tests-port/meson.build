@@ -97,6 +97,19 @@ test(
   protocol: 'tap',
 )
 
+# Regression test for #140: Dia must not crash on highly broken files. A too
+# short (empty or single-character) <string> node made data_string() strip a
+# non-existent "#...#" frame and write before the start of its buffer.
+test(
+  'lib-dia-xml-string',
+  executable(
+    'test-dia-xml-string-port',
+    ['test-dia-xml-string-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
+
 # Regression test for the DiaContext message-log leak: the add_message helpers
 # used g_strv_builder_add() (which copies) on a g_strdup_vprintf()ed string and
 # never freed the original. Runs under ASan/LSan.
