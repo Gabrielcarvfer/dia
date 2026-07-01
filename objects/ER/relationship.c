@@ -539,6 +539,7 @@ relationship_copy (Relationship *relationship)
     newrelationship->connections[i].object = newobj;
     newrelationship->connections[i].connected = NULL;
     newrelationship->connections[i].pos = relationship->connections[i].pos;
+    newrelationship->connections[i].flags = relationship->connections[i].flags;
   }
 
   newrelationship->font = g_object_ref (relationship->font);

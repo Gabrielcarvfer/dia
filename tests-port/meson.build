@@ -246,3 +246,19 @@ test(
   ),
   protocol: 'tap',
 )
+
+# Regression test for a copy bug in "ER - Relationship": relationship_copy()
+# rebuilds the connection-point array by hand but forgot to copy .flags, so the
+# central connection point lost its CP_FLAGS_MAIN (anyplace/auto-gap) marker on
+# every copy/duplicate. The sibling ER objects (attribute, entity) copy .flags
+# in the same loop; relationship.c was the odd one out.
+test(
+  'lib-relationship-copy',
+  executable(
+    'test-relationship-copy-port',
+    ['test-relationship-copy-port.c'],
+    dependencies: [config_dep, libdia_core_dep, libdia_objects_dep,
+                   libgtk_dep, libm_dep],
+  ),
+  protocol: 'tap',
+)
