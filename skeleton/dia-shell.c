@@ -58,6 +58,9 @@ typedef struct {
   GtkWidget *status_msg;
   GtkWidget *pos_label;
   GtkWidget *zoom_label;
+  GtkWidget *tab_label;   /* notebook tab: the diagram name (= filename) */
+  GtkWidget *win_title;   /* AdwWindowTitle: subtitle mirrors the name */
+  GFile     *file;        /* the diagram's current file, or NULL (untitled) */
   GtkWidget *ctx_menu;    /* canvas right-click popover (parented to canvas) */
   DiaObject *dnd_object;  /* object being dragged in the layers panel */
   DiaLayer  *dnd_src_layer;  /* the layer it came from */
@@ -729,6 +732,7 @@ static void zoom_about (DiaShell *self, double factor, double cx, double cy);
 static void refresh_layers_list (DiaShell *self);
 static void on_zoom_entry_activate (GtkEntry *entry, DiaShell *self);
 static void sync_font_button_to_selection (DiaShell *self);
+static void set_diagram_name (DiaShell *self, GFile *file);
 static void lp_move_to_layer (DiaShell *self, DiaObject *obj, DiaLayer *src,
                               DiaLayer *dst);
 static void lp_move_into_group (DiaShell *self, DiaObject *obj, DiaLayer *src,
@@ -2565,7 +2569,9 @@ on_canvas_key (GtkEventControllerKey *controller,
       case GDK_KEY_a: case GDK_KEY_A:
         act = (state & GDK_SHIFT_MASK) ? "select-none" : "select-all";
         break;
-      case GDK_KEY_s: case GDK_KEY_S: act = "save";       break;
+      case GDK_KEY_s: case GDK_KEY_S:
+        act = (state & GDK_SHIFT_MASK) ? "save-as" : "save";
+        break;
       /* Ctrl+Z undoes, Ctrl+Shift+Z (or Ctrl+Y) redoes. */
       case GDK_KEY_z: case GDK_KEY_Z:
         act = (state & GDK_SHIFT_MASK) ? "redo" : "undo";
@@ -2777,6 +2783,7 @@ dia_shell_set_new_diagram (DiaShell *self)
 {
   g_clear_object (&self->diagram);
   self->diagram = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
+  set_diagram_name (self, NULL);   /* a fresh diagram is Untitled */
 }
 
 static void
@@ -4024,6 +4031,34 @@ save_connections (xmlNsPtr ns, GHashTable *ids, GPtrArray *objs,
   }
 }
 
+/* A diagram's name is its file name (minus the .dia suffix), or "Untitled".
+ * Adopts @file as the current file and updates the tab + window subtitle. */
+static void
+set_diagram_name (DiaShell *self, GFile *file)
+{
+  char *name;
+
+  if (file != self->file) {
+    g_clear_object (&self->file);
+    self->file = file ? g_object_ref (file) : NULL;
+  }
+  if (self->file) {
+    name = g_file_get_basename (self->file);
+    if (name && g_str_has_suffix (name, ".dia")) {
+      name[strlen (name) - 4] = '\0';
+    }
+  } else {
+    name = g_strdup (_("Untitled"));
+  }
+  if (self->tab_label) {
+    gtk_label_set_text (GTK_LABEL (self->tab_label), name);
+  }
+  if (self->win_title) {
+    adw_window_title_set_subtitle (ADW_WINDOW_TITLE (self->win_title), name);
+  }
+  g_free (name);
+}
+
 static gboolean
 diagram_to_file (DiaShell *self, GFile *file)
 {
@@ -4070,6 +4105,9 @@ diagram_to_file (DiaShell *self, GFile *file)
   save_connections (ns, ids, objs, nodes);   /* now that all ids exist */
 
   ok = dia_io_save_document (path, doc, FALSE, ctx);
+  if (ok) {
+    set_diagram_name (self, file);   /* the diagram is now named after the file */
+  }
 
   g_hash_table_destroy (ids);
   g_ptr_array_free (objs, TRUE);
@@ -4156,6 +4194,7 @@ diagram_from_file (DiaShell *self, GFile *file)
     update_scrollbars (self);
     redraw_canvas_and_rulers (self);
     refresh_layers_list (self);   /* show the loaded layers + their objects */
+    set_diagram_name (self, file);   /* the diagram is now named after the file */
   }
 
   dia_context_release (ctx);
@@ -5849,6 +5888,37 @@ on_uitest_seltransitive (GtkButton *button, DiaShell *self)
 }
 
 
+/* UI-test hook (DIA_UITEST): a fresh diagram is "Untitled"; saving to
+ * MyDiagram.dia names it "MyDiagram" in the tab. */
+static void
+on_uitest_diagname (GtkButton *button, DiaShell *self)
+{
+  char *path = g_build_filename (g_get_tmp_dir (), "MyDiagram.dia", NULL);
+  GFile *file = g_file_new_for_path (path);
+  gboolean untitled_ok, named_ok;
+  char buf[80];
+
+  dia_shell_set_new_diagram (self);
+  untitled_ok = g_strcmp0 (gtk_label_get_text (GTK_LABEL (self->tab_label)),
+                           _("Untitled")) == 0;
+  diagram_create_object (self, "Standard - Box", (Point) { 3, 3 });
+  diagram_to_file (self, file);
+  named_ok = g_strcmp0 (gtk_label_get_text (GTK_LABEL (self->tab_label)),
+                        "MyDiagram") == 0;
+
+  if (untitled_ok && named_ok) {
+    g_snprintf (buf, sizeof (buf), _("diagname OK"));
+  } else {
+    g_snprintf (buf, sizeof (buf), _("diagname FAIL (untitled=%d named=%d '%s')"),
+                untitled_ok, named_ok,
+                gtk_label_get_text (GTK_LABEL (self->tab_label)));
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  g_object_unref (file);
+  g_free (path);
+}
+
+
 static void
 save_done (GObject *source, GAsyncResult *res, gpointer data)
 {
@@ -5886,19 +5956,43 @@ set_dia_filter (GtkFileDialog *dialog)
   g_object_unref (filters);
 }
 
+/* Prompt for a file and save to it (Save As, and Save when Untitled). */
 static void
-action_save (GSimpleAction *a, GVariant *p, gpointer data)
+present_save_dialog (DiaShell *self)
 {
-  DiaShell *self = data;
   GtkFileDialog *dialog = gtk_file_dialog_new ();
   GtkRoot *root = gtk_widget_get_root (self->canvas);
 
   gtk_file_dialog_set_title (dialog, _("Save Diagram"));
   gtk_file_dialog_set_modal (dialog, FALSE);   /* avoid stuck modal grabs */
   set_dia_filter (dialog);
+  if (self->file) {
+    gtk_file_dialog_set_initial_file (dialog, self->file);
+  }
   gtk_file_dialog_save (dialog, GTK_IS_WINDOW (root) ? GTK_WINDOW (root) : NULL,
                         NULL, save_done, self);
   g_object_unref (dialog);
+}
+
+static void
+action_save (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+
+  /* Named already → save straight to that file; otherwise prompt (Save As). */
+  if (self->file) {
+    if (diagram_to_file (self, self->file)) {
+      gtk_label_set_text (GTK_LABEL (self->status_msg), _("Saved"));
+    }
+  } else {
+    present_save_dialog (self);
+  }
+}
+
+static void
+action_save_as (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  present_save_dialog ((DiaShell *) data);
 }
 
 static void
@@ -6024,6 +6118,7 @@ static const GActionEntry dia_actions[] = {
   { "new",        action_new,        NULL, NULL, NULL },
   { "open",       action_open,       NULL, NULL, NULL },
   { "save",       action_save,       NULL, NULL, NULL },
+  { "save-as",    action_save_as,    NULL, NULL, NULL },
   { "export",     action_export,     NULL, NULL, NULL },
   { "print",      action_print,      NULL, NULL, NULL },
   { "undo",       action_undo,       NULL, NULL, NULL },
@@ -6189,7 +6284,8 @@ build_primary_menu_button (void)
 
   g_menu_append (file, _("_New"), "dia.new");
   g_menu_append (file, _("_Open…"), "dia.open");
-  g_menu_append (file, _("_Save…"), "dia.save");
+  g_menu_append (file, _("_Save"), "dia.save");
+  g_menu_append (file, _("Save _As…"), "dia.save-as");
   g_menu_append (file, _("_Export…"), "dia.export");
   g_menu_append (file, _("_Print…"), "dia.print");
   g_menu_append_section (menu, NULL, G_MENU_MODEL (file));
@@ -6523,6 +6619,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *sc = gtk_button_new_with_label ("uitest-selconnected");
     GtkWidget *gp = gtk_button_new_with_label ("uitest-gridprops");
     GtkWidget *tr2 = gtk_button_new_with_label ("uitest-seltransitive");
+    GtkWidget *dn = gtk_button_new_with_label ("uitest-diagname");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -6565,6 +6662,7 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (sc), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (gp), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (tr2), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (dn), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -6607,6 +6705,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (sc, "clicked", G_CALLBACK (on_uitest_selconnected), self);
     g_signal_connect (gp, "clicked", G_CALLBACK (on_uitest_gridprops), self);
     g_signal_connect (tr2, "clicked", G_CALLBACK (on_uitest_seltransitive), self);
+    g_signal_connect (dn, "clicked", G_CALLBACK (on_uitest_diagname), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -6649,6 +6748,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), sc);
     gtk_box_append (GTK_BOX (bar), gp);
     gtk_box_append (GTK_BOX (bar), tr2);
+    gtk_box_append (GTK_BOX (bar), dn);
   }
 
   return bar;
@@ -7249,8 +7349,8 @@ build_canvas_area (DiaShell *self)
   gtk_grid_attach (GTK_GRID (grid), vscroll, 2, 1, 1, 1);
   gtk_grid_attach (GTK_GRID (grid), hscroll, 1, 2, 1, 1);
 
-  gtk_notebook_append_page (GTK_NOTEBOOK (notebook), grid,
-                            gtk_label_new (_("Diagram1")));
+  self->tab_label = gtk_label_new (_("Untitled"));
+  gtk_notebook_append_page (GTK_NOTEBOOK (notebook), grid, self->tab_label);
   gtk_notebook_set_scrollable (GTK_NOTEBOOK (notebook), TRUE);
 
   return notebook;
@@ -7805,8 +7905,10 @@ dia_shell_new (void)
   GtkWidget *view = adw_toolbar_view_new ();
   GtkWidget *header = adw_header_bar_new ();
   GtkWidget *main_area = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-  GtkWidget *title = adw_window_title_new ("Dia", _("Diagram1"));
+  GtkWidget *title = adw_window_title_new ("Dia", _("Untitled"));
   GtkWidget *statusbar;
+
+  self->win_title = title;
 
   self->zoom = 1.0;
   self->fg = (GdkRGBA) { 0, 0, 0, 1 };

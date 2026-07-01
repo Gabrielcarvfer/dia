@@ -631,6 +631,16 @@ def main():
         ok = any('seltransitive OK' in (lab.name or '') for lab in labels)
         check("Select Transitive follows the whole chain", ok)
 
+    # 3as. Diagram name follows the file (Untitled -> saved basename).
+    dn = find(app, name='uitest-diagname', roleName='push button')
+    check("DIA_UITEST diagname trigger present", dn)
+    if dn:
+        do_click(dn)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('diagname OK' in (lab.name or '') for lab in labels)
+        check("Diagram name follows load/save (Untitled -> filename)", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)
