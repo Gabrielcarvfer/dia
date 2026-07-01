@@ -38,6 +38,12 @@ dia_skeleton_exe = executable(
   libdia_resources,
   c_args: [
     '-DPACKAGE_VERSION="@0@"'.format(meson.project_version()),
+    # libdia-core is a STATIC lib, but its headers declare exported globals
+    # (e.g. group_type via DIAVAR) with __declspec(dllimport) unless
+    # LIBDIA_COMPILATION is set — which made Windows emit __imp_group_type with
+    # no import table. Define it here too so DIAVAR is dllexport (a plain
+    # reference that resolves from the static archive). No-op off-Windows.
+    '-DLIBDIA_COMPILATION',
   ],
   dependencies: [
     libadwaita_dep,
