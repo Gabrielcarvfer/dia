@@ -481,7 +481,7 @@ def main():
         ok = any('nestedgroup OK' in (lab.name or '') for lab in labels)
         check("Recursive grouping (group inside a group)", ok)
 
-    # 3ac. Rotate: rotating a horizontal line 90° turns it vertical.
+    # 3ac. Rotate 90°: a line turns vertical; a box swaps w/h pixel-clean.
     ro = find(app, name='uitest-rotate', roleName='push button')
     check("DIA_UITEST rotate trigger present", ro)
     if ro:
@@ -489,7 +489,7 @@ def main():
         time.sleep(0.4)
         labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
         ok = any('rotate OK' in (lab.name or '') for lab in labels)
-        check("Rotate 90° turns a horizontal line vertical", ok)
+        check("Rotate 90° (line geometry + pixel-clean box swap)", ok)
 
     # 4. Colour area opens the async colour dialog.
     colour = find(app, name='colour-area')

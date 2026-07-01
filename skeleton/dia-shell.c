@@ -1437,12 +1437,65 @@ ctx_add_action (GtkWidget *box, DiaShell *self, const char *label,
   gtk_box_append (GTK_BOX (box), b);
 }
 
-/* Rotate one object by @degrees about its own bounding-box centre, using
- * libdia's generic transform op (objects rotate their geometry; groups recurse
- * into their children). Returns FALSE if the object can't be transformed. */
+/* Pixel-clean rotation for an element object (box/ellipse/flowchart shape) at a
+ * right angle: a 90°/270° turn just swaps width and height about the centre and
+ * stays axis-aligned, and 180° keeps the footprint — so the bounding box and
+ * resize handles keep wrapping the shape exactly (unlike libdia's angle field,
+ * which leaves an axis-aligned bbox around a drawn-rotated rectangle). Reads and
+ * writes the element via StdProp so it works for any object exposing
+ * elem_corner/elem_width/elem_height. Returns FALSE for non-elements. */
+static gboolean
+rotate_element_clean (DiaObject *obj, int degrees)
+{
+  static PropDescription edescs[] = {
+    { "elem_corner", PROP_TYPE_POINT },
+    { "elem_width",  PROP_TYPE_REAL },
+    { "elem_height", PROP_TYPE_REAL },
+    { "angle",       PROP_TYPE_REAL },   /* cleared; ignored if absent */
+    PROP_DESC_END
+  };
+  GPtrArray *props = prop_list_from_descs (edescs, pdtpp_true);
+  PointProperty *cp = g_ptr_array_index (props, 0);
+  RealProperty  *wp = g_ptr_array_index (props, 1);
+  RealProperty  *hp = g_ptr_array_index (props, 2);
+  RealProperty  *ap = g_ptr_array_index (props, 3);
+  double w, h, nw, nh;
+  Point center;
+
+  dia_object_get_properties (obj, props);
+  w = wp->real_data;
+  h = hp->real_data;
+  if (w <= 0.0 || h <= 0.0) {
+    prop_list_free (props);
+    return FALSE;   /* not an element — caller uses the geometry transform */
+  }
+  center.x = cp->point_data.x + w / 2.0;
+  center.y = cp->point_data.y + h / 2.0;
+
+  if (degrees == 90 || degrees == 270) {
+    nw = h; nh = w;   /* a right-angle turn swaps the axes */
+  } else {
+    nw = w; nh = h;   /* 180°: same footprint */
+  }
+  cp->point_data.x = center.x - nw / 2.0;
+  cp->point_data.y = center.y - nh / 2.0;
+  wp->real_data = nw;
+  hp->real_data = nh;
+  ap->real_data = 0.0;   /* stay axis-aligned */
+
+  dia_object_set_properties (obj, props);
+  prop_list_free (props);
+  return TRUE;
+}
+
+/* Rotate one object by @degrees about its own centre. Elements take the
+ * pixel-clean axis-aligned path at right angles; everything else (lines,
+ * polygons, béziers, groups) rotates its real geometry via libdia's transform
+ * op (groups recurse into their children). Returns FALSE if neither applies. */
 static gboolean
 rotate_object (DiaObject *obj, double degrees)
 {
+  int deg = (int) degrees;
   double rad = degrees * G_PI / 180.0;
   double c = cos (rad), s = sin (rad);
   double cx = (obj->bounding_box.left + obj->bounding_box.right) / 2.0;
@@ -1455,6 +1508,10 @@ rotate_object (DiaObject *obj, double degrees)
     .y0 = cy * (1.0 - c) - s * cx,
   };
 
+  if ((deg == 90 || deg == 180 || deg == 270) &&
+      rotate_element_clean (obj, deg)) {
+    return TRUE;
+  }
   if (!obj->ops || !obj->ops->transform) {
     return FALSE;
   }
@@ -3666,26 +3723,31 @@ on_uitest_nestedgroup (GtkButton *button, DiaShell *self)
   refresh_layers_list (self);
 }
 
-/* UI-test hook (DIA_UITEST): make a horizontal line, rotate it 90° about its
- * centre, and confirm its geometry actually turned vertical (the libdia
- * transform rotates the line's points, so its bounding box swaps shape). */
+/* UI-test hook (DIA_UITEST): rotate a horizontal LINE and a non-square BOX 90°.
+ * The line's geometry turns vertical (bbox swaps); the box takes the
+ * pixel-clean element path, so its bbox swaps width/height and stays
+ * axis-aligned (handles keep wrapping it). */
 static void
 on_uitest_rotate (GtkButton *button, DiaShell *self)
 {
   DiaObject *line = diagram_create_object (self, "Standard - Line",
                                            (Point) { 14, 5 });
-  Point a = { 14, 5 }, b = { 18, 5 };   /* horizontal, 4 cm long */
-  double w0, h0, w1, h1;
-  char buf[112];
+  DiaObject *box = diagram_create_object (self, "Standard - Box",
+                                          (Point) { 20, 5 });
+  Point a = { 14, 5 }, b = { 18, 5 };   /* horizontal line, 4 cm long */
+  double lw0, lh0, lw1, lh1, bw0, bh0, bw1, bh1;
+  gboolean line_ok, box_ok;
+  char buf[128];
 
-  if (!line || line->num_handles < 2) {
+  if (!line || line->num_handles < 2 || !box) {
     gtk_label_set_text (GTK_LABEL (self->status_msg),
-                        _("rotate FAIL (no line)"));
+                        _("rotate FAIL (no objects)"));
     return;
   }
   push_op (self, OP_CREATE, line, (Point) { 14, 5 }, (Point) { 14, 5 });
+  push_op (self, OP_CREATE, box, (Point) { 20, 5 }, (Point) { 20, 5 });
 
-  /* lay it out horizontally */
+  /* lay the line out horizontally */
   for (int i = 0; i < 2; i++) {
     Point *to = i == 0 ? &a : &b;
     DiaObjectChange *ch = dia_object_move_handle (line, line->handles[i], to,
@@ -3693,24 +3755,43 @@ on_uitest_rotate (GtkButton *button, DiaShell *self)
                                                   0);
     g_clear_pointer (&ch, dia_object_change_unref);
   }
-  w0 = line->bounding_box.right - line->bounding_box.left;
-  h0 = line->bounding_box.bottom - line->bounding_box.top;
+  /* stretch the box to a non-square 4x2 (drag its last = SE corner handle) */
+  {
+    Point se = { box->bounding_box.left + 4.0, box->bounding_box.top + 2.0 };
+    DiaObjectChange *ch = dia_object_move_handle (
+        box, box->handles[box->num_handles - 1], &se, NULL,
+        HANDLE_MOVE_USER_FINAL, 0);
+    g_clear_pointer (&ch, dia_object_change_unref);
+  }
+
+  lw0 = line->bounding_box.right - line->bounding_box.left;
+  lh0 = line->bounding_box.bottom - line->bounding_box.top;
+  bw0 = box->bounding_box.right - box->bounding_box.left;
+  bh0 = box->bounding_box.bottom - box->bounding_box.top;
 
   data_remove_all_selected (self->diagram);
   data_select (self->diagram, line);
-  self->selected = line;
+  data_select (self->diagram, box);
+  self->selected = box;
   rotate_selected (self, 90);
 
-  w1 = line->bounding_box.right - line->bounding_box.left;
-  h1 = line->bounding_box.bottom - line->bounding_box.top;
+  lw1 = line->bounding_box.right - line->bounding_box.left;
+  lh1 = line->bounding_box.bottom - line->bounding_box.top;
+  bw1 = box->bounding_box.right - box->bounding_box.left;
+  bh1 = box->bounding_box.bottom - box->bounding_box.top;
 
-  /* horizontal (w≈4,h≈0) -> vertical (w≈0,h≈4) */
-  if (w0 > 3.0 && h0 < 1.0 && w1 < 1.0 && h1 > 3.0) {
-    g_snprintf (buf, sizeof (buf), _("rotate OK (%.1fx%.1f->%.1fx%.1f)"),
-                w0, h0, w1, h1);
+  line_ok = (lw0 > 3.0 && lh0 < 1.0 && lw1 < 1.0 && lh1 > 3.0);
+  /* box bbox swaps cleanly: 4x2 -> 2x4 (pixel-clean, not just an angle field) */
+  box_ok = (fabs (bw0 - 4.0) < 0.2 && fabs (bh0 - 2.0) < 0.2 &&
+            fabs (bw1 - bh0) < 0.05 && fabs (bh1 - bw0) < 0.05);
+
+  if (line_ok && box_ok) {
+    g_snprintf (buf, sizeof (buf), _("rotate OK (line + box %.1fx%.1f->%.1fx%.1f)"),
+                bw0, bh0, bw1, bh1);
   } else {
-    g_snprintf (buf, sizeof (buf), _("rotate FAIL (%.1fx%.1f->%.1fx%.1f)"),
-                w0, h0, w1, h1);
+    g_snprintf (buf, sizeof (buf),
+                _("rotate FAIL (line=%d box %.1fx%.1f->%.1fx%.1f)"),
+                line_ok, bw0, bh0, bw1, bh1);
   }
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
   gtk_widget_queue_draw (self->canvas);
