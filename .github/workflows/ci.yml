@@ -203,26 +203,12 @@ jobs:
 
           BIN="$APP/Contents/MacOS/dia"
 
-          # Bundle the xpm-pixbuf dylib explicitly. dia references it via @rpath
-          # from the build tree, which dylibbundler can't reliably resolve/copy,
-          # so the .app crashes with "DYLD library missing: libxpm-pixbuf". Copy
-          # it in, repoint dia at the bundled copy, and repoint the dylib's own
-          # glib/gdk-pixbuf deps at the copies dylibbundler already put in libs.
-          XPMSRC="build/subprojects/xpm-pixbuf/libxpm-pixbuf.0.dylib"
-          if [ -f "$XPMSRC" ]; then
-            cp -f "$XPMSRC" "$APP/Contents/libs/"
-            XPMLIB="$APP/Contents/libs/libxpm-pixbuf.0.dylib"
-            XPMDST="@executable_path/../libs/libxpm-pixbuf.0.dylib"
-            install_name_tool -id "$XPMDST" "$XPMLIB"
-            ref="$(otool -L "$BIN" | awk '/libxpm-pixbuf/{print $1; exit}')"
-            [ -n "$ref" ] && install_name_tool -change "$ref" "$XPMDST" "$BIN"
-            otool -L "$XPMLIB" | awk 'NR>1{print $1}' | while read -r dep; do
-              case "$dep" in @executable_path/*) continue ;; esac
-              base="$(basename "$dep")"
-              [ -f "$APP/Contents/libs/$base" ] && install_name_tool \
-                -change "$dep" "@executable_path/../libs/$base" "$XPMLIB"
-            done
-          fi
+          # (dylibbundler already bundles libxpm-pixbuf and rewrites dia's load
+          # command to @executable_path/../libs, despite warning it "may not"
+          # handle the @rpath ref — verified in the build log — so no manual
+          # copy is needed. It does, however, convert every one of dia's rpaths
+          # to an identical "@executable_path/../libs/", producing duplicate
+          # LC_RPATH entries that crash dyld; the dedup below fixes that.)
 
           # De-duplicate LC_RPATH on the main binary. meson's build rpath and the
           # rpath dylibbundler adds (-p @executable_path/../libs) can collide, and
