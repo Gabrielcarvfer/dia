@@ -132,7 +132,10 @@ jobs:
       - name: Build
         run: |
           set -eux
-          meson setup build --buildtype=release -Dtests=false
+          # No sanitizers in the shipped .app: dylibbundler can't resolve the
+          # @rpath ASan runtime (libclang_rt.asan_osx_dynamic.dylib). The
+          # sanitized build is validated by the Linux test job.
+          meson setup build --buildtype=release -Dtests=false -Db_sanitize=none
           meson compile -C build
 
       - name: Assemble .app and DMG
