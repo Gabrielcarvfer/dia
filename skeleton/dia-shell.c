@@ -36,6 +36,8 @@
 #include "dia-io.h"
 #include "dia_xml.h"
 #include "diacontext.h"
+#include "filter.h"
+#include "plug-ins.h"
 #include "message.h"
 #include "register-objects.h"
 #include "properties.h"
@@ -3882,12 +3884,125 @@ cli_output_path (const char *infile, const char *outfile, gboolean single,
   }
 }
 
+/* Plug-in plumbing ---------------------------------------------------------
+ *
+ * The GTK4 port ships only the Cairo raster/vector exporters natively; every
+ * other format (PDF import, XSLT export, the legacy vector filters, …) lives
+ * in a plug-in that isn't ported yet. Rather than special-case those built-ins
+ * everywhere, we register them through libdia's filter registry, exactly like
+ * a plug-in would, and drive all export/import lookups through that registry.
+ * A ported plug-in then only has to call filter_register_export/import (from a
+ * builtin PluginInitFunc handed to dia_register_builtin_plugin, or a dynamic
+ * module) and it is immediately reachable from the CLI, --list-filters and the
+ * GUI with no further wiring. */
+
+static const char *png_ext[] = { "png", NULL };
+static const char *svg_ext[] = { "svg", NULL };
+static const char *pdf_ext[] = { "pdf", NULL };
+
+static gboolean
+export_cairo_png (DiagramData *data, DiaContext *ctx, const char *filename,
+                  const char *diafilename, void *user_data)
+{
+  return diagram_export_file_full (data, filename, "png", 0, 0);
+}
+
+static gboolean
+export_cairo_svg (DiagramData *data, DiaContext *ctx, const char *filename,
+                  const char *diafilename, void *user_data)
+{
+  return diagram_export_file_full (data, filename, "svg", 0, 0);
+}
+
+static gboolean
+export_cairo_pdf (DiagramData *data, DiaContext *ctx, const char *filename,
+                  const char *diafilename, void *user_data)
+{
+  return diagram_export_file_full (data, filename, "pdf", 0, 0);
+}
+
+/* unique_name doubles as the CLI --filter handle (and the derived output
+ * extension), so keep it to the bare format keyword. */
+static DiaExportFilter png_export_filter = {
+  N_("Portable Network Graphics (Cairo)"), png_ext, export_cairo_png,
+  NULL, "png",
+};
+static DiaExportFilter svg_export_filter = {
+  N_("Scalable Vector Graphics (Cairo)"), svg_ext, export_cairo_svg,
+  NULL, "svg",
+};
+static DiaExportFilter pdf_export_filter = {
+  N_("Portable Document Format (Cairo)"), pdf_ext, export_cairo_pdf,
+  NULL, "pdf",
+};
+
+/* Built-in plug-in: registers the Cairo exporters into the filter registry.
+ * Handed to dia_register_builtin_plugin(), so it looks and behaves exactly
+ * like an out-of-tree plug-in's dia_plugin_init(). */
+static PluginInitResult
+builtin_filters_init (PluginInfo *info)
+{
+  if (!dia_plugin_info_init (info, "Cairo",
+                             _("Built-in Cairo image, PDF and SVG export"),
+                             NULL, NULL)) {
+    return DIA_PLUGIN_INIT_ERROR;
+  }
+
+  filter_register_export (&png_export_filter);
+  filter_register_export (&svg_export_filter);
+  filter_register_export (&pdf_export_filter);
+
+  return DIA_PLUGIN_INIT_OK;
+}
+
+/* Populate the filter registry once. Registers the built-in Cairo filters and
+ * loads any installed dynamic plug-in modules. Idempotent, so both the GUI
+ * startup and the headless CLI can call it. Assumes libdia_init() ran. */
+void
+dia_shell_init_plugins (void)
+{
+  static gboolean done = FALSE;
+
+  if (done) {
+    return;
+  }
+  done = TRUE;
+
+  dia_register_builtin_plugin (builtin_filters_init);
+
+  /* Pick up out-of-tree plug-in modules (none ship yet, but a ported filter
+   * built as a shared module lands here). Honours $DIA_LIB_PATH; a missing
+   * directory is simply skipped, so this is safe in headless/test runs. */
+  dia_register_plugins ();
+}
+
+/* Print the registered export formats (unique name + description), one per
+ * line, sorted. Drives `dia --list-filters`. */
+void
+dia_shell_list_export_filters (void)
+{
+  GList *filters;
+
+  libdia_init (DIA_INTERACTIVE);
+  dia_shell_init_plugins ();
+
+  filters = filter_get_export_filters ();
+
+  g_print ("Supported export formats:\n");
+  for (GList *l = filters; l; l = l->next) {
+    DiaExportFilter *ef = l->data;
+
+    g_print ("  %-10s %s\n", ef->unique_name, ef->description);
+  }
+}
+
 /* Headless CLI export. Loads and exports each of @infiles. @outfile is the
  * explicit output for a single input; otherwise (or with @outdir) the output
  * name is derived from each input's basename + format. @fmt overrides the
- * format ("png"/"svg"/"pdf"). @size is an optional "WxH" output size. @indir/
- * @outdir prepend to input/output paths. @layers is an optional -L spec.
- * Returns a process exit code. Needs no display. */
+ * format (any registered filter's unique name, e.g. "cairo-png"). @size is an
+ * optional "WxH" output size. @indir/@outdir prepend to input/output paths.
+ * @layers is an optional -L spec. Returns a process exit code. Needs no
+ * display. */
 int
 dia_shell_export_cli (const char *const *infiles, int n_infiles,
                       const char *outfile, const char *outdir,
@@ -3896,6 +4011,7 @@ dia_shell_export_cli (const char *const *infiles, int n_infiles,
 {
   int out_w = 0, out_h = 0;
   int failures = 0;
+  DiaExportFilter *ef;
 
   if (size) {   /* "WxH", "Wx", "xH" */
     const char *x = strchr (size, 'x');
@@ -3909,22 +4025,71 @@ dia_shell_export_cli (const char *const *infiles, int n_infiles,
   set_message_func (cli_message);   /* no GUI dialogs in headless mode */
   libdia_init (DIA_INTERACTIVE);
   register_standard_object_types ();
+  dia_shell_init_plugins ();
+
+  /* Resolve the export filter up front: an explicit --filter is looked up by
+   * name, otherwise the output extension decides per input below. Registry-
+   * driven, so any registered filter (built-in Cairo today, ported plug-ins
+   * later) is reachable through the same path. */
+  ef = fmt ? filter_export_get_by_name (fmt) : NULL;
+
+  if (fmt && !ef) {
+    g_printerr ("dia: unknown export filter '%s' (try --list-filters)\n", fmt);
+    return 2;
+  }
 
   for (int i = 0; i < n_infiles; i++) {
     char *in = indir ? g_build_filename (indir, infiles[i], NULL)
                      : g_strdup (infiles[i]);
     char *out = cli_output_path (infiles[i], outfile, n_infiles == 1,
                                  outdir, fmt);
-    DiagramData *data = diagram_load_standalone (in);
+    /* A registered import filter claims the input by extension; otherwise fall
+     * back to the native .dia loader. (No import plug-ins ship yet, so this is
+     * the .dia path today — but PDF import etc. plug in here for free.) */
+    DiaImportFilter *imf = filter_guess_import_filter (in);
+    DiagramData *data;
+
+    if (imf) {
+      DiaContext *ctx = dia_context_new ("Import Diagram");
+
+      dia_context_set_filename (ctx, in);
+      data = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
+      if (!imf->import_func (in, data, ctx, imf->user_data)) {
+        g_clear_object (&data);
+      }
+      dia_context_release (ctx);
+    } else {
+      data = diagram_load_standalone (in);
+    }
 
     if (!data) {
       g_printerr ("dia: cannot load '%s'\n", in);
       failures++;
     } else {
+      DiaExportFilter *out_ef = ef ? ef : filter_guess_export_filter (out);
+      gboolean ok;
+
       if (layers) {
         apply_layer_filter (data, layers);
       }
-      if (diagram_export_file_full (data, out, fmt, out_w, out_h)) {
+
+      if (!out_ef) {
+        g_printerr ("dia: no export filter for '%s'\n", out);
+        ok = FALSE;
+      } else if (out_w || out_h) {
+        /* An explicit output size is a Cairo-builtin feature the generic
+         * filter API doesn't carry, so use the size-aware worker directly. */
+        ok = diagram_export_file_full (data, out, out_ef->unique_name,
+                                       out_w, out_h);
+      } else {
+        DiaContext *ctx = dia_context_new ("Export Diagram");
+
+        dia_context_set_filename (ctx, out);
+        ok = out_ef->export_func (data, ctx, out, in, out_ef->user_data);
+        dia_context_release (ctx);
+      }
+
+      if (ok) {
         g_print ("Exported '%s' -> '%s'\n", in, out);
       } else {
         g_printerr ("dia: export to '%s' failed\n", out);
@@ -7933,6 +8098,7 @@ dia_shell_new (void)
    * object types are registered or objects created. */
   libdia_init (DIA_INTERACTIVE);
   register_standard_object_types ();
+  dia_shell_init_plugins ();   /* export/import filter registry (Cairo + plug-ins) */
   self->diagram = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
   self->undo = g_ptr_array_new_with_free_func (undo_op_free);
   dia_shell_seed_sample (self);

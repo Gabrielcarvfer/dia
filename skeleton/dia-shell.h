@@ -26,6 +26,15 @@ GtkWidget *dia_shell_new (void);
  * else PNG). Shared by the GUI Export action and the --export CLI option. */
 gboolean diagram_export_file (DiagramData *data, const char *path);
 
+/* Populate libdia's filter registry: register the built-in Cairo export
+ * filters and load any installed dynamic plug-in modules. Idempotent; assumes
+ * libdia_init() already ran. Called by both GUI startup and the headless CLI. */
+void dia_shell_init_plugins (void);
+
+/* Print the registered export formats (name + description) and return. Inits
+ * libdia + plug-ins itself. Drives `dia --list-filters`. */
+void dia_shell_list_export_filters (void);
+
 /* Headless: load @infile (.dia) and export to @outfile (format by extension).
  * Returns a process exit code. Used by `dia --export`. */
 int dia_shell_export_cli (const char *const *infiles, int n_infiles,

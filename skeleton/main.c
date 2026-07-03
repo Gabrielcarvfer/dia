@@ -162,10 +162,7 @@ main (int argc, char *argv[])
     return 0;
   }
   if (list_filters) {
-    g_print ("Supported export formats:\n"
-             "  png  Portable Network Graphics (cairo)\n"
-             "  svg  Scalable Vector Graphics (cairo)\n"
-             "  pdf  Portable Document Format (cairo)\n");
+    dia_shell_list_export_filters ();
     return 0;
   }
   if (export_to || output_dir) {
@@ -173,13 +170,9 @@ main (int argc, char *argv[])
       g_printerr ("dia: nothing to export — give at least one input .dia file\n");
       return 2;
     }
-    if (filter && g_ascii_strcasecmp (filter, "png") != 0
-        && g_ascii_strcasecmp (filter, "svg") != 0
-        && g_ascii_strcasecmp (filter, "pdf") != 0) {
-      g_printerr ("dia: unknown export filter '%s' "
-                  "(try --list-filters)\n", filter);
-      return 2;
-    }
+    /* An unknown --filter is validated against the live registry inside
+     * dia_shell_export_cli (which knows every registered filter, built-in or
+     * plug-in), rather than a hardcoded list here. */
     if (export_to && argc - 1 > 1) {
       g_printerr ("dia: --export names one output; for multiple inputs the "
                   "output names are derived (use -t/-O)\n");

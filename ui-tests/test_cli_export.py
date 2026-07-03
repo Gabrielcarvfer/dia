@@ -55,6 +55,18 @@ def main():
         else:
             print("PASS: --list-filters")
 
+        # An unregistered --filter is rejected via the filter registry (not a
+        # hardcoded list), so a bogus name must fail rather than silently
+        # falling back. Guards the plug-in registry plumbing.
+        bogus = os.path.join(tmp, "bogus.out")
+        res = subprocess.run([dia, "-e", bogus, "-t", "nope", sample],
+                             capture_output=True, text=True)
+        if res.returncode == 0 or os.path.exists(bogus):
+            print("FAIL: unknown --filter accepted (rc=%d)" % res.returncode)
+            failures += 1
+        else:
+            print("PASS: unknown --filter rejected")
+
         # -t chooses the format regardless of extension; -s bounds the size
         out = os.path.join(tmp, "sized.out")
         res = subprocess.run([dia, "-e", out, "-t", "png", "-s", "200x150",
