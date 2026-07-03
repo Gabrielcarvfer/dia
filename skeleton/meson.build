@@ -67,7 +67,11 @@ dia_skeleton_exe = executable(
     xpm_dep,        # lib/object.c (in libdia-core) calls xpm_pixbuf_load();
                     # link the shared xpm-pixbuf explicitly so its import
                     # resolves on Windows rather than relying on propagation.
-  ],
+  ] + port_plugin_deps,
+  # Import/export filter plug-ins (plug-ins-port/), each a static lib exposing a
+  # builtin PluginInitFunc; link_whole so the linker keeps their objects even
+  # though only dia_shell_init_plugins() references the init symbols.
+  link_whole: port_plugin_libs,
   install: true,
 )
 

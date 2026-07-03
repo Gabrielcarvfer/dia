@@ -236,6 +236,7 @@ else
 
   subdir('lib-port')
   subdir('objects-port')
+  subdir('plug-ins-port')
   subdir('skeleton')
   if get_option('tests')
     subdir('tests-port')

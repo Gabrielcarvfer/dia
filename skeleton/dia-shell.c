@@ -3970,6 +3970,16 @@ dia_shell_init_plugins (void)
 
   dia_register_builtin_plugin (builtin_filters_init);
 
+  /* Ported filter plug-ins, built as static libs into the binary (see
+   * plug-ins-port/). Each guard must match the one that builds the lib in
+   * plug-ins-port/meson.build. */
+#ifdef HAVE_POPPLER
+  {
+    extern PluginInitResult dia_pdf_builtin_init (PluginInfo *info);
+    dia_register_builtin_plugin (dia_pdf_builtin_init);
+  }
+#endif
+
   /* Pick up out-of-tree plug-in modules (none ship yet, but a ported filter
    * built as a shared module lands here). Honours $DIA_LIB_PATH; a missing
    * directory is simply skipped, so this is safe in headless/test runs. */
