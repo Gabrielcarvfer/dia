@@ -182,7 +182,12 @@ read_context_maybe_mixin_decompressor (ReadContext *ctx)
       peeked[2] == '\xBF') {
     ctx->had_bom = TRUE;
   } else if (peeked_len > 1) {
-    ctx->was_compressed = peeked[0] != '<';
+    /* We always write gzip, and libxml 2.14+ no longer transparently
+     * decompresses input, so sniff the gzip magic (0x1f 0x8b) explicitly and
+     * splice in a decompressor below. Keying on the magic rather than ‘not <’
+     * avoids mistaking a stray leading byte (e.g. whitespace before <?xml) for
+     * compressed data. */
+    ctx->was_compressed = peeked[0] == '\x1f' && peeked[1] == '\x8b';
   } else {
     g_warning ("Unable to check for compression");
   }

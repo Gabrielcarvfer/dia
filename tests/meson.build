@@ -41,6 +41,19 @@ foreach test : tests
   )
 endforeach
 
+# dia-io needs libxml/gio in the include path, so it can't share the plain
+# TAP loop above. Fixtures live in io/ and are found via G_TEST_SRCDIR.
+test(
+  'io',
+  executable(
+    'test-io',
+    'test-io.c',
+    dependencies: [config_dep, libdia_dep, libxml_dep, gio_dep],
+  ),
+  env: test_env,
+  protocol: 'tap',
+)
+
 test_exes = []
 foreach t : ['boundingbox', 'objects', 'sizeof']
   test_exes += [
