@@ -47,6 +47,7 @@
 #include "register-objects.h"
 #include "properties.h"
 #include "prop_geomtypes.h"
+#include "prop_inttypes.h"
 #include "prop_attr.h"
 #include "prop_text.h"
 #include "arrows.h"
@@ -1976,6 +1977,21 @@ rotate_object_about (DiaObject *obj, double degrees, Point center)
     .y0 = cy * (1.0 - c) - s * cx,
   };
 
+  /* Custom shapes accumulate a real rotation via their "angle" property, which
+   * the shape's geometry transform honours. Route them here BEFORE the element
+   * w/h-swap path, which would otherwise reset the angle to 0. */
+  if (object_has_prop (obj, "flip_horizontal") && object_has_prop (obj, "angle")) {
+    PropDescription d[] = { { "angle", PROP_TYPE_REAL }, PROP_DESC_END };
+    GPtrArray *props = prop_list_from_descs (d, pdtpp_true);
+    RealProperty *ap = g_ptr_array_index (props, 0);
+
+    dia_object_get_properties (obj, props);
+    ap->real_data = fmod (ap->real_data + degrees, 360.0);
+    dia_object_set_properties (obj, props);
+    prop_list_free (props);
+    return TRUE;
+  }
+
   if ((deg == 90 || deg == 180 || deg == 270) &&
       rotate_element_clean (obj, deg, center)) {
     return TRUE;
@@ -2007,6 +2023,20 @@ rotate_object_about (DiaObject *obj, double degrees, Point center)
   return TRUE;
 }
 
+/* Toggle a boolean property of @obj in place. */
+static void
+toggle_bool_prop (DiaObject *obj, const char *name)
+{
+  PropDescription d[] = { { name, PROP_TYPE_BOOL }, PROP_DESC_END };
+  GPtrArray *props = prop_list_from_descs (d, pdtpp_true);
+  BoolProperty *bp = g_ptr_array_index (props, 0);
+
+  dia_object_get_properties (obj, props);
+  bp->bool_data = !bp->bool_data;
+  dia_object_set_properties (obj, props);
+  prop_list_free (props);
+}
+
 /* Mirror @obj about @center (@horizontal reflects left↔right, else top↕bottom)
  * via a reflection matrix, then pin its bbox centre back to @center. A pure
  * reflection has determinant −1, which the box/ellipse transform decomposes
@@ -2021,6 +2051,14 @@ flip_object_about (DiaObject *obj, gboolean horizontal, Point center)
     .x0 = horizontal ? 2.0 * center.x : 0.0,
     .y0 = horizontal ? 0.0 : 2.0 * center.y,
   };
+
+  /* Custom shapes (and anything exposing the flip flags) mirror themselves in
+   * place via boolean properties, not a geometry transform. Check this before
+   * the elem_corner short-circuit, since custom shapes are elements too. */
+  if (object_has_prop (obj, horizontal ? "flip_horizontal" : "flip_vertical")) {
+    toggle_bool_prop (obj, horizontal ? "flip_horizontal" : "flip_vertical");
+    return TRUE;
+  }
 
   if (object_has_prop (obj, "elem_corner")) {
     return FALSE;   /* box/ellipse/other elements: symmetric, nothing to do */

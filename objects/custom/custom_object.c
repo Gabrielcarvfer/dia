@@ -104,6 +104,7 @@ struct _Custom {
   double dashlength;
 
   gboolean flip_h, flip_v;
+  double angle;   /* rotation in degrees, applied about the element centre */
 
   DiaText *text;
   double padding;
@@ -214,6 +215,8 @@ static PropDescription custom_props[] = {
     N_("Flip horizontal"), NULL, NULL },
   { "flip_vertical", PROP_TYPE_BOOL, PROP_FLAG_VISIBLE|PROP_FLAG_OPTIONAL,
     N_("Flip vertical"), NULL, NULL },
+  { "angle", PROP_TYPE_REAL, PROP_FLAG_VISIBLE|PROP_FLAG_OPTIONAL,
+    N_("Rotation angle (degrees)"), NULL, NULL },
 
   { "subscale", PROP_TYPE_REAL, PROP_FLAG_OPTIONAL,
     N_("Scale of the sub-shapes"), NULL, NULL },
@@ -247,6 +250,8 @@ static PropDescription custom_props_text[] = {
     N_("Flip horizontal"), NULL, NULL },
   { "flip_vertical", PROP_TYPE_BOOL, PROP_FLAG_VISIBLE|PROP_FLAG_OPTIONAL,
     N_("Flip vertical"), NULL, NULL },
+  { "angle", PROP_TYPE_REAL, PROP_FLAG_VISIBLE|PROP_FLAG_OPTIONAL,
+    N_("Rotation angle (degrees)"), NULL, NULL },
 
   { "subscale", PROP_TYPE_REAL, PROP_FLAG_OPTIONAL,
     N_("Scale of the sub-shapes"), NULL, NULL },
@@ -263,6 +268,7 @@ static PropOffset custom_offsets[] = {
     offsetof(Custom, line_style), offsetof(Custom, dashlength) },
   { "flip_horizontal", PROP_TYPE_BOOL, offsetof(Custom, flip_h) },
   { "flip_vertical", PROP_TYPE_BOOL, offsetof(Custom, flip_v) },
+  { "angle", PROP_TYPE_REAL, offsetof(Custom, angle) },
   { "subscale", PROP_TYPE_REAL, offsetof(Custom, subscale) },
   { NULL, 0, 0 }
 };
@@ -277,6 +283,7 @@ static PropOffset custom_offsets_text[] = {
     offsetof(Custom, line_style), offsetof(Custom, dashlength) },
   { "flip_horizontal", PROP_TYPE_BOOL, offsetof(Custom, flip_h) },
   { "flip_vertical", PROP_TYPE_BOOL, offsetof(Custom, flip_v) },
+  { "angle", PROP_TYPE_REAL, offsetof(Custom, angle) },
   { "subscale", PROP_TYPE_REAL, offsetof(Custom, subscale) },
   { "padding", PROP_TYPE_REAL, offsetof(Custom, padding) },
   {"text",PROP_TYPE_TEXT,offsetof(Custom,text)},
@@ -544,6 +551,21 @@ transform_coord(Custom *custom, const Point *p1, Point *out)
   } else {
     out->x = p1->x * custom->xscale + custom->xoffs;
     out->y = p1->y * custom->yscale + custom->yoffs;
+  }
+
+  /* Rotate the transformed point about the element centre. Every geometry
+   * consumer (draw, bounding box, hit-test, connection points) funnels through
+   * here, so a single rotation here turns the whole shape consistently. */
+  if (custom->angle != 0.0) {
+    Element *elem = &custom->element;
+    double rad = custom->angle * G_PI / 180.0;
+    double cs = cos (rad), sn = sin (rad);
+    double cx = elem->corner.x + elem->width / 2.0;
+    double cy = elem->corner.y + elem->height / 2.0;
+    double dx = out->x - cx, dy = out->y - cy;
+
+    out->x = cx + dx * cs - dy * sn;
+    out->y = cy + dx * sn + dy * cs;
   }
 }
 
@@ -1741,6 +1763,7 @@ custom_create (Point   *startpoint,
 
   custom->flip_h = FALSE;
   custom->flip_v = FALSE;
+  custom->angle = 0.0;
 
   if (info->has_text) {
     attributes_get_default_font(&font, &font_height);
