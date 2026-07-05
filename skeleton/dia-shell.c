@@ -74,6 +74,7 @@ typedef struct {
   GtkWidget *modify_toggle;  /* the Modify tool toggle, for switching back */
   GHashTable *tool_buttons;  /* tool display-name -> its palette toggle (Tools menu) */
   GtkWidget *layers_toggle;  /* header toggle for the layers panel (Dialogs menu sync) */
+  gpointer   style_mgr;      /* AdwStyleManager (borrowed): notify::dark watch */
   gboolean   skip_layer_select;  /* a group row was clicked; don't select the whole layer */
   GtkWidget *font_btn;       /* top-bar text font+size (GtkFontDialogButton) */
   gulong     font_btn_handler;   /* notify::font-desc, blocked during sync */
@@ -8329,9 +8330,14 @@ build_sheets (DiaShell *self)
   gtk_flow_box_set_max_children_per_line (GTK_FLOW_BOX (self->sheet_box), 4);
   self->sheet_index = 0;
   install_shape_css ();
-  /* Re-back the icons when the user toggles light/dark at runtime. */
-  g_signal_connect_object (adw_style_manager_get_default (), "notify::dark",
-                           G_CALLBACK (on_theme_changed), self, 0);
+  /* Re-back the icons when the user toggles light/dark at runtime. Plain
+   * g_signal_connect (not _object): the shell is a plain struct, not a GObject,
+   * so it can't be the lifetime target; we disconnect in dia_shell_free. */
+  self->style_mgr = adw_style_manager_get_default ();
+  if (self->style_mgr) {
+    g_signal_connect (self->style_mgr, "notify::dark",
+                      G_CALLBACK (on_theme_changed), self);
+  }
   rebuild_sheet_shapes (self);
 
   /* Categories can hold hundreds of shapes; scroll within a bounded height. */
@@ -9121,6 +9127,12 @@ static void
 dia_shell_free (gpointer data)
 {
   DiaShell *self = data;
+  /* the global style manager outlives the shell — stop its notify::dark from
+   * calling back into freed shell state */
+  if (self->style_mgr) {
+    g_signal_handlers_disconnect_by_func (self->style_mgr,
+                                          G_CALLBACK (on_theme_changed), self);
+  }
   g_clear_pointer (&self->undo, g_ptr_array_unref);
   g_clear_pointer (&self->drag_moves, g_array_unref);
   g_clear_pointer (&self->sheet_cats, g_list_free);   /* strings owned elsewhere */
