@@ -1200,6 +1200,14 @@ set_object_text (DiaObject *obj, const char *str)
   prop_list_free (props);
 }
 
+/* As set_object_text, but an empty/NULL string falls back to "Text" so a new
+ * text object is always visible (and thus findable/clickable) on the canvas. */
+static void
+set_object_text_or_default (DiaObject *obj, const char *str)
+{
+  set_object_text (obj, (str && *str) ? str : _("Text"));
+}
+
 
 /* If snap-to-grid is on, round @p to the nearest half grid cell (so both grid
  * lines and their midpoints are snap targets, as before). */
@@ -1518,7 +1526,7 @@ on_new_text_response (AdwAlertDialog *dlg, const char *response, DiaShell *self)
   if (!obj) {
     return;
   }
-  set_object_text (obj, gtk_editable_get_text (GTK_EDITABLE (entry)));
+  set_object_text_or_default (obj, gtk_editable_get_text (GTK_EDITABLE (entry)));
   apply_font_desc_to_object (obj, shell_font_desc (self));   /* top-bar font */
 
   push_op (self, OP_CREATE, obj, *pt, *pt);
@@ -1541,6 +1549,10 @@ open_new_text_dialog (DiaShell *self, Point p)
   Point *pp = g_new (Point, 1);
 
   gtk_entry_set_placeholder_text (GTK_ENTRY (entry), _("Text…"));
+  /* Prefill with "Text" (selected, so typing replaces it) so a text object is
+   * never created empty/invisible — the user can find and click it right away. */
+  gtk_editable_set_text (GTK_EDITABLE (entry), _("Text"));
+  gtk_editable_select_region (GTK_EDITABLE (entry), 0, -1);
 
   dlg = adw_alert_dialog_new (_("New Text"), NULL);
   adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), entry);
@@ -5080,10 +5092,27 @@ on_uitest_text (GtkButton *button, DiaShell *self)
   push_op (self, OP_CREATE, obj, (Point) { 6, 6 }, (Point) { 6, 6 });
   set_object_text (obj, "Hello Dia");
   got = get_object_text (obj);
-  if (got && g_strcmp0 (got, "Hello Dia") == 0) {
-    g_snprintf (buf, sizeof (buf), _("text OK (%s)"), got);
-  } else {
-    g_snprintf (buf, sizeof (buf), _("text FAIL (%s)"), got ? got : "(null)");
+
+  /* A new text object created with empty input defaults to "Text", so it is
+   * visible and clickable rather than an invisible empty box. */
+  {
+    DiaObject *def = diagram_create_object (self, "Standard - Text",
+                                            (Point) { 9, 6 });
+    char *defstr = NULL;
+
+    if (def) {
+      push_op (self, OP_CREATE, def, (Point) { 9, 6 }, (Point) { 9, 6 });
+      set_object_text_or_default (def, "");     /* empty -> "Text" */
+      defstr = get_object_text (def);
+    }
+    if (got && g_strcmp0 (got, "Hello Dia") == 0 &&
+        defstr && g_strcmp0 (defstr, "Text") == 0) {
+      g_snprintf (buf, sizeof (buf), _("text OK (%s / default %s)"), got, defstr);
+    } else {
+      g_snprintf (buf, sizeof (buf), _("text FAIL (%s / default %s)"),
+                  got ? got : "(null)", defstr ? defstr : "(null)");
+    }
+    g_free (defstr);
   }
   g_free (got);
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
