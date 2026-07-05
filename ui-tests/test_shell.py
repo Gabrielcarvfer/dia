@@ -610,6 +610,16 @@ def main():
         ok = any('saveload OK' in (lab.name or '') for lab in labels)
         check("Multi-layer diagram round-trips through save/load", ok)
 
+    # 3aj2. A custom (sheet) shape's flip + 90 rotation survive save->load.
+    frp = find(app, name='uitest-fliprotate', roleName='push button')
+    check("DIA_UITEST fliprotate trigger present", frp)
+    if frp:
+        do_click(frp)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('fliprotate OK' in (lab.name or '') for lab in labels)
+        check("Custom shape flip + rotate round-trip through save/load", ok)
+
     # 3ak. Arrow-key nudge + Ctrl+D duplicate helpers.
     kb = find(app, name='uitest-keyboard', roleName='push button')
     check("DIA_UITEST keyboard trigger present", kb)

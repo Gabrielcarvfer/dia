@@ -6156,6 +6156,104 @@ on_uitest_textrotate (GtkButton *button, DiaShell *self)
 }
 
 
+/* --- small StdProp accessors used by the flip/rotate round-trip test ----- */
+
+static gboolean
+get_bool_prop (DiaObject *obj, const char *name)
+{
+  PropDescription d[] = { { name, PROP_TYPE_BOOL }, PROP_DESC_END };
+  GPtrArray *props = prop_list_from_descs (d, pdtpp_true);
+  BoolProperty *bp = g_ptr_array_index (props, 0);
+  gboolean v;
+
+  dia_object_get_properties (obj, props);
+  v = bp->bool_data;
+  prop_list_free (props);
+  return v;
+}
+
+static DiaObject *
+first_object (DiagramData *data)
+{
+  int nl = data_layer_count (data);
+
+  for (int li = 0; li < nl; li++) {
+    DiaLayer *l = data_layer_get_nth (data, li);
+    if (dia_layer_object_count (l) > 0) {
+      return dia_layer_object_get_nth (l, 0);
+    }
+  }
+  return NULL;
+}
+
+/* UI-test hook (DIA_UITEST): a custom (sheet) shape's flip and 90° rotation
+ * must survive a .dia save→load round-trip. Custom shapes mirror via the
+ * flip_horizontal/flip_vertical properties, and a right-angle turn swaps the
+ * element footprint (elem_width/height); both must persist. */
+static void
+on_uitest_fliprotate (GtkButton *button, DiaShell *self)
+{
+  char *path = g_build_filename (g_get_tmp_dir (),
+                                 "dia-uitest-fliprotate.dia", NULL);
+  GFile *file = g_file_new_for_path (path);
+  DiagramData *reloaded = NULL;
+  DiaObject *obj;
+  double angle_after = 0;
+  gboolean flip_set = FALSE, flip_kept = FALSE, angle_set = FALSE, angle_kept = FALSE;
+  char buf[128];
+
+  /* "Geometric - Diamond" (Assorted/diamond.shape) is a real custom shape:
+   * it flips via flip_horizontal and now rotates via the "angle" property.
+   * Force-register the Assorted category so the type exists in the test. */
+  dia_port_shapes_in_category ("Assorted");
+
+  dia_shell_set_new_diagram (self);
+  g_strlcpy (self->tool, "Geometric - Diamond", sizeof (self->tool));
+  obj = apply_tool_at (self, (Point) { 10, 10 });
+  if (!obj || !object_has_prop (obj, "flip_horizontal")) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("fliprotate FAIL (no custom shape)"));
+    goto out;
+  }
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, obj);
+  self->selected = obj;
+
+  flip_selected (self, TRUE);             /* toggles flip_horizontal */
+  flip_set = get_bool_prop (obj, "flip_horizontal");
+
+  rotate_selected (self, 90);             /* accumulates the "angle" property */
+  angle_after = object_angle (obj);
+  angle_set = fabs (angle_after - 90.0) < 0.05;
+
+  diagram_to_file (self, file);
+  reloaded = diagram_load_standalone (path);
+  if (reloaded) {
+    DiaObject *ro = first_object (reloaded);
+    if (ro) {
+      flip_kept = get_bool_prop (ro, "flip_horizontal");
+      angle_kept = fabs (object_angle (ro) - angle_after) < 0.05;
+    }
+  }
+
+  if (flip_set && angle_set && flip_kept && angle_kept) {
+    g_snprintf (buf, sizeof (buf),
+                _("fliprotate OK (flip+rotate save/load round-trip)"));
+  } else {
+    g_snprintf (buf, sizeof (buf),
+                _("fliprotate FAIL (flip=%d angle=%d flipkept=%d anglekept=%d)"),
+                flip_set, angle_set, flip_kept, angle_kept);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+
+out:
+  g_clear_object (&reloaded);
+  g_object_unref (file);
+  g_free (path);
+  gtk_widget_queue_draw (self->canvas);
+  refresh_layers_list (self);
+}
+
 /* UI-test hook (DIA_UITEST): a two-layer diagram must survive save→load with
  * both layers (save used to write only the active layer). */
 static void
@@ -7975,6 +8073,7 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *nt = gtk_button_new_with_label ("uitest-newtext");
     GtkWidget *tr = gtk_button_new_with_label ("uitest-textrotate");
     GtkWidget *sl = gtk_button_new_with_label ("uitest-saveload");
+    GtkWidget *frp = gtk_button_new_with_label ("uitest-fliprotate");
     GtkWidget *kb = gtk_button_new_with_label ("uitest-keyboard");
     GtkWidget *zf = gtk_button_new_with_label ("uitest-zoomfit");
     GtkWidget *st = gtk_button_new_with_label ("uitest-selecttype");
@@ -8073,6 +8172,7 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (nt, "clicked", G_CALLBACK (on_uitest_newtext), self);
     g_signal_connect (tr, "clicked", G_CALLBACK (on_uitest_textrotate), self);
     g_signal_connect (sl, "clicked", G_CALLBACK (on_uitest_saveload), self);
+    g_signal_connect (frp, "clicked", G_CALLBACK (on_uitest_fliprotate), self);
     g_signal_connect (kb, "clicked", G_CALLBACK (on_uitest_keyboard), self);
     g_signal_connect (zf, "clicked", G_CALLBACK (on_uitest_zoomfit), self);
     g_signal_connect (st, "clicked", G_CALLBACK (on_uitest_selecttype), self);
@@ -8122,6 +8222,7 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), nt);
     gtk_box_append (GTK_BOX (bar), tr);
     gtk_box_append (GTK_BOX (bar), sl);
+    gtk_box_append (GTK_BOX (bar), frp);
     gtk_box_append (GTK_BOX (bar), kb);
     gtk_box_append (GTK_BOX (bar), zf);
     gtk_box_append (GTK_BOX (bar), st);
