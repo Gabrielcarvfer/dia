@@ -36,6 +36,7 @@ static GHashTable *message_hash_table;
 typedef struct {
   const gchar *title;
   GtkWidget *dialog;
+  GtkWidget *msg_label;
   GtkWidget *repeat_label;
   GList *repeats;
   GtkWidget *repeat_view;
@@ -69,10 +70,30 @@ message_dialog_destroyed(GtkWidget *widget, gpointer userdata)
 
   msginfo->title = NULL;
   msginfo->dialog = NULL;
+  msginfo->msg_label = NULL;
   msginfo->repeat_label = NULL;
   msginfo->repeat_view = NULL;
   msginfo->show_repeats = NULL;
   msginfo->no_show_again = NULL;
+}
+
+
+/* Close/hide the reusable message window without destroying it. */
+static void
+message_dialog_close (GtkWidget *button, gpointer userdata)
+{
+  DiaMessageInfo *msginfo = (DiaMessageInfo *) userdata;
+
+  gtk_widget_set_visible (msginfo->dialog, FALSE);
+}
+
+
+static gboolean
+message_dialog_close_request (GtkWindow *window, gpointer userdata)
+{
+  gtk_widget_set_visible (GTK_WIDGET (window), FALSE);
+
+  return TRUE; /* keep the window alive so it can be reused */
 }
 
 
@@ -84,27 +105,32 @@ static void
 message_create_dialog(const gchar *title, DiaMessageInfo *msginfo, gchar *buf)
 {
   GtkWidget *dialog = NULL;
+  GtkWidget *content;
+  GtkWidget *close_button;
   GtkTextBuffer *textbuffer;
-  GtkMessageType type = GTK_MESSAGE_INFO;
   GList *repeats;
-
-  /* quite dirty in order to not change Dia's message api */
-  if (title) {
-    if (0 == strcmp (title, _("Error")))
-      type = GTK_MESSAGE_ERROR;
-    else if (0 == strcmp (title, _("Warning")))
-      type = GTK_MESSAGE_WARNING;
-  }
 
   if (msginfo->repeats != NULL) {
     buf = (char *) msginfo->repeats->data;
   }
 
-  dialog = gtk_message_dialog_new (NULL, /* no parent window */
-                                   0,    /* GtkDialogFlags */
-                                   type,
-                                   GTK_BUTTONS_CLOSE,
-                                   "%s", buf);
+  /* GTK4: GtkMessageDialog/GtkDialog are deprecated; build a plain reusable
+   * GtkWindow with a content box and an explicit Close button. */
+  dialog = gtk_window_new ();
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+
+  content = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  gtk_widget_set_margin_top (content, 12);
+  gtk_widget_set_margin_bottom (content, 12);
+  gtk_widget_set_margin_start (content, 12);
+  gtk_widget_set_margin_end (content, 12);
+  gtk_window_set_child (GTK_WINDOW (dialog), content);
+
+  msginfo->msg_label = gtk_label_new (buf);
+  gtk_label_set_wrap (GTK_LABEL (msginfo->msg_label), TRUE);
+  gtk_label_set_xalign (GTK_LABEL (msginfo->msg_label), 0.0);
+  gtk_box_append (GTK_BOX (content), msginfo->msg_label);
+
   if (title) {
     char *real_title;
 
@@ -113,29 +139,25 @@ message_create_dialog(const gchar *title, DiaMessageInfo *msginfo, gchar *buf)
     gtk_window_set_title (GTK_WINDOW (dialog), real_title);
     g_clear_pointer (&real_title, g_free);
   }
-  gtk_widget_set_visible (dialog, TRUE);
-  g_signal_connect (G_OBJECT (dialog), "response",
-                    G_CALLBACK (gtk_widget_hide),
-                    NULL);
+  g_signal_connect (G_OBJECT (dialog), "close-request",
+                    G_CALLBACK (message_dialog_close_request),
+                    msginfo);
   msginfo->dialog = dialog;
   g_signal_connect (G_OBJECT (dialog), "destroy",
                     G_CALLBACK (message_dialog_destroyed),
                     msginfo);
 
   msginfo->repeat_label = gtk_label_new (_("There is one similar message."));
-  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG (msginfo->dialog))),
-                     msginfo->repeat_label);
+  gtk_box_append (GTK_BOX (content), msginfo->repeat_label);
 
   msginfo->show_repeats =
     gtk_check_button_new_with_label (_("Show repeated messages"));
-  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG (msginfo->dialog))),
-                     msginfo->show_repeats);
+  gtk_box_append (GTK_BOX (content), msginfo->show_repeats);
   g_signal_connect (G_OBJECT (msginfo->show_repeats), "toggled",
                     G_CALLBACK (gtk_message_toggle_repeats), msginfo);
 
   msginfo->repeat_view = gtk_text_view_new();
-  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area(GTK_DIALOG(msginfo->dialog))),
-		    msginfo->repeat_view);
+  gtk_box_append (GTK_BOX (content), msginfo->repeat_view);
   gtk_text_view_set_editable(GTK_TEXT_VIEW(msginfo->repeat_view), FALSE);
 
   textbuffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(msginfo->repeat_view));
@@ -149,10 +171,15 @@ message_create_dialog(const gchar *title, DiaMessageInfo *msginfo, gchar *buf)
 
   msginfo->no_show_again =
     gtk_check_button_new_with_label(_("Don't show this message again"));
-  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area(GTK_DIALOG(msginfo->dialog))),
-		    msginfo->no_show_again);
+  gtk_box_append (GTK_BOX (content), msginfo->no_show_again);
   g_signal_connect(G_OBJECT(msginfo->no_show_again), "toggled",
 		   G_CALLBACK(gtk_message_toggle_show_again), msginfo);
+
+  close_button = gtk_button_new_with_label (_("Close"));
+  gtk_widget_set_halign (close_button, GTK_ALIGN_END);
+  gtk_box_append (GTK_BOX (content), close_button);
+  g_signal_connect (G_OBJECT (close_button), "clicked",
+                    G_CALLBACK (message_dialog_close), msginfo);
 }
 
 static void G_GNUC_PRINTF(3, 0)
@@ -201,7 +228,7 @@ gtk_message_internal(const char* title, enum ShowAgainStyle showAgain,
       gtk_label_set_text(GTK_LABEL(msginfo->repeat_label), newlabel);
     }
     /* for repeated messages, show the last one */
-    g_object_set (msginfo->dialog, "text", msg, NULL);
+    gtk_label_set_text (GTK_LABEL (msginfo->msg_label), msg);
 
     gtk_widget_set_visible (msginfo->repeat_label, TRUE);
     gtk_widget_set_visible (msginfo->show_repeats, TRUE);

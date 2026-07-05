@@ -34,23 +34,60 @@ struct _DiaFontSelector {
   GtkBox hbox;
 };
 
+/*
+ * GTK4: the deprecated GtkComboBox + GtkTreeStore + cell renderers are gone.
+ * Both selectors are GtkDropDowns. The font list is flat and searchable
+ * (GtkStringList) instead of the old nested "Other Fonts" submenu; the style
+ * list is a GListModel of DiaFontStyleItem (label -> DiaFontStyle id).
+ */
+
+#define DIA_TYPE_FONT_STYLE_ITEM (dia_font_style_item_get_type ())
+G_DECLARE_FINAL_TYPE (DiaFontStyleItem, dia_font_style_item, DIA, FONT_STYLE_ITEM, GObject)
+
+struct _DiaFontStyleItem {
+  GObject parent_instance;
+  char   *label;
+  int     id;
+};
+
+G_DEFINE_TYPE (DiaFontStyleItem, dia_font_style_item, G_TYPE_OBJECT)
+
+static void
+dia_font_style_item_finalize (GObject *object)
+{
+  DiaFontStyleItem *self = DIA_FONT_STYLE_ITEM (object);
+  g_clear_pointer (&self->label, g_free);
+  G_OBJECT_CLASS (dia_font_style_item_parent_class)->finalize (object);
+}
+
+static void
+dia_font_style_item_class_init (DiaFontStyleItemClass *klass)
+{
+  G_OBJECT_CLASS (klass)->finalize = dia_font_style_item_finalize;
+}
+
+static void dia_font_style_item_init (DiaFontStyleItem *self) {}
+
+static DiaFontStyleItem *
+dia_font_style_item_new (const char *label, int id)
+{
+  DiaFontStyleItem *item = g_object_new (DIA_TYPE_FONT_STYLE_ITEM, NULL);
+  item->label = g_strdup (label);
+  item->id = id;
+  return item;
+}
+
 
 typedef struct _DiaFontSelectorPrivate DiaFontSelectorPrivate;
 struct _DiaFontSelectorPrivate {
-  GtkWidget    *fonts;
-  GtkTreeStore *fonts_store;
-  GtkTreeIter   fonts_default_end;
-  GtkTreeIter   fonts_custom_end;
-  GtkTreeIter   fonts_other;
-  GtkTreeIter   fonts_reset;
+  GtkWidget     *fonts;         /* GtkDropDown */
+  GtkStringList *fonts_store;   /* borrowed (owned by fonts) */
 
-  const char   *looking_for;
+  GtkWidget     *styles;        /* GtkDropDown */
+  GListStore    *styles_store;  /* borrowed (owned by styles) */
 
-  GtkWidget    *styles;
-  GtkListStore *styles_store;
-
-  char         *current;
-  int           current_style;
+  char          *current;
+  int            current_style;
 };
 
 G_DEFINE_TYPE_WITH_PRIVATE (DiaFontSelector, dia_font_selector, GTK_TYPE_BOX)
@@ -99,9 +136,7 @@ dia_font_selector_finalize (GObject *object)
   DiaFontSelector *self = DIA_FONT_SELECTOR (object);
   DiaFontSelectorPrivate *priv = dia_font_selector_get_instance_private (self);
 
-  g_clear_object (&priv->fonts_store);
-  g_clear_object (&priv->styles_store);
-
+  /* fonts_store / styles_store are owned by their GtkDropDowns. */
   g_clear_pointer (&priv->current, g_free);
 
   G_OBJECT_CLASS (dia_font_selector_parent_class)->finalize (object);
@@ -164,21 +199,24 @@ static char *style_labels[] = {
 static PangoFontFamily *
 get_family_from_name (GtkWidget *widget, const gchar *fontname)
 {
-  PangoFontFamily **families;
-  int n_families, i;
+  /* The installed font set does not change during a session, so enumerate the
+   * (potentially large) family list once and cache it. Re-listing on every
+   * lookup was the dominant cost when the property dialog re-syncs widgets. */
+  static PangoFontFamily **families = NULL;
+  static int n_families = 0;
+  int i;
 
-  pango_context_list_families (dia_font_get_context(),
-                               &families, &n_families);
-  /* Doing it the slow way until I find a better way */
+  if (families == NULL) {
+    pango_context_list_families (dia_font_get_context (),
+                                 &families, &n_families);
+  }
+
   for (i = 0; i < n_families; i++) {
     if (!(g_ascii_strcasecmp (pango_font_family_get_name (families[i]), fontname))) {
-      PangoFontFamily *fam = families[i];
-      g_clear_pointer (&families, g_free);
-      return fam;
+      return families[i];
     }
   }
   g_warning (_("Couldn't find font family for %s\n"), fontname);
-  g_clear_pointer (&families, g_free);
   return NULL;
 }
 
@@ -229,10 +267,11 @@ set_styles (DiaFontSelector *fs,
                pango_font_family_get_name (pff) ? pango_font_family_get_name (pff) : "(null font)");
   }
 
-  gtk_list_store_clear (priv->styles_store);
+  g_list_store_remove_all (priv->styles_store);
 
   for (i = DIA_FONT_NORMAL; i <= (DIA_FONT_HEAVY | DIA_FONT_ITALIC); i+=4) {
-    GtkTreeIter iter;
+    DiaFontStyleItem *item;
+    guint pos;
 
     /*
      * bad hack continued ...
@@ -248,86 +287,57 @@ set_styles (DiaFontSelector *fs,
       continue;
     }
 
-    gtk_list_store_append (priv->styles_store, &iter);
-    gtk_list_store_set (priv->styles_store,
-                        &iter,
-                        STYLE_COL_LABEL, style_labels[3 * weight + slant],
-                        STYLE_COL_ID, i,
-                        -1);
+    item = dia_font_style_item_new (style_labels[3 * weight + slant], i);
+    pos = g_list_model_get_n_items (G_LIST_MODEL (priv->styles_store));
+    g_list_store_append (priv->styles_store, item);
+    g_object_unref (item);
 
     if (dia_style == i || (i == DIA_FONT_NORMAL && dia_style == -1)) {
-      gtk_combo_box_set_active_iter (GTK_COMBO_BOX (priv->styles), &iter);
+      gtk_drop_down_set_selected (GTK_DROP_DOWN (priv->styles), pos);
     }
   }
 
   gtk_widget_set_sensitive (GTK_WIDGET (priv->styles),
-                            gtk_tree_model_iter_n_children (GTK_TREE_MODEL (priv->styles_store), NULL) > 1);
+                            g_list_model_get_n_items (G_LIST_MODEL (priv->styles_store)) > 1);
+}
+
+
+/* Case-insensitive lookup of a family name in the flat font list. */
+static guint
+font_find_family (DiaFontSelectorPrivate *priv, const char *family)
+{
+  guint n = g_list_model_get_n_items (G_LIST_MODEL (priv->fonts_store));
+
+  for (guint i = 0; i < n; i++) {
+    const char *s = gtk_string_list_get_string (priv->fonts_store, i);
+    if (g_ascii_strcasecmp (s, family) == 0) {
+      return i;
+    }
+  }
+
+  return GTK_INVALID_LIST_POSITION;
 }
 
 
 static void
-font_changed (GtkComboBox     *widget,
+font_changed (GtkDropDown     *widget,
+              GParamSpec      *pspec,
               DiaFontSelector *self)
 {
   DiaFontSelectorPrivate *priv;
-  GtkTreeIter active;
-  GtkTreePath *active_path;
-  GtkTreePath *path;
-  char *family = NULL;
+  guint pos;
+  const char *family;
 
   g_return_if_fail (DIA_IS_FONT_SELECTOR (self));
 
   priv = dia_font_selector_get_instance_private (self);
 
-  gtk_combo_box_get_active_iter (widget, &active);
-
-  active_path = gtk_tree_model_get_path (GTK_TREE_MODEL (priv->fonts_store), &active);
-  path = gtk_tree_model_get_path (GTK_TREE_MODEL (priv->fonts_store), &priv->fonts_reset);
-
-  if (gtk_tree_path_compare (path, active_path) == 0) {
-    GtkTreeIter iter;
-    GtkTreePath *end_path;
-    DiaFont *font;
-
-    persistent_list_clear (PERSIST_NAME);
-
-    path = gtk_tree_model_get_path (GTK_TREE_MODEL (priv->fonts_store), &priv->fonts_default_end);
-
-    // Move over the separator
-    gtk_tree_path_next (path);
-    gtk_tree_model_get_iter (GTK_TREE_MODEL (priv->fonts_store), &iter, path);
-
-    end_path = gtk_tree_model_get_path (GTK_TREE_MODEL (priv->fonts_store), &priv->fonts_custom_end);
-
-    while (gtk_tree_path_compare (path, end_path) != 0) {
-      gtk_tree_store_remove (priv->fonts_store, &iter);
-
-      gtk_tree_model_get_iter (GTK_TREE_MODEL (priv->fonts_store), &iter, path);
-
-      gtk_tree_path_free (end_path);
-      end_path = gtk_tree_model_get_path (GTK_TREE_MODEL (priv->fonts_store), &priv->fonts_custom_end);
-    }
-
-    gtk_tree_path_free (path);
-    gtk_tree_path_free (end_path);
-    gtk_tree_path_free (active_path);
-
-    if (priv->current) {
-      font = dia_font_new (priv->current, priv->current_style, 1.0);
-      dia_font_selector_set_font (self, font);
-      g_clear_object (&font);
-    } else {
-      gtk_tree_model_get_iter_first (GTK_TREE_MODEL (priv->fonts_store), &iter);
-      gtk_combo_box_set_active_iter (GTK_COMBO_BOX (priv->fonts), &iter);
-    }
-
+  pos = gtk_drop_down_get_selected (widget);
+  if (pos == GTK_INVALID_LIST_POSITION) {
     return;
   }
 
-  gtk_tree_model_get (GTK_TREE_MODEL (priv->fonts_store),
-                      &active,
-                      FONT_COL_FAMILY, &family,
-                      -1);
+  family = gtk_string_list_get_string (priv->fonts_store, pos);
 
   g_clear_pointer (&priv->current, g_free);
   priv->current = g_strdup (family);
@@ -337,77 +347,27 @@ font_changed (GtkComboBox     *widget,
 
   if (g_strcmp0 (family, "sans") != 0 &&
       g_strcmp0 (family, "serif") != 0 &&
-      g_strcmp0 (family, "monospace") != 0 &&
-      !persistent_list_add (PERSIST_NAME, family)) {
-    GtkTreeIter iter;
-
-    gtk_tree_store_insert_before (priv->fonts_store,
-                                  &iter,
-                                  NULL,
-                                  &priv->fonts_custom_end);
-    gtk_tree_store_set (priv->fonts_store,
-                        &iter,
-                        FONT_COL_FAMILY, family,
-                        -1);
-
-    gtk_combo_box_set_active_iter (widget, &iter);
+      g_strcmp0 (family, "monospace") != 0) {
+    persistent_list_add (PERSIST_NAME, family);
   }
-
-  gtk_tree_path_free (path);
-  gtk_tree_path_free (active_path);
-  g_clear_pointer (&family, g_free);
-}
-
-
-static gboolean
-is_separator (GtkTreeModel *model,
-              GtkTreeIter  *iter,
-              gpointer      data)
-{
-  gboolean result;
-  char *family;
-
-  gtk_tree_model_get (model, iter, FONT_COL_FAMILY, &family, -1);
-
-  result = g_strcmp0 (family, "separator") == 0;
-
-  g_clear_pointer (&family, g_free);
-
-  return result;
 }
 
 
 static void
-is_sensitive (GtkCellLayout   *cell_layout,
-              GtkCellRenderer *cell,
-              GtkTreeModel    *tree_model,
-              GtkTreeIter     *iter,
-              gpointer         data)
-{
-  gboolean sensitive;
-
-  sensitive = !gtk_tree_model_iter_has_child (tree_model, iter);
-
-  g_object_set (cell, "sensitive", sensitive, NULL);
-}
-
-
-static void
-style_changed (GtkComboBox     *widget,
+style_changed (GtkDropDown     *widget,
+               GParamSpec      *pspec,
                DiaFontSelector *self)
 {
   DiaFontSelectorPrivate *priv;
-  GtkTreeIter active;
+  DiaFontStyleItem *active;
 
   g_return_if_fail (DIA_IS_FONT_SELECTOR (self));
 
   priv = dia_font_selector_get_instance_private (self);
 
-  if (gtk_combo_box_get_active_iter (GTK_COMBO_BOX (priv->styles), &active)) {
-    gtk_tree_model_get (GTK_TREE_MODEL (priv->styles_store),
-                        &active,
-                        STYLE_COL_ID, &priv->current_style,
-                        -1);
+  active = gtk_drop_down_get_selected_item (GTK_DROP_DOWN (priv->styles));
+  if (active) {
+    priv->current_style = active->id;
   } else {
     priv->current_style = 0;
   }
@@ -417,111 +377,56 @@ style_changed (GtkComboBox     *widget,
 
 
 static void
+style_setup_item (GtkSignalListItemFactory *factory,
+                  GtkListItem              *list_item,
+                  gpointer                  data)
+{
+  GtkWidget *label = gtk_label_new (NULL);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_list_item_set_child (list_item, label);
+}
+
+
+static void
+style_bind_item (GtkSignalListItemFactory *factory,
+                 GtkListItem              *list_item,
+                 gpointer                  data)
+{
+  DiaFontStyleItem *item = gtk_list_item_get_item (list_item);
+  GtkWidget *label = gtk_list_item_get_child (list_item);
+
+  gtk_label_set_text (GTK_LABEL (label), item->label);
+}
+
+
+static void
 dia_font_selector_init (DiaFontSelector *fs)
 {
   DiaFontSelectorPrivate *priv;
   PangoFontFamily **families;
   int n_families,i;
-  GtkCellRenderer *renderer;
-  GtkTreeIter iter;
+  GtkListItemFactory *style_factory;
   GList *tmplist;
 
   g_return_if_fail (DIA_IS_FONT_SELECTOR (fs));
 
   priv = dia_font_selector_get_instance_private (fs);
 
-  priv->fonts_store = gtk_tree_store_new (FONT_N_COL, G_TYPE_STRING);
-
-  gtk_tree_store_append (priv->fonts_store, &iter, NULL);
-  gtk_tree_store_set (priv->fonts_store,
-                      &iter,
-                      FONT_COL_FAMILY, "sans",
-                      -1);
-  gtk_tree_store_append (priv->fonts_store, &iter, NULL);
-  gtk_tree_store_set (priv->fonts_store,
-                      &iter,
-                      FONT_COL_FAMILY, "serif",
-                      -1);
-  gtk_tree_store_append (priv->fonts_store, &iter, NULL);
-  gtk_tree_store_set (priv->fonts_store,
-                      &iter,
-                      FONT_COL_FAMILY, "monospace",
-                      -1);
-
-  gtk_tree_store_append (priv->fonts_store, &priv->fonts_default_end, NULL);
-  gtk_tree_store_set (priv->fonts_store,
-                      &priv->fonts_default_end,
-                      FONT_COL_FAMILY, "separator",
-                      -1);
+  /* Flat, searchable font list: the three standard aliases first, then any
+   * persisted custom families, then every system family (sorted, deduped). */
+  priv->fonts_store = gtk_string_list_new (NULL);
+  gtk_string_list_append (priv->fonts_store, "sans");
+  gtk_string_list_append (priv->fonts_store, "serif");
+  gtk_string_list_append (priv->fonts_store, "monospace");
 
   persistence_register_list (PERSIST_NAME);
 
   for (tmplist = persistent_list_get_glist (PERSIST_NAME);
        tmplist != NULL; tmplist = g_list_next (tmplist)) {
-    gtk_tree_store_append (priv->fonts_store, &iter, NULL);
-    gtk_tree_store_set (priv->fonts_store,
-                        &iter,
-                        FONT_COL_FAMILY, tmplist->data,
-                        -1);
+    if (font_find_family (priv, tmplist->data) == GTK_INVALID_LIST_POSITION) {
+      gtk_string_list_append (priv->fonts_store, tmplist->data);
+    }
   }
-
-  gtk_tree_store_append (priv->fonts_store, &priv->fonts_custom_end, NULL);
-  gtk_tree_store_set (priv->fonts_store,
-                      &priv->fonts_custom_end,
-                      FONT_COL_FAMILY, "separator",
-                      -1);
-
-  gtk_tree_store_append (priv->fonts_store, &priv->fonts_other, NULL);
-  gtk_tree_store_set (priv->fonts_store,
-                      &priv->fonts_other,
-                      FONT_COL_FAMILY, _("Other Fonts"),
-                      -1);
-
-  gtk_tree_store_append (priv->fonts_store, &priv->fonts_reset, NULL);
-  gtk_tree_store_set (priv->fonts_store,
-                      &priv->fonts_reset,
-                      FONT_COL_FAMILY, _("Reset Menu"),
-                      -1);
-
-  priv->fonts = gtk_combo_box_new_with_model (GTK_TREE_MODEL (priv->fonts_store));
-  gtk_widget_set_hexpand (priv->fonts, TRUE);
-  gtk_widget_set_visible (priv->fonts, TRUE);
-
-  g_signal_connect (priv->fonts,
-                    "changed",
-                    G_CALLBACK (font_changed),
-                    fs);
-
-  renderer = gtk_cell_renderer_text_new ();
-  gtk_cell_layout_pack_start (GTK_CELL_LAYOUT (priv->fonts), renderer, TRUE);
-  gtk_cell_layout_set_attributes (GTK_CELL_LAYOUT (priv->fonts), renderer,
-                                  "text", FONT_COL_FAMILY,
-                                  "family", FONT_COL_FAMILY,
-                                  NULL);
-
-  gtk_combo_box_set_row_separator_func (GTK_COMBO_BOX (priv->fonts),
-                                        is_separator, NULL, NULL);
-  gtk_cell_layout_set_cell_data_func (GTK_CELL_LAYOUT (priv->fonts),
-                                      renderer,
-                                      is_sensitive,
-                                      NULL, NULL);
-
-  priv->styles_store = gtk_list_store_new (STYLE_N_COL,
-                                           G_TYPE_STRING,
-                                           G_TYPE_INT);
-  priv->styles = gtk_combo_box_new_with_model (GTK_TREE_MODEL (priv->styles_store));
-  gtk_widget_set_visible (priv->styles, TRUE);
-
-  g_signal_connect (priv->styles,
-                    "changed",
-                    G_CALLBACK (style_changed),
-                    fs);
-
-  renderer = gtk_cell_renderer_text_new ();
-  gtk_cell_layout_pack_start (GTK_CELL_LAYOUT (priv->styles), renderer, TRUE);
-  gtk_cell_layout_set_attributes (GTK_CELL_LAYOUT (priv->styles), renderer,
-                                  "text", STYLE_COL_LABEL,
-                                  NULL);
 
   pango_context_list_families (dia_font_get_context (),
                                &families,
@@ -532,17 +437,42 @@ dia_font_selector_init (DiaFontSelector *fs)
          sizeof (PangoFontFamily *),
          sort_fonts);
 
-  /* Doing it the slow way until I find a better way */
   for (i = 0; i < n_families; i++) {
-    gtk_tree_store_append (priv->fonts_store,
-                           &iter,
-                           &priv->fonts_other);
-    gtk_tree_store_set (priv->fonts_store,
-                        &iter,
-                        FONT_COL_FAMILY, pango_font_family_get_name (families[i]),
-                        -1);
+    const char *name = pango_font_family_get_name (families[i]);
+    if (font_find_family (priv, name) == GTK_INVALID_LIST_POSITION) {
+      gtk_string_list_append (priv->fonts_store, name);
+    }
   }
   g_clear_pointer (&families, g_free);
+
+  /* The expression tells the drop-down what text to match while searching
+   * (each item is a GtkStringObject); without it enable-search is a no-op and
+   * the popup won't scroll to / highlight the current font. */
+  priv->fonts = gtk_drop_down_new (G_LIST_MODEL (priv->fonts_store),
+                                   gtk_property_expression_new (GTK_TYPE_STRING_OBJECT,
+                                                                NULL, "string"));
+  gtk_drop_down_set_enable_search (GTK_DROP_DOWN (priv->fonts), TRUE);
+  gtk_widget_set_hexpand (priv->fonts, TRUE);
+
+  g_signal_connect (priv->fonts,
+                    "notify::selected",
+                    G_CALLBACK (font_changed),
+                    fs);
+
+  priv->styles_store = g_list_store_new (DIA_TYPE_FONT_STYLE_ITEM);
+
+  style_factory = gtk_signal_list_item_factory_new ();
+  g_signal_connect (style_factory, "setup", G_CALLBACK (style_setup_item), NULL);
+  g_signal_connect (style_factory, "bind", G_CALLBACK (style_bind_item), NULL);
+
+  priv->styles = gtk_drop_down_new (G_LIST_MODEL (priv->styles_store), NULL);
+  gtk_drop_down_set_factory (GTK_DROP_DOWN (priv->styles), style_factory);
+  g_object_unref (style_factory);
+
+  g_signal_connect (priv->styles,
+                    "notify::selected",
+                    G_CALLBACK (style_changed),
+                    fs);
 
   gtk_box_append (GTK_BOX (fs), GTK_WIDGET (priv->fonts));
   gtk_box_append (GTK_BOX (fs), GTK_WIDGET (priv->styles));
@@ -556,33 +486,6 @@ dia_font_selector_new (void)
 }
 
 
-static gboolean
-set_font (GtkTreeModel *model,
-          GtkTreePath  *path,
-          GtkTreeIter  *iter,
-          gpointer      data)
-{
-  DiaFontSelector *self = DIA_FONT_SELECTOR (data);
-  DiaFontSelectorPrivate *priv = dia_font_selector_get_instance_private (self);
-  char *font;
-  gboolean res = FALSE;
-
-  gtk_tree_model_get (model,
-                      iter,
-                      FONT_COL_FAMILY, &font,
-                      -1);
-
-  res = g_strcmp0 (priv->looking_for, font) == 0;
-  if (res) {
-    gtk_combo_box_set_active_iter (GTK_COMBO_BOX (priv->fonts), iter);
-  }
-
-  g_clear_pointer (&font, g_free);
-
-  return res;
-}
-
-
 /**
  * dia_font_selector_set_font:
  *
@@ -593,16 +496,39 @@ dia_font_selector_set_font (DiaFontSelector *self, DiaFont *font)
 {
   DiaFontSelectorPrivate *priv;
   const gchar *fontname = dia_font_get_family (font);
+  DiaFontStyle style = dia_font_get_style (font);
+  guint pos;
 
   g_return_if_fail (DIA_IS_FONT_SELECTOR (self));
 
   priv = dia_font_selector_get_instance_private (self);
 
-  priv->looking_for = fontname;
-  gtk_tree_model_foreach (GTK_TREE_MODEL (priv->fonts_store), set_font, self);
-  priv->looking_for = NULL;
+  /* The property dialog resets every widget on each edit (e.g. changing the
+   * font size). Re-selecting the same family would needlessly re-enumerate the
+   * Pango families/faces and rebuild the style list, which is slow. Skip it
+   * when nothing actually changed. */
+  if (priv->current &&
+      g_ascii_strcasecmp (priv->current, fontname) == 0 &&
+      priv->current_style == (int) style) {
+    return;
+  }
 
-  set_styles (self, fontname, dia_font_get_style (font));
+  pos = font_find_family (priv, fontname);
+  if (pos == GTK_INVALID_LIST_POSITION) {
+    /* An unknown family: add it so it can be shown and selected. */
+    pos = g_list_model_get_n_items (G_LIST_MODEL (priv->fonts_store));
+    gtk_string_list_append (priv->fonts_store, fontname);
+  }
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (priv->fonts), pos);
+
+  set_styles (self, fontname, style);
+
+  /* Record the resolved state so a re-sync with the same font short-circuits.
+   * (font_changed only fires when the *selection* changes, so it can't be
+   * relied on to set this when the font is already selected.) */
+  g_clear_pointer (&priv->current, g_free);
+  priv->current = g_strdup (fontname);
+  priv->current_style = (int) style;
 }
 
 
@@ -612,34 +538,25 @@ dia_font_selector_get_font (DiaFontSelector *self)
   DiaFontSelectorPrivate *priv;
   DiaFontStyle style;
   DiaFont *font;
-  GtkTreeIter iter;
-  char *fontname = NULL;
+  DiaFontStyleItem *style_item;
+  const char *fontname = NULL;
+  guint pos;
 
   g_return_val_if_fail (DIA_IS_FONT_SELECTOR (self), NULL);
 
   priv = dia_font_selector_get_instance_private (self);
 
-  if (gtk_combo_box_get_active_iter (GTK_COMBO_BOX (priv->fonts), &iter)) {
-    gtk_tree_model_get (GTK_TREE_MODEL (priv->fonts_store),
-                        &iter,
-                        FONT_COL_FAMILY, &fontname,
-                        -1);
+  pos = gtk_drop_down_get_selected (GTK_DROP_DOWN (priv->fonts));
+  if (pos != GTK_INVALID_LIST_POSITION) {
+    fontname = gtk_string_list_get_string (priv->fonts_store, pos);
   } else {
     g_warning ("No font selected");
   }
 
-  if (gtk_combo_box_get_active_iter (GTK_COMBO_BOX (priv->styles), &iter)) {
-    gtk_tree_model_get (GTK_TREE_MODEL (priv->styles_store),
-                        &iter,
-                        STYLE_COL_ID, &style,
-                        -1);
-  } else {
-    style = 0;
-  }
+  style_item = gtk_drop_down_get_selected_item (GTK_DROP_DOWN (priv->styles));
+  style = style_item ? style_item->id : 0;
 
   font = dia_font_new (fontname, style, 1.0);
-
-  g_clear_pointer (&fontname, g_free);
 
   return font;
 }

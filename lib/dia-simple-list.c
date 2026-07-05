@@ -29,14 +29,22 @@
 #include "dia-simple-list.h"
 
 
+/*
+ * GTK4: the deprecated GtkTreeView + GtkListStore + GtkTreeSelection stack is
+ * replaced by a GtkListView over a GtkStringList wrapped in a
+ * GtkSingleSelection. GtkListView is final, so DiaSimpleList is a GtkWidget
+ * composing a GtkScrolledWindow -> GtkListView.
+ */
 typedef struct _DiaSimpleListPrivate DiaSimpleListPrivate;
 struct _DiaSimpleListPrivate {
-  GtkListStore     *store;
-  GtkTreeSelection *selection;
+  GtkWidget          *scrolled;   /* owned child */
+  GtkWidget          *list_view;  /* borrowed (child of scrolled) */
+  GtkStringList      *store;      /* borrowed (owned by selection) */
+  GtkSingleSelection *selection;  /* owned */
 };
 
 
-G_DEFINE_TYPE_WITH_PRIVATE (DiaSimpleList, dia_simple_list, GTK_TYPE_TREE_VIEW)
+G_DEFINE_TYPE_WITH_PRIVATE (DiaSimpleList, dia_simple_list, GTK_TYPE_WIDGET)
 
 
 enum {
@@ -47,14 +55,14 @@ static guint signals[LAST_SIGNAL] = { 0, };
 
 
 static void
-dia_simple_list_finalize (GObject *object)
+dia_simple_list_dispose (GObject *object)
 {
   DiaSimpleList *self = DIA_SIMPLE_LIST (object);
   DiaSimpleListPrivate *priv = dia_simple_list_get_instance_private (self);
 
-  g_clear_object (&priv->store);
+  g_clear_pointer (&priv->scrolled, gtk_widget_unparent);
 
-  G_OBJECT_CLASS (dia_simple_list_parent_class)->finalize (object);
+  G_OBJECT_CLASS (dia_simple_list_parent_class)->dispose (object);
 }
 
 
@@ -63,7 +71,12 @@ dia_simple_list_class_init (DiaSimpleListClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
 
-  object_class->finalize = dia_simple_list_finalize;
+  /* The GtkSingleSelection is owned by the GtkListView (transfer full), which
+   * is owned by the scrolled window unparented in dispose. */
+  object_class->dispose = dia_simple_list_dispose;
+
+  gtk_widget_class_set_layout_manager_type (GTK_WIDGET_CLASS (klass),
+                                            GTK_TYPE_BIN_LAYOUT);
 
   signals[SELECTION_CHANGED] = g_signal_new ("selection-changed",
                                              G_TYPE_FROM_CLASS (klass),
@@ -76,10 +89,34 @@ dia_simple_list_class_init (DiaSimpleListClass *klass)
 
 
 static void
-selection_changed (GtkTreeSelection *treeselection,
-                   DiaSimpleList    *self)
+selection_changed (GtkSingleSelection *selection,
+                   GParamSpec         *pspec,
+                   DiaSimpleList      *self)
 {
   g_signal_emit (self, signals[SELECTION_CHANGED], 0);
+}
+
+
+static void
+setup_item (GtkSignalListItemFactory *factory,
+            GtkListItem              *list_item,
+            gpointer                  data)
+{
+  GtkWidget *label = gtk_label_new (NULL);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_list_item_set_child (list_item, label);
+}
+
+
+static void
+bind_item (GtkSignalListItemFactory *factory,
+           GtkListItem              *list_item,
+           gpointer                  data)
+{
+  GtkStringObject *obj = gtk_list_item_get_item (list_item);
+  GtkWidget *label = gtk_list_item_get_child (list_item);
+
+  gtk_label_set_text (GTK_LABEL (label), gtk_string_object_get_string (obj));
 }
 
 
@@ -87,19 +124,34 @@ static void
 dia_simple_list_init (DiaSimpleList *self)
 {
   DiaSimpleListPrivate *priv = dia_simple_list_get_instance_private (self);
+  GtkListItemFactory *factory;
 
-  priv->store = gtk_list_store_new (1, G_TYPE_STRING);
+  priv->store = gtk_string_list_new (NULL);
+  priv->selection = gtk_single_selection_new (G_LIST_MODEL (priv->store));
+  gtk_single_selection_set_autoselect (priv->selection, FALSE);
+  gtk_single_selection_set_can_unselect (priv->selection, TRUE);
+  gtk_single_selection_set_selected (priv->selection, GTK_INVALID_LIST_POSITION);
 
-  gtk_tree_view_set_model (GTK_TREE_VIEW (self), GTK_TREE_MODEL (priv->store));
+  factory = gtk_signal_list_item_factory_new ();
+  g_signal_connect (factory, "setup", G_CALLBACK (setup_item), NULL);
+  g_signal_connect (factory, "bind", G_CALLBACK (bind_item), NULL);
 
-  priv->selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (self));
+  priv->list_view = gtk_list_view_new (GTK_SELECTION_MODEL (priv->selection),
+                                       factory);
 
-  gtk_tree_selection_unselect_all (priv->selection);
-  gtk_tree_selection_set_mode (priv->selection,
-                               GTK_SELECTION_BROWSE);
+  priv->scrolled = gtk_scrolled_window_new ();
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (priv->scrolled),
+                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_propagate_natural_height (GTK_SCROLLED_WINDOW (priv->scrolled),
+                                                    TRUE);
+  gtk_scrolled_window_set_max_content_height (GTK_SCROLLED_WINDOW (priv->scrolled),
+                                              200);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (priv->scrolled),
+                                 priv->list_view);
+  gtk_widget_set_parent (priv->scrolled, GTK_WIDGET (self));
 
   g_signal_connect (priv->selection,
-                    "changed",
+                    "notify::selected",
                     G_CALLBACK (selection_changed),
                     self);
 }
@@ -121,7 +173,10 @@ dia_simple_list_empty (DiaSimpleList *self)
 
   priv = dia_simple_list_get_instance_private (self);
 
-  gtk_list_store_clear (priv->store);
+  gtk_string_list_splice (priv->store,
+                          0,
+                          g_list_model_get_n_items (G_LIST_MODEL (priv->store)),
+                          NULL);
 }
 
 
@@ -130,14 +185,12 @@ dia_simple_list_append (DiaSimpleList *self,
                         const char    *item)
 {
   DiaSimpleListPrivate *priv;
-  GtkTreeIter iter;
 
   g_return_if_fail (DIA_IS_SIMPLE_LIST (self));
 
   priv = dia_simple_list_get_instance_private (self);
 
-  gtk_list_store_append (priv->store, &iter);
-  gtk_list_store_set (priv->store, &iter, 0, item, -1);
+  gtk_string_list_append (priv->store, item);
 }
 
 
@@ -146,26 +199,23 @@ dia_simple_list_select (DiaSimpleList *self,
                         int            n)
 {
   DiaSimpleListPrivate *priv;
-  GtkTreeIter iter;
 
   g_return_if_fail (DIA_IS_SIMPLE_LIST (self));
 
   priv = dia_simple_list_get_instance_private (self);
 
   if (n == -1) {
-    gtk_tree_selection_unselect_all (priv->selection);
+    gtk_single_selection_set_selected (priv->selection,
+                                       GTK_INVALID_LIST_POSITION);
     return;
   }
 
-  if (!gtk_tree_model_iter_nth_child (GTK_TREE_MODEL (priv->store),
-                                      &iter,
-                                      NULL,
-                                      n)) {
+  if ((guint) n >= g_list_model_get_n_items (G_LIST_MODEL (priv->store))) {
     g_warning ("Can't select %i", n);
     return;
   }
 
-  gtk_tree_selection_select_iter (priv->selection, &iter);
+  gtk_single_selection_set_selected (priv->selection, n);
 }
 
 
@@ -173,26 +223,14 @@ int
 dia_simple_list_get_selected (DiaSimpleList *self)
 {
   DiaSimpleListPrivate *priv;
-  GtkTreeIter iter;
-  GtkTreePath *path;
-  int res;
+  guint pos;
 
   g_return_val_if_fail (DIA_IS_SIMPLE_LIST (self), -1);
 
   priv = dia_simple_list_get_instance_private (self);
 
-  if (!gtk_tree_selection_get_selected (priv->selection, NULL, &iter)) {
-    return -1;
-  }
+  pos = gtk_single_selection_get_selected (priv->selection);
 
-  path = gtk_tree_model_get_path (GTK_TREE_MODEL (self), &iter);
-
-  g_return_val_if_fail (gtk_tree_path_get_depth (path) == 1, -1);
-
-  res = gtk_tree_path_get_indices (path)[0];
-
-  gtk_tree_path_free (path);
-
-  return res;
+  return pos == GTK_INVALID_LIST_POSITION ? -1 : (int) pos;
 }
 

@@ -37,12 +37,10 @@ dia_line_preview_snapshot (GtkWidget *widget, GtkSnapshot *snapshot)
   int width = gtk_widget_get_width (widget);
   int height = gtk_widget_get_height (widget);
   double dash_list[6];
-  GtkStyleContext *style;
   GdkRGBA fg;
   cairo_t *ctx;
 
-  style = gtk_widget_get_style_context (widget);
-  gtk_style_context_get_color (style, &fg);
+  gtk_widget_get_color (widget, &fg);
 
   ctx = gtk_snapshot_append_cairo (snapshot,
                                    &GRAPHENE_RECT_INIT (0, 0, width, height));

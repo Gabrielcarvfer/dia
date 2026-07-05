@@ -151,6 +151,29 @@ dia_arrow_chooser_dialog_response (GtkWidget       *dialog,
 }
 
 
+static void
+dia_arrow_chooser_dialog_ok (GtkButton *button, DiaArrowChooser *chooser)
+{
+  dia_arrow_chooser_dialog_response (chooser->dialog, GTK_RESPONSE_OK, chooser);
+}
+
+
+static void
+dia_arrow_chooser_dialog_cancel (GtkButton *button, DiaArrowChooser *chooser)
+{
+  dia_arrow_chooser_dialog_response (chooser->dialog, GTK_RESPONSE_CANCEL, chooser);
+}
+
+
+static gboolean
+dia_arrow_chooser_dialog_close (GtkWindow *window, DiaArrowChooser *chooser)
+{
+  dia_arrow_chooser_dialog_response (chooser->dialog, GTK_RESPONSE_CANCEL, chooser);
+
+  return TRUE; /* keep the window alive for reuse */
+}
+
+
 /**
  * dia_arrow_chooser_dialog_new:
  * @chooser: The widget to attach a dialog to. The dialog will be placed
@@ -164,23 +187,45 @@ static void
 dia_arrow_chooser_dialog_new (DiaArrowChooser *chooser)
 {
   GtkWidget *wid;
+  GtkWidget *content;
+  GtkWidget *button_box;
+  GtkWidget *cancel_button;
+  GtkWidget *ok_button;
 
-  chooser->dialog = gtk_dialog_new_with_buttons (_("Arrow Properties"),
-                                                 NULL,
-                                                 0,
-                                                 _("_Cancel"), GTK_RESPONSE_CANCEL,
-                                                 _("_OK"), GTK_RESPONSE_OK,
-                                                 NULL);
-  gtk_dialog_set_default_response (GTK_DIALOG (chooser->dialog),
-                                   GTK_RESPONSE_OK);
-  g_signal_connect (G_OBJECT (chooser->dialog), "response",
-                    G_CALLBACK (dia_arrow_chooser_dialog_response), chooser);
+  /* GTK4: GtkDialog is deprecated; use a plain GtkWindow with our own
+   * Cancel/OK buttons dispatching to the existing response handler. */
+  chooser->dialog = gtk_window_new ();
+  gtk_window_set_title (GTK_WINDOW (chooser->dialog), _("Arrow Properties"));
+  g_signal_connect (G_OBJECT (chooser->dialog), "close-request",
+                    G_CALLBACK (dia_arrow_chooser_dialog_close), chooser);
+
+  content = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  gtk_widget_set_margin_top (content, 12);
+  gtk_widget_set_margin_bottom (content, 12);
+  gtk_widget_set_margin_start (content, 12);
+  gtk_widget_set_margin_end (content, 12);
+  gtk_window_set_child (GTK_WINDOW (chooser->dialog), content);
 
   wid = dia_arrow_selector_new ();
   gtk_widget_set_vexpand (wid, TRUE);
-  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG (chooser->dialog))),
-                  wid);
+  gtk_box_append (GTK_BOX (content), wid);
   chooser->selector = DIA_ARROW_SELECTOR (wid);
+
+  button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_set_halign (button_box, GTK_ALIGN_END);
+  gtk_box_append (GTK_BOX (content), button_box);
+
+  cancel_button = gtk_button_new_with_mnemonic (_("_Cancel"));
+  gtk_box_append (GTK_BOX (button_box), cancel_button);
+  g_signal_connect (G_OBJECT (cancel_button), "clicked",
+                    G_CALLBACK (dia_arrow_chooser_dialog_cancel), chooser);
+
+  ok_button = gtk_button_new_with_mnemonic (_("_OK"));
+  gtk_widget_add_css_class (ok_button, "suggested-action");
+  gtk_box_append (GTK_BOX (button_box), ok_button);
+  g_signal_connect (G_OBJECT (ok_button), "clicked",
+                    G_CALLBACK (dia_arrow_chooser_dialog_ok), chooser);
+  gtk_window_set_default_widget (GTK_WINDOW (chooser->dialog), ok_button);
 }
 
 

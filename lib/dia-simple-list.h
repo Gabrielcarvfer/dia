@@ -27,10 +27,10 @@
 G_BEGIN_DECLS
 
 #define DIA_TYPE_SIMPLE_LIST dia_simple_list_get_type ()
-G_DECLARE_DERIVABLE_TYPE (DiaSimpleList, dia_simple_list, DIA, SIMPLE_LIST, GtkTreeView)
+G_DECLARE_DERIVABLE_TYPE (DiaSimpleList, dia_simple_list, DIA, SIMPLE_LIST, GtkWidget)
 
 struct _DiaSimpleListClass {
-  GtkTreeViewClass parent_class;
+  GtkWidgetClass parent_class;
 };
 
 

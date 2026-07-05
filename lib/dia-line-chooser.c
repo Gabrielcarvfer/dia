@@ -154,10 +154,37 @@ dia_line_chooser_set_line_style (DiaLineChooser *lchooser,
 
 
 static void
+dia_line_chooser_dialog_ok (GtkButton *button, DiaLineChooser *lchooser)
+{
+  dia_line_chooser_dialog_response (lchooser->dialog, GTK_RESPONSE_OK, lchooser);
+}
+
+
+static void
+dia_line_chooser_dialog_cancel (GtkButton *button, DiaLineChooser *lchooser)
+{
+  dia_line_chooser_dialog_response (lchooser->dialog, GTK_RESPONSE_CANCEL, lchooser);
+}
+
+
+static gboolean
+dia_line_chooser_dialog_close (GtkWindow *window, DiaLineChooser *lchooser)
+{
+  dia_line_chooser_dialog_response (lchooser->dialog, GTK_RESPONSE_CANCEL, lchooser);
+
+  return TRUE; /* keep the window alive for reuse */
+}
+
+
+static void
 dia_line_chooser_init (DiaLineChooser *lchooser)
 {
   GtkWidget *wid;
   GtkWidget *mi, *ln, *box;
+  GtkWidget *content;
+  GtkWidget *button_box;
+  GtkWidget *cancel_button;
+  GtkWidget *ok_button;
   int i;
 
   lchooser->lstyle = DIA_LINE_STYLE_SOLID;
@@ -167,23 +194,40 @@ dia_line_chooser_init (DiaLineChooser *lchooser)
   gtk_button_set_child (GTK_BUTTON (lchooser), wid);
   lchooser->preview = DIA_LINE_PREVIEW (wid);
 
-  lchooser->dialog = gtk_dialog_new_with_buttons (_("Line Style Properties"),
-                                                  NULL,
-                                                  0,
-                                                  _("_Cancel"), GTK_RESPONSE_CANCEL,
-                                                  _("_OK"), GTK_RESPONSE_OK,
-                                                  NULL);
-  gtk_dialog_set_default_response (GTK_DIALOG (lchooser->dialog),
-                                   GTK_RESPONSE_OK);
-  g_signal_connect (G_OBJECT (lchooser->dialog),
-                    "response", G_CALLBACK (dia_line_chooser_dialog_response),
-                    lchooser);
+  /* GTK4: GtkDialog is deprecated; use a plain GtkWindow with our own
+   * Cancel/OK buttons dispatching to the existing response handler. */
+  lchooser->dialog = gtk_window_new ();
+  gtk_window_set_title (GTK_WINDOW (lchooser->dialog), _("Line Style Properties"));
+  g_signal_connect (G_OBJECT (lchooser->dialog), "close-request",
+                    G_CALLBACK (dia_line_chooser_dialog_close), lchooser);
+
+  content = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+  gtk_widget_set_margin_top (content, 12);
+  gtk_widget_set_margin_bottom (content, 12);
+  gtk_widget_set_margin_start (content, 12);
+  gtk_widget_set_margin_end (content, 12);
+  gtk_window_set_child (GTK_WINDOW (lchooser->dialog), content);
 
   wid = dia_line_style_selector_new ();
   gtk_widget_set_vexpand (wid, TRUE);
-  gtk_box_append (GTK_BOX (gtk_dialog_get_content_area (GTK_DIALOG(lchooser->dialog))),
-                  wid);
+  gtk_box_append (GTK_BOX (content), wid);
   lchooser->selector = DIA_LINE_STYLE_SELECTOR (wid);
+
+  button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_set_halign (button_box, GTK_ALIGN_END);
+  gtk_box_append (GTK_BOX (content), button_box);
+
+  cancel_button = gtk_button_new_with_mnemonic (_("_Cancel"));
+  gtk_box_append (GTK_BOX (button_box), cancel_button);
+  g_signal_connect (G_OBJECT (cancel_button), "clicked",
+                    G_CALLBACK (dia_line_chooser_dialog_cancel), lchooser);
+
+  ok_button = gtk_button_new_with_mnemonic (_("_OK"));
+  gtk_widget_add_css_class (ok_button, "suggested-action");
+  gtk_box_append (GTK_BOX (button_box), ok_button);
+  g_signal_connect (G_OBJECT (ok_button), "clicked",
+                    G_CALLBACK (dia_line_chooser_dialog_ok), lchooser);
+  gtk_window_set_default_widget (GTK_WINDOW (lchooser->dialog), ok_button);
 
   /* GTK4: GtkMenu is gone. Build a popover with a vertical list of flat
    * buttons, each showing a line-style preview. */

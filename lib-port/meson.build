@@ -134,7 +134,8 @@ libdia_core_ported = files(
   lib_dir / 'prop_sdarray.c',
   lib_dir / 'diaimportrenderer.c',
   lib_dir / 'dia-colour.c',
-  lib_dir / 'diacellrendererenum.c',
+  # diacellrendererenum.c retired by the GtkColumnView port of
+  # prop_sdarray_widget.c (kept in the legacy GTK3 build).
   lib_dir / 'diaoptionmenu.c',
   lib_dir / 'dia-simple-list.c',
   lib_dir / 'dia-guide.c',
@@ -145,10 +146,12 @@ libdia_core_ported = files(
   lib_dir / 'dia-unit-spinner.c',  # GtkSpinButton final in GTK4 -> compose instead of subclass
   lib_dir / 'prop_geomtypes.c',    # unblocked by dia-unit-spinner.h
   lib_dir / 'diainteractiverenderer.c',  # only GdkWindow ref was a doc comment
-  lib_dir / 'dia-line-cell-renderer.c',   # GtkCellRenderer render->snapshot, get_size->get_preferred_*
-  lib_dir / 'dia-arrow-cell-renderer.c',  # render->snapshot; get_background_color removed
-  lib_dir / 'dia-colour-cell-renderer.c', # render->snapshot, chains to parent ->snapshot
-  lib_dir / 'diacellrendererenum.c',      # compiles as-is (no render override)
+  # Deprecated GtkCellRenderer stack: each renderer is retired as its sole
+  # consumer migrates to a GtkDropDown/GtkColumnView widget factory. The .c/.h
+  # stay in-tree for the legacy GTK3 build (lib/meson.build).
+  # dia-line-cell-renderer.c   -> retired by dia-line-style-selector.c
+  # dia-arrow-cell-renderer.c  -> retired by dia-arrow-selector.c
+  # dia-colour-cell-renderer.c -> retired by dia-colour-selector.c
   lib_dir / 'dia-line-preview.c',         # GtkWidget draw vfunc -> snapshot
   lib_dir / 'dia-arrow-preview.c',        # draw -> snapshot; get_background_color removed
   lib_dir / 'prop_inttypes.c',            # gtk_entry_get/set_text -> GtkEditable

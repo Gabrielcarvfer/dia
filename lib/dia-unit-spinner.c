@@ -182,7 +182,8 @@ dia_unit_spinner_new (GtkAdjustment *adjustment, DiaUnit adj_unit)
   self = g_object_new (DIA_TYPE_UNIT_SPINNER, NULL);
   self->unit_num = adj_unit;
 
-  gtk_spin_button_set_activates_default (self->spin, TRUE);
+  /* GTK4.14 deprecates the explicit setter; set the property instead. */
+  g_object_set (self->spin, "activates-default", TRUE, NULL);
   gtk_spin_button_configure (self->spin,
                              adjustment, 0.0, dia_unit_get_digits (adj_unit));
 

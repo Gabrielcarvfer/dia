@@ -490,14 +490,17 @@ enumprop_get_widget(EnumProperty *prop, PropDialog *dialog)
 
   if (prop->common.descr->extra_data) {
     PropEnumData *enumdata = prop->common.descr->extra_data;
+    GtkStringList *list;
     guint i;
 
-    ret = gtk_combo_box_text_new ();
-
+    /* GTK4: GtkComboBoxText is deprecated -> GtkDropDown + GtkStringList. */
+    list = gtk_string_list_new (NULL);
     for (i = 0; enumdata[i].name != NULL; i++)
-      gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (ret), _(enumdata[i].name));
+      gtk_string_list_append (list, _(enumdata[i].name));
 
-    prophandler_connect(&prop->common, G_OBJECT (ret), "changed");
+    ret = gtk_drop_down_new (G_LIST_MODEL (list), NULL);
+
+    prophandler_connect_notify (&prop->common, G_OBJECT (ret), "notify::selected");
   } else {
     ret = gtk_entry_new(); /* should use spin button/option menu */
   }
@@ -517,7 +520,7 @@ enumprop_reset_widget(EnumProperty *prop, WIDGET *widget)
         break;
         }
     }
-    gtk_combo_box_set_active (GTK_COMBO_BOX (widget), pos);
+    gtk_drop_down_set_selected (GTK_DROP_DOWN (widget), pos);
   } else {
     char buf[16];
     g_snprintf(buf, sizeof(buf), "%d", prop->enum_data);
@@ -528,11 +531,12 @@ enumprop_reset_widget(EnumProperty *prop, WIDGET *widget)
 static void
 enumprop_set_from_widget(EnumProperty *prop, WIDGET *widget)
 {
-  if (GTK_IS_COMBO_BOX (widget)) {
-    guint pos = gtk_combo_box_get_active (GTK_COMBO_BOX (widget));
+  if (GTK_IS_DROP_DOWN (widget)) {
+    guint pos = gtk_drop_down_get_selected (GTK_DROP_DOWN (widget));
     PropEnumData *enumdata = prop->common.descr->extra_data;
 
     g_return_if_fail (enumdata != NULL);
+    g_return_if_fail (pos != GTK_INVALID_LIST_POSITION);
 
     prop->enum_data = enumdata[pos].enumv;
   } else {

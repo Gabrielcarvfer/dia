@@ -27,10 +27,10 @@ G_BEGIN_DECLS
 
 
 #define DIA_TYPE_OPTION_MENU dia_option_menu_get_type ()
-G_DECLARE_DERIVABLE_TYPE (DiaOptionMenu, dia_option_menu, DIA, OPTION_MENU, GtkComboBox)
+G_DECLARE_DERIVABLE_TYPE (DiaOptionMenu, dia_option_menu, DIA, OPTION_MENU, GtkWidget)
 
 struct _DiaOptionMenuClass {
-  GtkComboBoxClass parent;
+  GtkWidgetClass parent;
 };
 
 GtkWidget *dia_option_menu_new        (void);

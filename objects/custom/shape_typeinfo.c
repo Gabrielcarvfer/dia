@@ -222,12 +222,23 @@ shape_typeinfo_load (ShapeInfo* info)
   f = g_fopen (info->filename, "rb");
   if (!f)
     return FALSE;
-  while ((n = fread (buffer, 1, BLOCKSIZE, f)) > 0) {
-    int result = xmlSAXUserParseMemory (&saxHandler, &ctx, buffer, n);
-    if (result != 0)
-      break;
-    if (ctx.state == READ_DONE)
-      break;
+  /* GTK/libxml 2.14 deprecates xmlSAXUserParseMemory; drive the push parser
+   * (xmlParseChunk) instead, stopping as soon as the SAX handler reports it
+   * found what it needs (ctx.state == READ_DONE). */
+  {
+    xmlParserCtxtPtr ctxt = xmlCreatePushParserCtxt (&saxHandler, &ctx,
+                                                     NULL, 0, info->filename);
+    if (ctxt) {
+      while ((n = fread (buffer, 1, BLOCKSIZE, f)) > 0) {
+        int result = xmlParseChunk (ctxt, buffer, n, 0);
+        if (result != 0)
+          break;
+        if (ctx.state == READ_DONE)
+          break;
+      }
+      xmlParseChunk (ctxt, NULL, 0, 1);
+      xmlFreeParserCtxt (ctxt);
+    }
   }
   fclose (f);
   if (ctx.state == READ_DONE) {

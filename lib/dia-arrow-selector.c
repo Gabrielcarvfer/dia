@@ -21,15 +21,36 @@
 #include <glib/gi18n-lib.h>
 #include <gtk/gtk.h>
 
-#include "dia-arrow-cell-renderer.h"
+#include "dia-arrow-preview.h"
 #include "dia-arrow-selector.h"
 #include "dia-size-selector.h"
 
+/*
+ * GTK4: the GtkComboBox + GtkListStore + DiaArrowCellRenderer stack is
+ * deprecated. This selector is a GtkDropDown backed by a GListModel of
+ * DiaArrowItem, each rendered by a DiaArrowPreview widget in the factory.
+ */
 
-enum {
-  COL_ARROW,
-  N_COL
+#define DIA_TYPE_ARROW_ITEM (dia_arrow_item_get_type ())
+G_DECLARE_FINAL_TYPE (DiaArrowItem, dia_arrow_item, DIA, ARROW_ITEM, GObject)
+
+struct _DiaArrowItem {
+  GObject parent_instance;
+  ArrowType type;
 };
+
+G_DEFINE_TYPE (DiaArrowItem, dia_arrow_item, G_TYPE_OBJECT)
+
+static void dia_arrow_item_class_init (DiaArrowItemClass *klass) {}
+static void dia_arrow_item_init (DiaArrowItem *self) {}
+
+static DiaArrowItem *
+dia_arrow_item_new (ArrowType type)
+{
+  DiaArrowItem *item = g_object_new (DIA_TYPE_ARROW_ITEM, NULL);
+  item->type = type;
+  return item;
+}
 
 
 struct _DiaArrowSelector {
@@ -40,9 +61,7 @@ struct _DiaArrowSelector {
   DiaSizeSelector *size;
 
   GtkWidget    *combo;
-  GtkListStore *arrow_store;
-
-  ArrowType     looking_for;
+  GListStore   *arrow_store;
 };
 
 G_DEFINE_TYPE (DiaArrowSelector, dia_arrow_selector, GTK_TYPE_BOX)
@@ -56,23 +75,10 @@ static guint das_signals[DAS_LAST_SIGNAL] = {0};
 
 
 static void
-dia_arrow_selector_finalize (GObject *object)
-{
-  DiaArrowSelector *self = DIA_ARROW_SELECTOR (object);
-
-  g_clear_object (&self->arrow_store);
-
-  G_OBJECT_CLASS (dia_arrow_selector_parent_class)->finalize (object);
-}
-
-
-static void
 dia_arrow_selector_class_init (DiaArrowSelectorClass *klass)
 {
-  GObjectClass *object_class = G_OBJECT_CLASS (klass);
-
-  object_class->finalize = dia_arrow_selector_finalize;
-
+  /* The GListModel behind the GtkDropDown is owned by the drop-down
+   * (transfer full), so no explicit finalize is needed. */
   das_signals[DAS_VALUE_CHANGED] = g_signal_new ("value_changed",
                                                  G_TYPE_FROM_CLASS (klass),
                                                  G_SIGNAL_RUN_FIRST,
@@ -85,22 +91,13 @@ dia_arrow_selector_class_init (DiaArrowSelectorClass *klass)
 static void
 set_size_sensitivity (DiaArrowSelector *as)
 {
-  GtkTreeIter iter;
+  DiaArrowItem *active = gtk_drop_down_get_selected_item (GTK_DROP_DOWN (as->combo));
 
-  if (gtk_combo_box_get_active_iter (GTK_COMBO_BOX (as->combo), &iter)) {
-    Arrow *active = NULL;
-
-    gtk_tree_model_get (GTK_TREE_MODEL (as->arrow_store),
-                        &iter,
-                        COL_ARROW, &active,
-                        -1);
-
+  if (active) {
     gtk_widget_set_sensitive (GTK_WIDGET (as->sizelabel),
                               active->type != ARROW_NONE);
     gtk_widget_set_sensitive (GTK_WIDGET (as->size),
                               active->type != ARROW_NONE);
-
-    dia_arrow_free (active);
   } else {
     gtk_widget_set_sensitive (GTK_WIDGET (as->sizelabel), FALSE);
     gtk_widget_set_sensitive (GTK_WIDGET (as->size), FALSE);
@@ -109,12 +106,33 @@ set_size_sensitivity (DiaArrowSelector *as)
 
 
 static void
-arrow_type_change_callback (GtkComboBox *widget, gpointer userdata)
+arrow_type_change_callback (GtkDropDown *widget, GParamSpec *pspec, gpointer userdata)
 {
   set_size_sensitivity (DIA_ARROW_SELECTOR (userdata));
   g_signal_emit (DIA_ARROW_SELECTOR (userdata),
                  das_signals[DAS_VALUE_CHANGED],
                  0);
+}
+
+
+static void
+arrow_setup_item (GtkSignalListItemFactory *factory,
+                  GtkListItem              *list_item,
+                  gpointer                  data)
+{
+  gtk_list_item_set_child (list_item, dia_arrow_preview_new (ARROW_NONE, TRUE));
+}
+
+
+static void
+arrow_bind_item (GtkSignalListItemFactory *factory,
+                 GtkListItem              *list_item,
+                 gpointer                  data)
+{
+  DiaArrowItem *item = gtk_list_item_get_item (list_item);
+  GtkWidget *preview = gtk_list_item_get_child (list_item);
+
+  dia_arrow_preview_set_arrow (DIA_ARROW_PREVIEW (preview), item->type, TRUE);
 }
 
 
@@ -133,35 +151,29 @@ dia_arrow_selector_init (DiaArrowSelector *as)
   GtkWidget *box;
   GtkWidget *label;
   GtkWidget *size;
-  GtkTreeIter iter;
-  GtkCellRenderer *renderer;
+  GtkListItemFactory *factory;
 
   gtk_orientable_set_orientation (GTK_ORIENTABLE(as), GTK_ORIENTATION_VERTICAL);
-  as->arrow_store = gtk_list_store_new (N_COL, DIA_TYPE_ARROW);
+  as->arrow_store = g_list_store_new (DIA_TYPE_ARROW_ITEM);
 
   for (int i = ARROW_NONE; i < MAX_ARROW_TYPE; ++i) {
-    ArrowType arrow_type = arrow_type_from_index (i);
-    Arrow arrow = { arrow_type, 0.5, 0.5 };
-
-    gtk_list_store_append (as->arrow_store, &iter);
-    gtk_list_store_set (as->arrow_store,
-                        &iter,
-                        COL_ARROW, &arrow,
-                        -1);
+    DiaArrowItem *item = dia_arrow_item_new (arrow_type_from_index (i));
+    g_list_store_append (as->arrow_store, item);
+    g_object_unref (item);
   }
 
-  as->combo = gtk_combo_box_new_with_model (GTK_TREE_MODEL (as->arrow_store));
+  factory = gtk_signal_list_item_factory_new ();
+  g_signal_connect (factory, "setup", G_CALLBACK (arrow_setup_item), NULL);
+  g_signal_connect (factory, "bind", G_CALLBACK (arrow_bind_item), NULL);
+
+  as->combo = gtk_drop_down_new (G_LIST_MODEL (as->arrow_store), NULL);
+  gtk_drop_down_set_factory (GTK_DROP_DOWN (as->combo), factory);
+  g_object_unref (factory);
+
   g_signal_connect (as->combo,
-                    "changed",
+                    "notify::selected",
                     G_CALLBACK (arrow_type_change_callback),
                     as);
-
-  renderer = dia_arrow_cell_renderer_new ();
-  gtk_cell_layout_pack_start (GTK_CELL_LAYOUT (as->combo), renderer, TRUE);
-  gtk_cell_layout_set_attributes (GTK_CELL_LAYOUT (as->combo),
-                                  renderer,
-                                  "arrow", COL_ARROW,
-                                  NULL);
 
   gtk_box_append (GTK_BOX (as), as->combo);
   gtk_widget_set_visible (as->combo, TRUE);
@@ -203,19 +215,10 @@ Arrow
 dia_arrow_selector_get_arrow (DiaArrowSelector *as)
 {
   Arrow at;
-  GtkTreeIter iter;
+  DiaArrowItem *active = gtk_drop_down_get_selected_item (GTK_DROP_DOWN (as->combo));
 
-  if (gtk_combo_box_get_active_iter (GTK_COMBO_BOX (as->combo), &iter)) {
-    Arrow *active = NULL;
-
-    gtk_tree_model_get (GTK_TREE_MODEL (as->arrow_store),
-                        &iter,
-                        COL_ARROW, &active,
-                        -1);
-
+  if (active) {
     at.type = active->type;
-
-    dia_arrow_free (active);
   } else {
     at.type = ARROW_NONE;
   }
@@ -226,39 +229,21 @@ dia_arrow_selector_get_arrow (DiaArrowSelector *as)
 }
 
 
-static gboolean
-set_type (GtkTreeModel *model,
-          GtkTreePath  *path,
-          GtkTreeIter  *iter,
-          gpointer      data)
-{
-  DiaArrowSelector *self = DIA_ARROW_SELECTOR (data);
-  Arrow *arrow;
-  gboolean res = FALSE;
-
-  gtk_tree_model_get (model,
-                      iter,
-                      COL_ARROW, &arrow,
-                      -1);
-
-  res = arrow->type == self->looking_for;
-  if (res) {
-    gtk_combo_box_set_active_iter (GTK_COMBO_BOX (self->combo), iter);
-  }
-
-  dia_arrow_free (arrow);
-
-  return res;
-}
-
-
 void
 dia_arrow_selector_set_arrow (DiaArrowSelector *as,
                               Arrow             arrow)
 {
-  as->looking_for = arrow.type;
-  gtk_tree_model_foreach (GTK_TREE_MODEL (as->arrow_store), set_type, as);
-  as->looking_for = ARROW_NONE;
+  guint n = g_list_model_get_n_items (G_LIST_MODEL (as->arrow_store));
+
+  for (guint i = 0; i < n; i++) {
+    DiaArrowItem *item = g_list_model_get_item (G_LIST_MODEL (as->arrow_store), i);
+    gboolean match = item->type == arrow.type;
+    g_object_unref (item);
+    if (match) {
+      gtk_drop_down_set_selected (GTK_DROP_DOWN (as->combo), i);
+      break;
+    }
+  }
 
   dia_size_selector_set_size (DIA_SIZE_SELECTOR (as->size), arrow.width, arrow.length);
 }

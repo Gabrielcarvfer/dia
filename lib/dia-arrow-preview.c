@@ -101,12 +101,11 @@ dia_arrow_preview_snapshot (GtkWidget *widget, GtkSnapshot *snapshot)
     dia_renderer_set_linewidth (DIA_RENDERER (renderer), linewidth);
     {
       Color colour_bg, colour_fg;
-      GtkStyleContext *style = gtk_widget_get_style_context (widget);
       /* the text colors are the best approximation to what we had */
       /* GTK4: get_background_color is gone; approximate with opaque white. */
       GdkRGBA bg = { 1.0, 1.0, 1.0, 1.0 };
       GdkRGBA fg;
-      gtk_style_context_get_color (style, &fg);
+      gtk_widget_get_color (widget, &fg);
 
       dia_colour_from_gdk (&colour_bg, &bg);
       dia_colour_from_gdk (&colour_fg, &fg);
