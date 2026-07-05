@@ -1739,7 +1739,14 @@ on_canvas_pressed (GtkGestureClick *gesture,
     } else {
       GdkModifierType m = gtk_event_controller_get_current_event_state (
                             GTK_EVENT_CONTROLLER (gesture));
-      select_at (self, p, (m & GDK_SHIFT_MASK) != 0);
+      /* Pressing on a handle of the current selection starts a resize drag
+       * (handled by on_canvas_drag_begin). Don't deselect in that case: a
+       * handle can sit outside the object's hit area — e.g. the bounding-box
+       * corners of a diamond are in empty space — where select_at would clear
+       * the selection before the drag can resize it. */
+      if (!(self->selected && handle_at (self->selected, p, 0.4) >= 0)) {
+        select_at (self, p, (m & GDK_SHIFT_MASK) != 0);
+      }
     }
   } else if (g_strcmp0 (self->tool, "Text") == 0) {
     /* Text: ask for the string, font and size, then create it at the point. */
@@ -1758,8 +1765,15 @@ on_canvas_pressed (GtkGestureClick *gesture,
       data_select (self->diagram, created);
       self->selected = created;
       if (self->modify_toggle) {
-        gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->modify_toggle),
-                                      TRUE);   /* fires on_tool_toggled */
+        if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (self->modify_toggle))) {
+          /* Sheet shapes set self->tool without flipping the palette toggle, so
+           * the Modify toggle can already be active — set_active would be a
+           * no-op and the tool would stay in create mode. Sync directly. */
+          on_tool_toggled (GTK_TOGGLE_BUTTON (self->modify_toggle), self);
+        } else {
+          gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->modify_toggle),
+                                        TRUE);   /* fires on_tool_toggled */
+        }
       }
       gtk_widget_queue_draw (self->canvas);
     }
