@@ -8693,18 +8693,6 @@ on_toggle_layers (GtkToggleButton *b, DiaShell *self)
 }
 
 
-/* Seed the diagram with a few real objects so it isn't blank on open and the
- * render pipeline is exercised before the user creates anything. */
-static void
-dia_shell_seed_sample (DiaShell *self)
-{
-  diagram_create_object (self, "Standard - Box",     (Point) { 2, 2 });
-  diagram_create_object (self, "Standard - Ellipse", (Point) { 12, 8 });
-  diagram_create_object (self, "Standard - Line",    (Point) { 7, 4 });
-  diagram_create_object (self, "Standard - Text",    (Point) { 2, 14 });
-}
-
-
 GtkWidget *
 dia_shell_new (void)
 {
@@ -8746,7 +8734,7 @@ dia_shell_new (void)
   /* tool display-name -> palette toggle; keys/values borrowed (owned by the
    * widget tree and the static tool_entries strings). Filled by build_toolbox. */
   self->tool_buttons = g_hash_table_new (g_str_hash, g_str_equal);
-  dia_shell_seed_sample (self);
+  /* Start with an empty canvas (no seeded sample objects). */
 
   /* Install the "dia" action group on the content so the toolbar buttons and
    * menu items resolve dia.new / dia.open / dia.save / dia.zoom-*. */
