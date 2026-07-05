@@ -6521,8 +6521,16 @@ select_tool_named (DiaShell *self, const char *name)
   GtkWidget *btn = (self->tool_buttons && name)
                      ? g_hash_table_lookup (self->tool_buttons, name) : NULL;
 
-  if (GTK_IS_TOGGLE_BUTTON (btn) &&
-      !gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (btn))) {
+  if (!GTK_IS_TOGGLE_BUTTON (btn)) {
+    return;
+  }
+  if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (btn))) {
+    /* Already the active toggle, so on_tool_toggled won't fire — sync the
+     * current-tool name directly. It can be out of step with the toggle when it
+     * was last set without one (e.g. picking a sheet shape), and re-choosing
+     * this tool from the menu must still make it the active tool. */
+    g_strlcpy (self->tool, name, sizeof (self->tool));
+  } else {
     gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (btn), TRUE);
   }
 }
