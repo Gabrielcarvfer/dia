@@ -4714,13 +4714,10 @@ on_uitest_layers (GtkButton *button, DiaShell *self)
 }
 
 
-/* Menu items that are intentionally shown greyed out (their features are not
- * ported yet) — they point at unregistered actions on purpose, so the wiring
- * test below must not flag them as broken. */
+/* Menu items intentionally shown greyed out (feature not ported yet) — they
+ * point at unregistered actions on purpose, so the wiring test below must not
+ * flag them as broken. Empty now that every menu item is wired. */
 static const char *const menu_greyed_actions[] = {
-  "dia.layout-graph",       /* OGDF graph layouts */
-  "dia.object-properties",  /* per-object property dialog */
-  "dia.plugins",            /* plug-in manager */
   NULL
 };
 
@@ -4886,6 +4883,138 @@ on_uitest_layout (GtkButton *button, DiaShell *self)
   }
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
   gtk_widget_queue_draw (self->canvas);
+}
+
+
+/* UI-test hook (DIA_UITEST): the native graph layouts. Circular arranges five
+ * boxes equidistant from their centroid; Force pulls two boxes joined by a line
+ * from far apart to roughly the ideal edge length. */
+static void
+on_uitest_graphlayout (GtkButton *button, DiaShell *self)
+{
+  DiaObject *nodes[5];
+  const Point start[5] = { { 10, 10 }, { 11, 10 }, { 12, 10 },
+                           { 13, 10 }, { 14, 10 } };
+  double cx = 0, cy = 0, r0 = -1;
+  gboolean circ_ok = TRUE, force_ok = FALSE;
+  char buf[160];
+
+  /* --- circular --- */
+  data_remove_all_selected (self->diagram);
+  for (int i = 0; i < 5; i++) {
+    nodes[i] = diagram_create_object (self, "Standard - Box", start[i]);
+    if (nodes[i]) {
+      push_op (self, OP_CREATE, nodes[i], start[i], start[i]);
+      data_select (self->diagram, nodes[i]);
+    }
+  }
+  self->selected = nodes[4];
+  g_action_group_activate_action (self->actions, "graph-layout",
+                                  g_variant_new_string ("circular"));
+  for (int i = 0; i < 5; i++) {
+    DiaRectangle *bb = &nodes[i]->bounding_box;
+
+    cx += (bb->left + bb->right) / 2;
+    cy += (bb->top + bb->bottom) / 2;
+  }
+  cx /= 5;
+  cy /= 5;
+  for (int i = 0; i < 5; i++) {
+    DiaRectangle *bb = &nodes[i]->bounding_box;
+    double d = hypot ((bb->left + bb->right) / 2 - cx,
+                      (bb->top + bb->bottom) / 2 - cy);
+
+    if (r0 < 0) r0 = d;
+    else if (fabs (d - r0) > 0.15 * r0 + 0.05) circ_ok = FALSE;
+  }
+  if (r0 < 0.5) circ_ok = FALSE;   /* they must actually be spread out */
+
+  /* --- force-directed: two boxes joined by a line --- */
+  {
+    DiaObject *a = diagram_create_object (self, "Standard - Box", (Point) { 40, 40 });
+    DiaObject *b = diagram_create_object (self, "Standard - Box", (Point) { 70, 40 });
+    DiaObject *line = diagram_create_object (self, "Standard - Line", (Point) { 50, 40 });
+
+    if (a) push_op (self, OP_CREATE, a, (Point) { 40, 40 }, (Point) { 40, 40 });
+    if (b) push_op (self, OP_CREATE, b, (Point) { 70, 40 }, (Point) { 70, 40 });
+    if (line) push_op (self, OP_CREATE, line, (Point) { 50, 40 }, (Point) { 50, 40 });
+    if (a && b && line && line->num_handles >= 2 &&
+        a->num_connections > 0 && b->num_connections > 0) {
+      Handle *h0 = line->handles[0], *h1 = line->handles[line->num_handles - 1];
+      /* Connect straight to a's and b's own connection points — don't search
+       * the layer for the closest CP, which other tests' objects would hijack. */
+      ConnectionPoint *cpa = a->connections[0], *cpb = b->connections[0];
+      DiaObjectChange *ch;
+
+      {
+        double c0x, c0y, c1x, c1y, before, after;
+
+        object_connect (line, h0, cpa);
+        ch = dia_object_move_handle (line, h0, &cpa->pos, cpa, HANDLE_MOVE_CONNECTED, 0);
+        g_clear_pointer (&ch, dia_object_change_unref);
+        object_connect (line, h1, cpb);
+        ch = dia_object_move_handle (line, h1, &cpb->pos, cpb, HANDLE_MOVE_CONNECTED, 0);
+        g_clear_pointer (&ch, dia_object_change_unref);
+
+        c0x = (a->bounding_box.left + a->bounding_box.right) / 2;
+        c0y = (a->bounding_box.top + a->bounding_box.bottom) / 2;
+        c1x = (b->bounding_box.left + b->bounding_box.right) / 2;
+        c1y = (b->bounding_box.top + b->bounding_box.bottom) / 2;
+        before = hypot (c0x - c1x, c0y - c1y);
+
+        data_remove_all_selected (self->diagram);
+        data_select (self->diagram, a);
+        data_select (self->diagram, b);
+        data_select (self->diagram, line);
+        self->selected = line;
+        g_action_group_activate_action (self->actions, "graph-layout",
+                                        g_variant_new_string ("force"));
+
+        c0x = (a->bounding_box.left + a->bounding_box.right) / 2;
+        c0y = (a->bounding_box.top + a->bounding_box.bottom) / 2;
+        c1x = (b->bounding_box.left + b->bounding_box.right) / 2;
+        c1y = (b->bounding_box.top + b->bounding_box.bottom) / 2;
+        after = hypot (c0x - c1x, c0y - c1y);
+        /* edge attraction pulls them much closer; repulsion keeps them apart */
+        force_ok = (after < before * 0.6 && after > 0.5);
+      }
+    }
+  }
+
+  if (circ_ok && force_ok) {
+    g_snprintf (buf, sizeof (buf), _("graphlayout OK (r=%.1f)"), r0);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("graphlayout FAIL (circ=%d force=%d)"),
+                circ_ok, force_ok);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
+/* UI-test hook (DIA_UITEST): open the Object Properties editor for a selected
+ * object (the test confirms the dialog presents). */
+static void
+on_uitest_objprops (GtkButton *button, DiaShell *self)
+{
+  DiaObject *o = diagram_create_object (self, "Standard - Box", (Point) { 8, 8 });
+
+  if (o) {
+    push_op (self, OP_CREATE, o, (Point) { 8, 8 }, (Point) { 8, 8 });
+    data_remove_all_selected (self->diagram);
+    data_select (self->diagram, o);
+    self->selected = o;
+  }
+  g_action_group_activate_action (self->actions, "object-properties", NULL);
+}
+
+
+/* UI-test hook (DIA_UITEST): open the Plug-ins dialog (lists loaded modules and
+ * registered filters). */
+static void
+on_uitest_plugins (GtkButton *button, DiaShell *self)
+{
+  g_action_group_activate_action (self->actions, "plugins", NULL);
 }
 
 
@@ -6672,6 +6801,301 @@ on_change_show_layers (GSimpleAction *a, GVariant *value, gpointer data)
   g_simple_action_set_state (a, value);
 }
 
+/* --- Dialogs menu: Object Properties -------------------------------------- */
+
+static void
+action_object_properties (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+
+  if (self->selected) {
+    open_properties_dialog (self, self->selected);   /* libdia StdProp editor */
+  } else {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Select an object to edit its properties"));
+  }
+}
+
+/* --- Dialogs menu: Plug-ins (loaded modules + registered filters) --------- */
+
+static void
+plugins_append_heading (GtkWidget *box, const char *text)
+{
+  GtkWidget *l = gtk_label_new (text);
+
+  gtk_widget_add_css_class (l, "heading");
+  gtk_widget_set_halign (l, GTK_ALIGN_START);
+  gtk_widget_set_margin_top (l, 8);
+  gtk_box_append (GTK_BOX (box), l);
+}
+
+static void
+plugins_append_row (GtkWidget *box, const char *primary, const char *secondary)
+{
+  GtkWidget *l = gtk_label_new (NULL);
+  char *m = g_markup_printf_escaped (
+      "%s<span alpha='60%%'>%s%s</span>",
+      primary ? primary : "",
+      secondary && *secondary ? "  —  " : "",
+      secondary ? secondary : "");
+
+  gtk_label_set_markup (GTK_LABEL (l), m);
+  g_free (m);
+  gtk_label_set_xalign (GTK_LABEL (l), 0.0);
+  gtk_label_set_wrap (GTK_LABEL (l), TRUE);
+  gtk_box_append (GTK_BOX (box), l);
+}
+
+static void
+action_plugins (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+  GtkWidget *scroll = gtk_scrolled_window_new ();
+  AdwDialog *dlg;
+  GtkRoot *root;
+  int n = 0;
+
+  plugins_append_heading (box, _("Plug-ins"));
+  for (GList *l = dia_list_plugins (); l; l = l->next) {
+    PluginInfo *info = l->data;
+    const char *name = dia_plugin_get_name (info);
+
+    plugins_append_row (box, name ? name : dia_plugin_get_filename (info),
+                        dia_plugin_get_description (info));
+    n++;
+  }
+  if (n == 0) {
+    plugins_append_row (box, _("(none loaded)"), NULL);
+  }
+
+  plugins_append_heading (box, _("Export filters"));
+  for (GList *l = filter_get_export_filters (); l; l = l->next) {
+    DiaExportFilter *ef = l->data;
+
+    plugins_append_row (box, ef->description, ef->unique_name);
+  }
+  plugins_append_heading (box, _("Import filters"));
+  for (GList *l = filter_get_import_filters (); l; l = l->next) {
+    DiaImportFilter *imf = l->data;
+
+    plugins_append_row (box, imf->description, imf->unique_name);
+  }
+
+  gtk_widget_set_margin_start (box, 8);
+  gtk_widget_set_margin_end (box, 8);
+  gtk_scrolled_window_set_child (GTK_SCROLLED_WINDOW (scroll), box);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_size_request (scroll, 420, 340);
+  gtk_widget_set_vexpand (scroll, TRUE);
+
+  dlg = adw_alert_dialog_new (_("Plug-ins"), NULL);
+  adw_alert_dialog_set_extra_child (ADW_ALERT_DIALOG (dlg), scroll);
+  adw_alert_dialog_add_response (ADW_ALERT_DIALOG (dlg), "close", _("Close"));
+  adw_alert_dialog_set_default_response (ADW_ALERT_DIALOG (dlg), "close");
+
+  root = gtk_widget_get_root (self->canvas);
+  adw_dialog_present (dlg, GTK_WIDGET (root));
+}
+
+/* --- Layout menu: native (OGDF-free) graph layouts ------------------------ */
+
+/* Move @obj so its bbox centre lands on @target, recording undo. */
+static void
+layout_move_center (DiaShell *self, DiaObject *obj, Point target)
+{
+  DiaRectangle *bb = &obj->bounding_box;
+  Point from = obj->position, to = from;
+  DiaObjectChange *ch;
+
+  to.x += target.x - (bb->left + bb->right) / 2;
+  to.y += target.y - (bb->top + bb->bottom) / 2;
+  ch = dia_object_move (obj, &to);
+  g_clear_pointer (&ch, dia_object_change_unref);
+  update_connections_for (obj);
+  if (to.x != from.x || to.y != from.y) {
+    push_op (self, OP_MOVE, obj, from, to);
+  }
+}
+
+/* Arrange the selected objects evenly around a circle centred on their
+ * centroid; radius scales with the object count and size to avoid overlaps. */
+static void
+graph_layout_circular (DiaShell *self)
+{
+  GList *sel = self->diagram->selected;
+  guint n = g_list_length (sel), i = 0;
+  double cx = 0, cy = 0, maxdim = 0, radius, step;
+
+  if (n < 2) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Select two or more objects to lay out"));
+    return;
+  }
+  for (GList *l = sel; l; l = l->next) {
+    DiaRectangle *bb = &((DiaObject *) l->data)->bounding_box;
+
+    cx += (bb->left + bb->right) / 2;
+    cy += (bb->top + bb->bottom) / 2;
+    maxdim = MAX (maxdim, MAX (bb->right - bb->left, bb->bottom - bb->top));
+  }
+  cx /= n;
+  cy /= n;
+  /* keep neighbours from overlapping: circumference >= n * (1.6 * maxdim) */
+  radius = MAX (maxdim * 1.5, (n * maxdim * 1.6) / (2 * G_PI));
+  step = 2 * G_PI / n;
+  for (GList *l = sel; l; l = l->next, i++) {
+    double ang = -G_PI / 2 + i * step;   /* start at the top */
+    Point t = { cx + radius * cos (ang), cy + radius * sin (ang) };
+
+    layout_move_center (self, l->data, t);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Circular layout"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
+/* True for a line-like object whose first/last handles are both connected —
+ * i.e. an edge joining two nodes. */
+static gboolean
+obj_is_edge (DiaObject *o)
+{
+  return o->num_handles >= 2 &&
+         o->handles[0]->connected_to != NULL &&
+         o->handles[o->num_handles - 1]->connected_to != NULL;
+}
+
+/* Fruchterman-Reingold force-directed layout over the selected nodes, using the
+ * selected connecting lines as edges. Nodes repel; edges pull their endpoints
+ * together. No OGDF: a small fixed-iteration simulation on the selection. */
+static void
+graph_layout_force (DiaShell *self)
+{
+  GList *sel = self->diagram->selected;
+  GPtrArray *nodes = g_ptr_array_new ();
+  GHashTable *index = g_hash_table_new (NULL, NULL);   /* obj -> idx+1 */
+  GArray *edges = g_array_new (FALSE, FALSE, 2 * sizeof (int));
+  Point *pos, *disp;
+  double k, maxdim = 0, temp;
+  guint n;
+
+  for (GList *l = sel; l; l = l->next) {
+    DiaObject *o = l->data;
+
+    if (!obj_is_edge (o)) {
+      g_hash_table_insert (index, o, GINT_TO_POINTER (nodes->len + 1));
+      g_ptr_array_add (nodes, o);
+    }
+  }
+  n = nodes->len;
+  if (n < 2) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Select two or more connected objects to lay out"));
+    g_ptr_array_free (nodes, TRUE);
+    g_hash_table_destroy (index);
+    g_array_free (edges, TRUE);
+    return;
+  }
+  for (GList *l = sel; l; l = l->next) {
+    DiaObject *o = l->data;
+
+    if (obj_is_edge (o)) {
+      gpointer ia = g_hash_table_lookup (index, o->handles[0]->connected_to->object);
+      gpointer ib = g_hash_table_lookup (index,
+                        o->handles[o->num_handles - 1]->connected_to->object);
+      if (ia && ib && ia != ib) {
+        int e[2] = { GPOINTER_TO_INT (ia) - 1, GPOINTER_TO_INT (ib) - 1 };
+        g_array_append_val (edges, e);
+      }
+    }
+  }
+
+  pos = g_new (Point, n);
+  disp = g_new (Point, n);
+  for (guint i = 0; i < n; i++) {
+    DiaRectangle *bb = &((DiaObject *) g_ptr_array_index (nodes, i))->bounding_box;
+
+    pos[i].x = (bb->left + bb->right) / 2;
+    pos[i].y = (bb->top + bb->bottom) / 2;
+    maxdim = MAX (maxdim, MAX (bb->right - bb->left, bb->bottom - bb->top));
+  }
+  k = MAX (1.0, maxdim) * 2.0;     /* ideal edge length */
+  temp = k * 1.5;
+
+  for (int iter = 0; iter < 120; iter++) {
+    for (guint i = 0; i < n; i++) {
+      disp[i].x = disp[i].y = 0;
+    }
+    /* repulsion between every node pair */
+    for (guint i = 0; i < n; i++) {
+      for (guint j = i + 1; j < n; j++) {
+        double dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y;
+        double d = hypot (dx, dy);
+        double f;
+
+        if (d < 0.01) { d = 0.01; dx = 0.01 * (i + 1); dy = 0.01 * (j + 1); }
+        f = (k * k) / d;
+        disp[i].x += dx / d * f;  disp[i].y += dy / d * f;
+        disp[j].x -= dx / d * f;  disp[j].y -= dy / d * f;
+      }
+    }
+    /* attraction along edges */
+    for (guint e = 0; e < edges->len; e++) {
+      int *pr = &g_array_index (edges, int, e * 2);
+      int a = pr[0], b = pr[1];
+      double dx = pos[a].x - pos[b].x, dy = pos[a].y - pos[b].y;
+      double d = hypot (dx, dy), f;
+
+      if (d < 0.01) continue;
+      f = (d * d) / k;
+      disp[a].x -= dx / d * f;  disp[a].y -= dy / d * f;
+      disp[b].x += dx / d * f;  disp[b].y += dy / d * f;
+    }
+    /* apply, capped by the cooling temperature */
+    for (guint i = 0; i < n; i++) {
+      double dl = hypot (disp[i].x, disp[i].y);
+
+      if (dl > 0.0001) {
+        double lim = MIN (dl, temp);
+
+        pos[i].x += disp[i].x / dl * lim;
+        pos[i].y += disp[i].y / dl * lim;
+      }
+    }
+    temp *= 0.95;
+  }
+
+  for (guint i = 0; i < n; i++) {
+    layout_move_center (self, g_ptr_array_index (nodes, i), pos[i]);
+  }
+
+  {
+    char buf[96];
+    g_snprintf (buf, sizeof (buf),
+                _("Force-directed layout (%u nodes, %u edges)"),
+                n, edges->len);
+    gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  }
+  gtk_widget_queue_draw (self->canvas);
+  g_free (pos);
+  g_free (disp);
+  g_ptr_array_free (nodes, TRUE);
+  g_hash_table_destroy (index);
+  g_array_free (edges, TRUE);
+}
+
+static void
+action_graph_layout (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  const char *m = p ? g_variant_get_string (p, NULL) : "";
+
+  if (g_strcmp0 (m, "force") == 0) {
+    graph_layout_force (data);
+  } else {
+    graph_layout_circular (data);
+  }
+}
+
 
 static const GActionEntry dia_actions[] = {
   { "new",        action_new,        NULL, NULL, NULL },
@@ -6714,10 +7138,14 @@ static const GActionEntry dia_actions[] = {
   { "layer-remove", action_layer_remove, NULL, NULL, NULL },
   { "layer-raise",  action_layer_raise,  NULL, NULL, NULL },
   { "layer-lower",  action_layer_lower,  NULL, NULL, NULL },
-  /* Layout menu: grow/shrink/heighten/widen the selection's spacing. */
+  /* Layout menu: grow/shrink/heighten/widen the selection's spacing, plus the
+   * native graph layouts (circular/force). */
   { "layout",     action_layout,     "s",  NULL, NULL },
-  /* Dialogs menu: boolean toggle for the layers side panel. */
+  { "graph-layout", action_graph_layout, "s", NULL, NULL },
+  /* Dialogs menu: layers side panel toggle, object property editor, plug-ins. */
   { "show-layers", NULL, NULL, "true", on_change_show_layers },
+  { "object-properties", action_object_properties, NULL, NULL, NULL },
+  { "plugins",    action_plugins,    NULL, NULL, NULL },
 };
 
 static void
@@ -7006,9 +7434,9 @@ dia_shell_build_menubar_model (void)
     g_object_unref (move);
   }
 
-  /* Layout — the OGDF-free Size operations work; the graph-layout algorithms
-   * need OGDF + full connection support (not ported yet), so they are shown
-   * disabled via an unregistered action. */
+  /* Layout — the OGDF-free Size operations, plus native graph layouts
+   * (circular + force-directed) that arrange the selected nodes using their
+   * connections; no OGDF dependency. */
   {
     GMenu *layout = g_menu_new ();
     GMenu *graph = g_menu_new ();
@@ -7017,8 +7445,9 @@ dia_shell_build_menubar_model (void)
     g_menu_append (layout, _("_Shrink"), "dia.layout::shrink");
     g_menu_append (layout, _("_Heighten"), "dia.layout::heighten");
     g_menu_append (layout, _("_Widen"), "dia.layout::widen");
-    g_menu_append (graph, _("Graph Layout (needs OGDF)"), "dia.layout-graph");
-    g_menu_append_section (layout, NULL, G_MENU_MODEL (graph));
+    g_menu_append (graph, _("_Circular"), "dia.graph-layout::circular");
+    g_menu_append (graph, _("_Force Directed"), "dia.graph-layout::force");
+    g_menu_append_section (layout, _("Graph"), G_MENU_MODEL (graph));
     g_menu_append_submenu (bar, _("L_ayout"), G_MENU_MODEL (layout));
     g_object_unref (layout);
     g_object_unref (graph);
@@ -7046,8 +7475,7 @@ dia_shell_build_menubar_model (void)
     g_object_unref (make_tools);
   }
 
-  /* Dialogs — the wired ones; classic Object Properties / Plugins are shown
-   * disabled (unregistered actions) until they are ported. */
+  /* Dialogs */
   {
     GMenu *dlg = g_menu_new ();
     GMenu *more = g_menu_new ();
@@ -7425,6 +7853,9 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *mn = gtk_button_new_with_label ("uitest-menu");
     GtkWidget *mw = gtk_button_new_with_label ("uitest-menuwired");
     GtkWidget *lo = gtk_button_new_with_label ("uitest-layout");
+    GtkWidget *gl = gtk_button_new_with_label ("uitest-graphlayout");
+    GtkWidget *op = gtk_button_new_with_label ("uitest-objprops");
+    GtkWidget *pl = gtk_button_new_with_label ("uitest-plugins");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -7471,6 +7902,9 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (mn), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (mw), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (lo), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (gl), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (op), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (pl), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -7517,6 +7951,9 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (mn, "clicked", G_CALLBACK (on_uitest_menu), self);
     g_signal_connect (mw, "clicked", G_CALLBACK (on_uitest_menuwired), self);
     g_signal_connect (lo, "clicked", G_CALLBACK (on_uitest_layout), self);
+    g_signal_connect (gl, "clicked", G_CALLBACK (on_uitest_graphlayout), self);
+    g_signal_connect (op, "clicked", G_CALLBACK (on_uitest_objprops), self);
+    g_signal_connect (pl, "clicked", G_CALLBACK (on_uitest_plugins), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -7563,6 +8000,9 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), mn);
     gtk_box_append (GTK_BOX (bar), mw);
     gtk_box_append (GTK_BOX (bar), lo);
+    gtk_box_append (GTK_BOX (bar), gl);
+    gtk_box_append (GTK_BOX (bar), op);
+    gtk_box_append (GTK_BOX (bar), pl);
   }
 
   return bar;

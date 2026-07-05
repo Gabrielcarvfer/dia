@@ -732,6 +732,36 @@ def main():
         check("Layout Grow/Shrink resizes object spacing",
               status_has(app, 'layout OK'))
 
+    # 3av. Layout > Graph: circular arranges on a circle; force-directed pulls
+    #      connected nodes together (native, OGDF-free).
+    gl = find(app, name='uitest-graphlayout', roleName='push button')
+    check("DIA_UITEST graphlayout trigger present", gl)
+    if gl:
+        do_click(gl)
+        check("Graph layout (circular + force-directed) arranges nodes",
+              status_has(app, 'graphlayout OK'))
+
+    # 3aw. Dialogs > Object Properties opens the libdia StdProp editor.
+    op = find(app, name='uitest-objprops', roleName='push button')
+    check("DIA_UITEST objprops trigger present", op)
+    if op:
+        do_click(op)
+        time.sleep(1.0)
+        dlg = (find(app, name='Object Properties')
+               or find(root, name='Object Properties')
+               or find(app, roleName='dialog') or find(root, roleName='dialog'))
+        check("Object Properties dialog opens", dlg)
+
+    # 3ax. Dialogs > Plug-ins lists the loaded modules and registered filters.
+    pl = find(app, name='uitest-plugins', roleName='push button')
+    check("DIA_UITEST plugins trigger present", pl)
+    if pl:
+        do_click(pl)
+        time.sleep(1.0)
+        dlg = (find(app, name='Plug-ins') or find(root, name='Plug-ins')
+               or find(app, roleName='dialog') or find(root, roleName='dialog'))
+        check("Plug-ins dialog opens", dlg)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)

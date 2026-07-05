@@ -90,14 +90,18 @@ shims). The whole tree builds into `libdia-core`.
   `GtkPopoverMenuBar` (AdwApplicationWindow shows no menubar of its own); on
   macOS the same model is exported to the native global menu bar via
   `gtk_application_set_menubar`. The primary (hamburger) menu is kept too. The
-  Tools menu is a radio group mirroring the palette; Layers/Layout are wired to
-  real actions; not-yet-ported entries (OGDF graph layouts, some Dialogs) point
-  at unregistered actions so GTK renders them greyed out. The shell's `dia`
-  action group is also inserted at window scope so the bar resolves `dia.*`
-  regardless of focus.
+  Tools menu is a radio group mirroring the palette; every item is wired to a
+  real action. The shell's `dia` action group is also inserted at window scope
+  so the bar resolves `dia.*` regardless of focus.
 - **Layout tools**: the OGDF-free "Size" operations from the classic Layout menu
-  (Grow/Shrink/Heighten/Widen) — reposition the selection about its weighted
-  centre of gravity (ports `plug-ins/layout` `DiaGraph::Scale`).
+  (Grow/Shrink/Heighten/Widen — reposition the selection about its weighted
+  centre of gravity, porting `plug-ins/layout` `DiaGraph::Scale`), plus native
+  **graph layouts** — a **circular** arrangement and a **force-directed**
+  (Fruchterman-Reingold) layout that treats the selected connecting lines as
+  edges; both OGDF-free.
+- **Dialogs menu**: **Object Properties** opens libdia's StdProp editor for the
+  selection (same widget the double-click editor uses); **Plug-ins** lists the
+  loaded plug-in modules and the registered import/export filters.
 - **Tests**: `ui-tests/` drives it over AT-SPI with dogtail (17/17).
 - **WSL**: defaults to the X11 backend and the native (non-portal, non-modal)
   file chooser there — see `main.c` (WSLg's native-Wayland popovers/portal hang).
