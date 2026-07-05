@@ -33,6 +33,14 @@
     <id>dia.desktop</id>
   </provides>
   <releases>
+    <release version="1.1.0" date="2026-07-05">
+      <description>
+        <p>Migrated the widget layer off deprecated GTK3 APIs to GTK4
+           (GtkDropDown / GtkColumnView), replaced the font picker with a fast
+           family + size control, and fixed create-tool, corner-resize, flip
+           and rotation handling for custom shapes.</p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-07-02">
       <description>
         <p>First release of the GTK4 / libadwaita port.</p>
