@@ -84,6 +84,20 @@ shims). The whole tree builds into `libdia-core`.
   (Box/Ellipse/Line/Text) add shapes coloured by an async `GtkColorDialog`.
 - **Actions/menus**: a `GMenu` + `GAction` group (`dia.new/open/save/zoom-*`);
   New clears, Open/Save via async `GtkFileDialog` (GKeyFile stand-in format).
+- **Menu bar**: the classic top-level bar (File / Edit / View / Select / Objects
+  / Layers / Layout / Tools / Dialogs / Help) is rebuilt as a `GMenuModel`
+  (`dia_shell_build_menubar_model`). On Linux/Windows it renders as an in-window
+  `GtkPopoverMenuBar` (AdwApplicationWindow shows no menubar of its own); on
+  macOS the same model is exported to the native global menu bar via
+  `gtk_application_set_menubar`. The primary (hamburger) menu is kept too. The
+  Tools menu is a radio group mirroring the palette; Layers/Layout are wired to
+  real actions; not-yet-ported entries (OGDF graph layouts, some Dialogs) point
+  at unregistered actions so GTK renders them greyed out. The shell's `dia`
+  action group is also inserted at window scope so the bar resolves `dia.*`
+  regardless of focus.
+- **Layout tools**: the OGDF-free "Size" operations from the classic Layout menu
+  (Grow/Shrink/Heighten/Widen) — reposition the selection about its weighted
+  centre of gravity (ports `plug-ins/layout` `DiaGraph::Scale`).
 - **Tests**: `ui-tests/` drives it over AT-SPI with dogtail (17/17).
 - **WSL**: defaults to the X11 backend and the native (non-portal, non-modal)
   file chooser there — see `main.c` (WSLg's native-Wayland popovers/portal hang).

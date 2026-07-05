@@ -18,9 +18,18 @@ G_BEGIN_DECLS
 
 typedef struct _DiagramData DiagramData;
 
-/* Returns the window content: an AdwToolbarView with the header bar, tool
- * toolbar, the toolbox/canvas/layers area, and the statusbar. */
+/* Returns the window content: an AdwToolbarView with the menu bar, header bar,
+ * tool toolbar, the toolbox/canvas/layers area, and the statusbar. */
 GtkWidget *dia_shell_new (void);
+
+/* Build the classic Dia menu bar (File/Edit/View/…/Help) as a GMenuModel.
+ * Used for the in-window GtkPopoverMenuBar and the macOS global menu bar.
+ * Caller owns the returned reference. */
+GMenuModel *dia_shell_build_menubar_model (void);
+
+/* Install the shell's "dia" action group at window scope so the menu bar
+ * resolves dia.* actions independently of focus. Call after set_content. */
+void dia_shell_attach_to_window (GtkWidget *content, GtkWindow *window);
 
 /* Render a whole diagram to a file, format chosen by extension (.pdf/.svg,
  * else PNG). Shared by the GUI Export action and the --export CLI option. */

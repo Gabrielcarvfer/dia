@@ -16,6 +16,11 @@
 
 #include "dia-shell.h"
 
+/* After GTK/GDK headers so GDK_WINDOWING_MACOS is defined on macOS builds. */
+#ifdef GDK_WINDOWING_MACOS
+#include <gdk/macos/gdkmacos.h>
+#endif
+
 /* Ported core library: draw on the canvas with the real Dia renderer. */
 #include "diarenderer.h"
 #include "renderer/diacairo.h"
@@ -67,6 +72,8 @@ typedef struct {
   DiaObject *dnd_object;  /* object being dragged in the layers panel */
   DiaLayer  *dnd_src_layer;  /* the layer it came from */
   GtkWidget *modify_toggle;  /* the Modify tool toggle, for switching back */
+  GHashTable *tool_buttons;  /* tool display-name -> its palette toggle (Tools menu) */
+  GtkWidget *layers_toggle;  /* header toggle for the layers panel (Dialogs menu sync) */
   gboolean   skip_layer_select;  /* a group row was clicked; don't select the whole layer */
   GtkWidget *font_btn;       /* top-bar text font+size (GtkFontDialogButton) */
   gulong     font_btn_handler;   /* notify::font-desc, blocked during sync */
@@ -1041,6 +1048,15 @@ on_tool_toggled (GtkToggleButton *button, DiaShell *self)
   name = g_object_get_data (G_OBJECT (button), "tool-name");
   g_strlcpy (self->tool, name ? name : "", sizeof (self->tool));
   gtk_label_set_text (GTK_LABEL (self->status_msg), self->tool);
+
+  /* Keep the Tools-menu radio in sync when the palette drives the change. */
+  if (self->actions) {
+    GAction *ta = g_action_map_lookup_action (G_ACTION_MAP (self->actions), "tool");
+    if (ta) {
+      g_simple_action_set_state (G_SIMPLE_ACTION (ta),
+                                 g_variant_new_string (self->tool));
+    }
+  }
 }
 
 
@@ -4660,6 +4676,8 @@ on_uitest_snap (GtkButton *button, DiaShell *self)
 
 static void on_layer_add (GtkButton *b, DiaShell *self);
 static void on_layer_remove (GtkButton *b, DiaShell *self);
+static void on_layer_up (GtkButton *b, DiaShell *self);
+static void on_layer_down (GtkButton *b, DiaShell *self);
 
 /* UI-test hook (DIA_UITEST): add a layer then remove it, confirming the layer
  * count and the list track (exercises the wired layer buttons' logic). */
@@ -4681,6 +4699,181 @@ on_uitest_layers (GtkButton *button, DiaShell *self)
     g_snprintf (buf, sizeof (buf), _("layers FAIL (%d/%d/%d)"), c0, c1, c2);
   }
   gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+}
+
+
+/* Menu items that are intentionally shown greyed out (their features are not
+ * ported yet) — they point at unregistered actions on purpose, so the wiring
+ * test below must not flag them as broken. */
+static const char *const menu_greyed_actions[] = {
+  "dia.layout-graph",       /* OGDF graph layouts */
+  "dia.object-properties",  /* per-object property dialog */
+  "dia.plugins",            /* plug-in manager */
+  NULL
+};
+
+/* Is @full (e.g. "dia.new" / "app.quit") a registered, activatable action? */
+static gboolean
+menu_action_is_wired (DiaShell *self, const char *full)
+{
+  if (g_str_has_prefix (full, "dia.")) {
+    return self->actions &&
+           g_action_group_has_action (self->actions, full + 4);
+  }
+  if (g_str_has_prefix (full, "app.")) {
+    GApplication *app = g_application_get_default ();
+
+    return app && g_action_group_has_action (G_ACTION_GROUP (app), full + 4);
+  }
+  return FALSE;
+}
+
+/* Collect every referenced action name from a GMenuModel (recursing through
+ * submenus and sections) into @out (transfer full: g_free'd by the array). */
+static void
+menu_collect_actions (GMenuModel *model, GPtrArray *out)
+{
+  int n = g_menu_model_get_n_items (model);
+
+  for (int i = 0; i < n; i++) {
+    char *action = NULL;
+    GMenuModel *link;
+
+    if (g_menu_model_get_item_attribute (model, i, G_MENU_ATTRIBUTE_ACTION,
+                                         "s", &action)) {
+      g_ptr_array_add (out, action);   /* transfer */
+    }
+    if ((link = g_menu_model_get_item_link (model, i, G_MENU_LINK_SUBMENU))) {
+      menu_collect_actions (link, out);
+      g_object_unref (link);
+    }
+    if ((link = g_menu_model_get_item_link (model, i, G_MENU_LINK_SECTION))) {
+      menu_collect_actions (link, out);
+      g_object_unref (link);
+    }
+  }
+}
+
+/* UI-test hook (DIA_UITEST): walk the whole menu-bar model and confirm EVERY
+ * item is wired to a real, registered action (in the "dia" or "app" group) —
+ * except the handful deliberately greyed out. This is the "every single button
+ * is hooked up" guard; it resolves actions rather than activating them (so it
+ * never pops a dialog or quits the app). */
+static void
+on_uitest_menuwired (GtkButton *button, DiaShell *self)
+{
+  GMenuModel *model = dia_shell_build_menubar_model ();
+  GPtrArray *actions = g_ptr_array_new_with_free_func (g_free);
+  int wired = 0, greyed = 0, broken = 0;
+  char buf[160];
+
+  menu_collect_actions (model, actions);
+  for (guint i = 0; i < actions->len; i++) {
+    const char *a = g_ptr_array_index (actions, i);
+    gboolean is_greyed = FALSE;
+
+    for (const char *const *p = menu_greyed_actions; *p; p++) {
+      if (g_strcmp0 (a, *p) == 0) { is_greyed = TRUE; break; }
+    }
+    if (menu_action_is_wired (self, a)) {
+      wired++;
+    } else if (is_greyed) {
+      greyed++;
+    } else {
+      broken++;
+      g_warning ("menu item not wired to an action: %s", a);
+    }
+  }
+
+  if (broken == 0 && wired > 0) {
+    g_snprintf (buf, sizeof (buf),
+                _("menuwired OK (%d wired, %d greyed, %u total)"),
+                wired, greyed, actions->len);
+  } else {
+    g_snprintf (buf, sizeof (buf),
+                _("menuwired FAIL (%d broken of %u)"), broken, actions->len);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  g_ptr_array_free (actions, TRUE);
+  g_object_unref (model);
+}
+
+
+/* UI-test hook (DIA_UITEST): drive the new menu-bar GActions directly (the same
+ * actions the File/Tools/Layers menus activate): the Tools radio selects a
+ * palette tool, and the Layers actions add then remove a layer. */
+static void
+on_uitest_menu (GtkButton *button, DiaShell *self)
+{
+  gboolean tool_ok, layer_ok;
+  int c0, c1, c2;
+  char buf[128];
+
+  /* Tools menu: dia.tool selects the Box tool (and the palette follows). */
+  g_action_group_activate_action (self->actions, "tool",
+                                  g_variant_new_string ("Box"));
+  tool_ok = (g_strcmp0 (self->tool, "Box") == 0);
+  /* restore Modify so later scenarios start from a known tool */
+  g_action_group_activate_action (self->actions, "tool",
+                                  g_variant_new_string ("Modify"));
+
+  /* Layers menu: dia.layer-add then dia.layer-remove. */
+  c0 = data_layer_count (self->diagram);
+  g_action_group_activate_action (self->actions, "layer-add", NULL);
+  c1 = data_layer_count (self->diagram);
+  g_action_group_activate_action (self->actions, "layer-remove", NULL);
+  c2 = data_layer_count (self->diagram);
+  layer_ok = (c1 == c0 + 1 && c2 == c0);
+
+  if (tool_ok && layer_ok) {
+    g_snprintf (buf, sizeof (buf), _("menu OK (tool+layers)"));
+  } else {
+    g_snprintf (buf, sizeof (buf), _("menu FAIL (tool=%d layer=%d)"),
+                tool_ok, layer_ok);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
+}
+
+
+/* UI-test hook (DIA_UITEST): the Layout menu's Size ops. Two boxes, Grow via
+ * dia.layout spreads them apart by ~sqrt(2); Shrink brings them back. */
+static void
+on_uitest_layout (GtkButton *button, DiaShell *self)
+{
+  DiaObject *a, *b;
+  const Point pa = { 40, 40 }, pb = { 44, 40 };
+  double dx0, dx1, dx2;
+  char buf[128];
+
+  a = diagram_create_object (self, "Standard - Box", pa);
+  b = diagram_create_object (self, "Standard - Box", pb);
+  if (a) push_op (self, OP_CREATE, a, pa, pa);
+  if (b) push_op (self, OP_CREATE, b, pb, pb);
+
+  data_remove_all_selected (self->diagram);
+  data_select (self->diagram, a);
+  data_select (self->diagram, b);
+  self->selected = b;
+
+  dx0 = fabs (b->position.x - a->position.x);
+  g_action_group_activate_action (self->actions, "layout",
+                                  g_variant_new_string ("grow"));
+  dx1 = fabs (b->position.x - a->position.x);
+  g_action_group_activate_action (self->actions, "layout",
+                                  g_variant_new_string ("shrink"));
+  dx2 = fabs (b->position.x - a->position.x);
+
+  /* Grow ~x1.414, Shrink returns to the original spacing. */
+  if (dx1 > dx0 * 1.35 && dx1 < dx0 * 1.50 && fabs (dx2 - dx0) < 0.01) {
+    g_snprintf (buf, sizeof (buf), _("layout OK (%.2f/%.2f/%.2f)"),
+                dx0, dx1, dx2);
+  } else {
+    g_snprintf (buf, sizeof (buf), _("layout FAIL (%.2f/%.2f/%.2f)"),
+                dx0, dx1, dx2);
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), buf);
+  gtk_widget_queue_draw (self->canvas);
 }
 
 
@@ -6289,6 +6482,160 @@ action_open (GSimpleAction *a, GVariant *p, gpointer data)
 }
 
 
+/* --- Tools menu: select a create/edit tool by (display) name -------------- */
+
+/* Route through the palette toggle so the tool's behaviour and its highlight
+ * stay driven from one place (on_tool_toggled). */
+static void
+select_tool_named (DiaShell *self, const char *name)
+{
+  GtkWidget *btn = (self->tool_buttons && name)
+                     ? g_hash_table_lookup (self->tool_buttons, name) : NULL;
+
+  if (GTK_IS_TOGGLE_BUTTON (btn) &&
+      !gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (btn))) {
+    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (btn), TRUE);
+  }
+}
+
+static void
+action_tool (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  DiaShell *self = data;
+  const char *name = p ? g_variant_get_string (p, NULL) : "";
+
+  select_tool_named (self, name);
+  /* on_tool_toggled already syncs the state when the toggle actually flips;
+   * set it here too so activating the current tool keeps the radio consistent. */
+  g_simple_action_set_state (a, g_variant_new_string (name));
+}
+
+/* --- Layers menu: the same operations as the layers-panel buttons --------- */
+
+static void
+action_layer_add (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  on_layer_add (NULL, data);
+}
+
+static void
+action_layer_remove (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  on_layer_remove (NULL, data);
+}
+
+static void
+action_layer_raise (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  on_layer_up (NULL, data);
+}
+
+static void
+action_layer_lower (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  on_layer_down (NULL, data);
+}
+
+/* --- Layout menu (Size ops): reposition the selection about its centre of
+ * gravity, spreading the objects apart (Grow) or pulling them in (Shrink),
+ * optionally on one axis only (Heighten/Widen). This is the OGDF-free part of
+ * Dia's classic Layout menu (plug-ins/layout, DiaGraph::Scale): objects keep
+ * their own size, only the spacing between them changes. */
+typedef enum {
+  LAYOUT_GROW, LAYOUT_SHRINK, LAYOUT_HEIGHTEN, LAYOUT_WIDEN
+} LayoutMode;
+
+static void
+layout_size_selected (DiaShell *self, LayoutMode mode)
+{
+  GList *sel = self->diagram->selected;
+  double xf = 1.0, yf = 1.0;
+  double cx = 0, cy = 0, weight = 0;
+
+  if (!sel || !sel->next) {
+    gtk_label_set_text (GTK_LABEL (self->status_msg),
+                        _("Select two or more objects to lay out"));
+    return;
+  }
+
+  switch (mode) {
+    case LAYOUT_GROW:     xf = yf = G_SQRT2;       break;
+    case LAYOUT_SHRINK:   xf = yf = 1.0 / G_SQRT2; break;
+    case LAYOUT_HEIGHTEN: yf = G_SQRT2;            break;
+    case LAYOUT_WIDEN:    xf = G_SQRT2;            break;
+    default: break;
+  }
+
+  /* centre of gravity, weighted by bbox area (matches DiaGraph::Scale) */
+  for (GList *l = sel; l; l = l->next) {
+    DiaRectangle *bb = &((DiaObject *) l->data)->bounding_box;
+    double w = (bb->right - bb->left) * (bb->bottom - bb->top);
+
+    if (w <= 0) w = 1;                    /* zero-area objects still count */
+    cx += w * (bb->left + bb->right) / 2;
+    cy += w * (bb->top + bb->bottom) / 2;
+    weight += w;
+  }
+  if (weight <= 0) {
+    return;
+  }
+  cx /= weight;
+  cy /= weight;
+
+  for (GList *l = sel; l; l = l->next) {
+    DiaObject *obj = l->data;
+    DiaRectangle *bb = &obj->bounding_box;
+    double ocx = (bb->left + bb->right) / 2;
+    double ocy = (bb->top + bb->bottom) / 2;
+    Point from = obj->position, to = from;
+    DiaObjectChange *ch;
+
+    /* move the object so its centre scales relative to the centre of gravity */
+    to.x += (cx + (ocx - cx) * xf) - ocx;
+    to.y += (cy + (ocy - cy) * yf) - ocy;
+    ch = dia_object_move (obj, &to);
+    g_clear_pointer (&ch, dia_object_change_unref);
+    update_connections_for (obj);
+    if (to.x != from.x || to.y != from.y) {
+      push_op (self, OP_MOVE, obj, from, to);
+    }
+  }
+  gtk_label_set_text (GTK_LABEL (self->status_msg), _("Laid out"));
+  gtk_widget_queue_draw (self->canvas);
+}
+
+static void
+action_layout (GSimpleAction *a, GVariant *p, gpointer data)
+{
+  const char *m = p ? g_variant_get_string (p, NULL) : "";
+  LayoutMode mode = LAYOUT_GROW;
+
+  if (g_strcmp0 (m, "shrink") == 0)        mode = LAYOUT_SHRINK;
+  else if (g_strcmp0 (m, "heighten") == 0) mode = LAYOUT_HEIGHTEN;
+  else if (g_strcmp0 (m, "widen") == 0)    mode = LAYOUT_WIDEN;
+  layout_size_selected (data, mode);
+}
+
+/* --- Dialogs menu: toggle the layers side panel --------------------------- */
+
+static void
+on_change_show_layers (GSimpleAction *a, GVariant *value, gpointer data)
+{
+  DiaShell *self = data;
+  gboolean show = g_variant_get_boolean (value);
+
+  if (self->layers_panel) {
+    gtk_widget_set_visible (self->layers_panel, show);
+  }
+  /* drive the header toggle so both views agree (its handler is idempotent) */
+  if (self->layers_toggle &&
+      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (self->layers_toggle)) != show) {
+    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (self->layers_toggle), show);
+  }
+  g_simple_action_set_state (a, value);
+}
+
+
 static const GActionEntry dia_actions[] = {
   { "new",        action_new,        NULL, NULL, NULL },
   { "open",       action_open,       NULL, NULL, NULL },
@@ -6323,6 +6670,17 @@ static const GActionEntry dia_actions[] = {
   { "zoom-out",   action_zoom_out,   NULL, NULL, NULL },
   { "zoom-reset", action_zoom_reset, NULL, NULL, NULL },
   { "zoom-fit",   action_zoom_fit,   NULL, NULL, NULL },
+  /* Tools menu: stateful radio; target is the tool's display name. */
+  { "tool",       action_tool,       "s",  "'Modify'", NULL },
+  /* Layers menu: mirror the layers-panel buttons. */
+  { "layer-add",    action_layer_add,    NULL, NULL, NULL },
+  { "layer-remove", action_layer_remove, NULL, NULL, NULL },
+  { "layer-raise",  action_layer_raise,  NULL, NULL, NULL },
+  { "layer-lower",  action_layer_lower,  NULL, NULL, NULL },
+  /* Layout menu: grow/shrink/heighten/widen the selection's spacing. */
+  { "layout",     action_layout,     "s",  NULL, NULL },
+  /* Dialogs menu: boolean toggle for the layers side panel. */
+  { "show-layers", NULL, NULL, "true", on_change_show_layers },
 };
 
 static void
@@ -6446,6 +6804,238 @@ on_fill_chosen (GObject *source, GAsyncResult *result, gpointer user_data)
 
 
 /* --- builders ------------------------------------------------------------ */
+
+/* True when the default display is the native macOS backend: there GTK exports
+ * the app menubar to the global menu bar, so we don't add an in-window one. */
+static gboolean
+dia_running_on_macos (void)
+{
+#ifdef GDK_WINDOWING_MACOS
+  GdkDisplay *d = gdk_display_get_default ();
+
+  return d != NULL && GDK_IS_MACOS_DISPLAY (d);
+#else
+  return FALSE;
+#endif
+}
+
+/* Append @label to @menu bound to the "dia.tool" radio with @target as both the
+ * menu target and the radio value (so the checkmark tracks the active tool). */
+static void
+menu_append_tool (GMenu *menu, const char *label, const char *target)
+{
+  GMenuItem *item = g_menu_item_new (label, NULL);
+
+  g_menu_item_set_action_and_target (item, "dia.tool", "s", target);
+  g_menu_append_item (menu, item);
+  g_object_unref (item);
+}
+
+/* Build the classic Dia menu bar as a GMenuModel: the top-level menus
+ * File / Edit / View / Select / Objects / Layers / Layout / Tools / Dialogs /
+ * Help. Items resolve the "dia" and "app" action groups; the not-yet-ported
+ * entries point at unregistered actions so GTK renders them greyed out. Used
+ * both for the in-window GtkPopoverMenuBar (Linux/Windows) and the macOS global
+ * menu bar (gtk_application_set_menubar). Caller owns the returned reference. */
+GMenuModel *
+dia_shell_build_menubar_model (void)
+{
+  GMenu *bar = g_menu_new ();
+
+  /* File */
+  {
+    GMenu *file = g_menu_new ();
+    GMenu *quit = g_menu_new ();
+
+    g_menu_append (file, _("_New"), "dia.new");
+    g_menu_append (file, _("_Open…"), "dia.open");
+    g_menu_append (file, _("_Save"), "dia.save");
+    g_menu_append (file, _("Save _As…"), "dia.save-as");
+    g_menu_append (file, _("_Export…"), "dia.export");
+    g_menu_append (file, _("_Print…"), "dia.print");
+    g_menu_append (quit, _("_Quit"), "app.quit");
+    g_menu_append_section (file, NULL, G_MENU_MODEL (quit));
+    g_menu_append_submenu (bar, _("_File"), G_MENU_MODEL (file));
+    g_object_unref (file);
+    g_object_unref (quit);
+  }
+
+  /* Edit */
+  {
+    GMenu *edit = g_menu_new ();
+    GMenu *clip = g_menu_new ();
+
+    g_menu_append (edit, _("_Undo"), "dia.undo");
+    g_menu_append (edit, _("_Redo"), "dia.redo");
+    g_menu_append (clip, _("Cu_t"), "dia.cut");
+    g_menu_append (clip, _("_Copy"), "dia.copy");
+    g_menu_append (clip, _("_Paste"), "dia.paste");
+    g_menu_append (clip, _("_Delete"), "dia.delete");
+    g_menu_append_section (edit, NULL, G_MENU_MODEL (clip));
+    g_menu_append_submenu (bar, _("_Edit"), G_MENU_MODEL (edit));
+    g_object_unref (edit);
+    g_object_unref (clip);
+  }
+
+  /* View */
+  {
+    GMenu *view = g_menu_new ();
+    GMenu *zoom = g_menu_new ();
+    GMenu *misc = g_menu_new ();
+
+    g_menu_append (zoom, _("Zoom _In"), "dia.zoom-in");
+    g_menu_append (zoom, _("Zoom _Out"), "dia.zoom-out");
+    g_menu_append (zoom, _("_Reset Zoom"), "dia.zoom-reset");
+    g_menu_append (zoom, _("Zoom to _Fit"), "dia.zoom-fit");
+    g_menu_append_section (view, NULL, G_MENU_MODEL (zoom));
+    g_menu_append (misc, _("_Fullscreen"), "dia.fullscreen");
+    g_menu_append (misc, _("Diagram _Properties…"), "dia.diagram-properties");
+    g_menu_append_section (view, NULL, G_MENU_MODEL (misc));
+    g_menu_append_submenu (bar, _("_View"), G_MENU_MODEL (view));
+    g_object_unref (view);
+    g_object_unref (zoom);
+    g_object_unref (misc);
+  }
+
+  /* Select */
+  {
+    GMenu *sel = g_menu_new ();
+    GMenu *by = g_menu_new ();
+
+    g_menu_append (sel, _("Select _All"), "dia.select-all");
+    g_menu_append (sel, _("Select _None"), "dia.select-none");
+    g_menu_append (sel, _("_Invert Selection"), "dia.select-invert");
+    g_menu_append (by, _("Same _Type"), "dia.select-same-type");
+    g_menu_append (by, _("_Connected"), "dia.select-connected");
+    g_menu_append (by, _("_Transitive"), "dia.select-transitive");
+    g_menu_append_section (sel, NULL, G_MENU_MODEL (by));
+    g_menu_append_submenu (bar, _("_Select"), G_MENU_MODEL (sel));
+    g_object_unref (sel);
+    g_object_unref (by);
+  }
+
+  /* Objects */
+  {
+    GMenu *obj = g_menu_new ();
+    GMenu *grp = g_menu_new ();
+    GMenu *ord = g_menu_new ();
+    GMenu *flip = g_menu_new ();
+    GMenu *align = g_menu_new ();
+
+    g_menu_append (grp, _("_Group"), "dia.group");
+    g_menu_append (grp, _("_Ungroup"), "dia.ungroup");
+    g_menu_append_section (obj, NULL, G_MENU_MODEL (grp));
+
+    g_menu_append (ord, _("Bring to _Front"), "dia.to-front");
+    g_menu_append (ord, _("Send to _Back"), "dia.to-back");
+    g_menu_append (ord, _("_Raise"), "dia.raise");
+    g_menu_append (ord, _("_Lower"), "dia.lower");
+    g_menu_append_section (obj, NULL, G_MENU_MODEL (ord));
+
+    g_menu_append (flip, _("Flip _Horizontal"), "dia.flip-horizontal");
+    g_menu_append (flip, _("Flip _Vertical"), "dia.flip-vertical");
+    g_menu_append_section (obj, NULL, G_MENU_MODEL (flip));
+
+    g_menu_append (align, _("Left"), "dia.align::left");
+    g_menu_append (align, _("Right"), "dia.align::right");
+    g_menu_append (align, _("Top"), "dia.align::top");
+    g_menu_append (align, _("Bottom"), "dia.align::bottom");
+    g_menu_append (align, _("Center Horizontally"), "dia.align::center-h");
+    g_menu_append (align, _("Center Vertically"), "dia.align::center-v");
+    g_menu_append (align, _("Distribute Horizontally"), "dia.align::dist-h");
+    g_menu_append (align, _("Distribute Vertically"), "dia.align::dist-v");
+    g_menu_append_submenu (obj, _("_Align"), G_MENU_MODEL (align));
+
+    g_menu_append_submenu (bar, _("_Objects"), G_MENU_MODEL (obj));
+    g_object_unref (obj);
+    g_object_unref (grp);
+    g_object_unref (ord);
+    g_object_unref (flip);
+    g_object_unref (align);
+  }
+
+  /* Layers */
+  {
+    GMenu *layers = g_menu_new ();
+    GMenu *move = g_menu_new ();
+
+    g_menu_append (layers, _("_Add Layer"), "dia.layer-add");
+    g_menu_append (layers, _("_Remove Layer"), "dia.layer-remove");
+    g_menu_append (move, _("Raise Layer"), "dia.layer-raise");
+    g_menu_append (move, _("Lower Layer"), "dia.layer-lower");
+    g_menu_append_section (layers, NULL, G_MENU_MODEL (move));
+    g_menu_append_submenu (bar, _("_Layers"), G_MENU_MODEL (layers));
+    g_object_unref (layers);
+    g_object_unref (move);
+  }
+
+  /* Layout — the OGDF-free Size operations work; the graph-layout algorithms
+   * need OGDF + full connection support (not ported yet), so they are shown
+   * disabled via an unregistered action. */
+  {
+    GMenu *layout = g_menu_new ();
+    GMenu *graph = g_menu_new ();
+
+    g_menu_append (layout, _("_Grow"), "dia.layout::grow");
+    g_menu_append (layout, _("_Shrink"), "dia.layout::shrink");
+    g_menu_append (layout, _("_Heighten"), "dia.layout::heighten");
+    g_menu_append (layout, _("_Widen"), "dia.layout::widen");
+    g_menu_append (graph, _("Graph Layout (needs OGDF)"), "dia.layout-graph");
+    g_menu_append_section (layout, NULL, G_MENU_MODEL (graph));
+    g_menu_append_submenu (bar, _("L_ayout"), G_MENU_MODEL (layout));
+    g_object_unref (layout);
+    g_object_unref (graph);
+  }
+
+  /* Tools — a radio group mirroring the palette (edit tools, then create). */
+  {
+    GMenu *tools = g_menu_new ();
+    GMenu *edit_tools = g_menu_new ();
+    GMenu *make_tools = g_menu_new ();
+    gboolean creators = FALSE;
+
+    for (gsize i = 0; i < G_N_ELEMENTS (tool_entries); i++) {
+      const char *name = gettext (tool_entries[i].name);
+
+      /* entries 0..3 (Modify/Text edit/Magnify/Scroll) are edit tools */
+      if (i >= 4) creators = TRUE;
+      menu_append_tool (creators ? make_tools : edit_tools, name, name);
+    }
+    g_menu_append_section (tools, NULL, G_MENU_MODEL (edit_tools));
+    g_menu_append_section (tools, _("Create"), G_MENU_MODEL (make_tools));
+    g_menu_append_submenu (bar, _("_Tools"), G_MENU_MODEL (tools));
+    g_object_unref (tools);
+    g_object_unref (edit_tools);
+    g_object_unref (make_tools);
+  }
+
+  /* Dialogs — the wired ones; classic Object Properties / Plugins are shown
+   * disabled (unregistered actions) until they are ported. */
+  {
+    GMenu *dlg = g_menu_new ();
+    GMenu *more = g_menu_new ();
+
+    g_menu_append (dlg, _("Diagram _Properties…"), "dia.diagram-properties");
+    g_menu_append (dlg, _("_Layers Panel"), "dia.show-layers");
+    g_menu_append (more, _("Object _Properties…"), "dia.object-properties");
+    g_menu_append (more, _("Plugin_s…"), "dia.plugins");
+    g_menu_append_section (dlg, NULL, G_MENU_MODEL (more));
+    g_menu_append_submenu (bar, _("_Dialogs"), G_MENU_MODEL (dlg));
+    g_object_unref (dlg);
+    g_object_unref (more);
+  }
+
+  /* Help */
+  {
+    GMenu *help = g_menu_new ();
+
+    g_menu_append (help, _("_About Dia"), "app.about");
+    g_menu_append_submenu (bar, _("_Help"), G_MENU_MODEL (help));
+    g_object_unref (help);
+  }
+
+  return G_MENU_MODEL (bar);
+}
 
 static GtkWidget *
 build_primary_menu_button (void)
@@ -6795,6 +7385,9 @@ build_action_toolbar (DiaShell *self)
     GtkWidget *gp = gtk_button_new_with_label ("uitest-gridprops");
     GtkWidget *tr2 = gtk_button_new_with_label ("uitest-seltransitive");
     GtkWidget *dn = gtk_button_new_with_label ("uitest-diagname");
+    GtkWidget *mn = gtk_button_new_with_label ("uitest-menu");
+    GtkWidget *mw = gtk_button_new_with_label ("uitest-menuwired");
+    GtkWidget *lo = gtk_button_new_with_label ("uitest-layout");
     gtk_button_set_has_frame (GTK_BUTTON (t), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (r), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (m), FALSE);
@@ -6838,6 +7431,9 @@ build_action_toolbar (DiaShell *self)
     gtk_button_set_has_frame (GTK_BUTTON (gp), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (tr2), FALSE);
     gtk_button_set_has_frame (GTK_BUTTON (dn), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (mn), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (mw), FALSE);
+    gtk_button_set_has_frame (GTK_BUTTON (lo), FALSE);
     g_signal_connect (t, "clicked", G_CALLBACK (on_uitest_apply_tool), self);
     g_signal_connect (r, "clicked", G_CALLBACK (on_uitest_roundtrip), self);
     g_signal_connect (m, "clicked", G_CALLBACK (on_uitest_select_move), self);
@@ -6881,6 +7477,9 @@ build_action_toolbar (DiaShell *self)
     g_signal_connect (gp, "clicked", G_CALLBACK (on_uitest_gridprops), self);
     g_signal_connect (tr2, "clicked", G_CALLBACK (on_uitest_seltransitive), self);
     g_signal_connect (dn, "clicked", G_CALLBACK (on_uitest_diagname), self);
+    g_signal_connect (mn, "clicked", G_CALLBACK (on_uitest_menu), self);
+    g_signal_connect (mw, "clicked", G_CALLBACK (on_uitest_menuwired), self);
+    g_signal_connect (lo, "clicked", G_CALLBACK (on_uitest_layout), self);
     gtk_box_append (GTK_BOX (bar), t);
     gtk_box_append (GTK_BOX (bar), r);
     gtk_box_append (GTK_BOX (bar), m);
@@ -6924,6 +7523,9 @@ build_action_toolbar (DiaShell *self)
     gtk_box_append (GTK_BOX (bar), gp);
     gtk_box_append (GTK_BOX (bar), tr2);
     gtk_box_append (GTK_BOX (bar), dn);
+    gtk_box_append (GTK_BOX (bar), mn);
+    gtk_box_append (GTK_BOX (bar), mw);
+    gtk_box_append (GTK_BOX (bar), lo);
   }
 
   return bar;
@@ -7301,6 +7903,10 @@ build_toolbox (DiaShell *self)
      * and stash the tool name for the toggle handler. */
     set_a11y_label (btn, name);
     g_object_set_data (G_OBJECT (btn), "tool-name", (gpointer) name);
+    /* index the toggle so the Tools menu (dia.tool) can select it by name */
+    if (self->tool_buttons) {
+      g_hash_table_insert (self->tool_buttons, (gpointer) name, btn);
+    }
     {
       /* Create tools double as drag sources: drag onto the canvas to place. */
       const char *type_name = tool_to_type_name (name);
@@ -8045,8 +8651,24 @@ dia_shell_free (gpointer data)
     gtk_widget_unparent (self->ctx_menu);   /* parented to the canvas */
   }
   clear_clipboard (self);
+  g_clear_pointer (&self->tool_buttons, g_hash_table_destroy);
   g_clear_object (&self->diagram);
   g_free (self);
+}
+
+
+/* Re-install the shell's "dia" action group at window scope so the menu bar
+ * (in-window and, on macOS, the global one) resolves dia.* actions regardless
+ * of which widget currently holds focus. Call after the content is set into the
+ * window. Safe to call once the shell content built by dia_shell_new() exists. */
+void
+dia_shell_attach_to_window (GtkWidget *content, GtkWindow *window)
+{
+  DiaShell *self = g_object_get_data (G_OBJECT (content), "dia-shell");
+
+  if (self && self->actions) {
+    gtk_widget_insert_action_group (GTK_WIDGET (window), "dia", self->actions);
+  }
 }
 
 
@@ -8054,9 +8676,19 @@ dia_shell_free (gpointer data)
 static void
 on_toggle_layers (GtkToggleButton *b, DiaShell *self)
 {
+  gboolean show = gtk_toggle_button_get_active (b);
+
   if (self->layers_panel) {
-    gtk_widget_set_visible (self->layers_panel,
-                            gtk_toggle_button_get_active (b));
+    gtk_widget_set_visible (self->layers_panel, show);
+  }
+  /* Mirror the state onto the Dialogs > Layers Panel menu item's checkmark. */
+  if (self->actions) {
+    GAction *sa = g_action_map_lookup_action (G_ACTION_MAP (self->actions),
+                                              "show-layers");
+    if (sa) {
+      g_simple_action_set_state (G_SIMPLE_ACTION (sa),
+                                 g_variant_new_boolean (show));
+    }
   }
 }
 
@@ -8111,6 +8743,9 @@ dia_shell_new (void)
   dia_shell_init_plugins ();   /* export/import filter registry (Cairo + plug-ins) */
   self->diagram = g_object_new (DIA_TYPE_DIAGRAM_DATA, NULL);
   self->undo = g_ptr_array_new_with_free_func (undo_op_free);
+  /* tool display-name -> palette toggle; keys/values borrowed (owned by the
+   * widget tree and the static tool_entries strings). Filled by build_toolbox. */
+  self->tool_buttons = g_hash_table_new (g_str_hash, g_str_equal);
   dia_shell_seed_sample (self);
 
   /* Install the "dia" action group on the content so the toolbar buttons and
@@ -8122,6 +8757,21 @@ dia_shell_new (void)
   statusbar = build_statusbar (self);
 
   adw_header_bar_set_title_widget (ADW_HEADER_BAR (header), title);
+
+  /* Classic menu bar on the same line as the header (packed at its start). On
+   * macOS the same model is exported to the native global menu bar (see
+   * gtk_application_set_menubar in main.c), so we don't add an in-window one
+   * there; on Linux/Windows AdwApplicationWindow shows no menubar of its own,
+   * hence this explicit GtkPopoverMenuBar. */
+  if (!dia_running_on_macos ()) {
+    GMenuModel *model = dia_shell_build_menubar_model ();
+    GtkWidget *menubar = gtk_popover_menu_bar_new_from_model (model);
+
+    set_a11y_label (menubar, "main-menu-bar");
+    adw_header_bar_pack_start (ADW_HEADER_BAR (header), menubar);
+    g_object_unref (model);
+  }
+
   adw_header_bar_pack_end (ADW_HEADER_BAR (header), build_primary_menu_button ());
   {
     GtkWidget *layers_toggle = gtk_toggle_button_new ();
@@ -8132,6 +8782,7 @@ dia_shell_new (void)
     g_signal_connect (layers_toggle, "toggled",
                       G_CALLBACK (on_toggle_layers), self);
     adw_header_bar_pack_end (ADW_HEADER_BAR (header), layers_toggle);
+    self->layers_toggle = layers_toggle;   /* Dialogs > Layers Panel syncs it */
   }
 
   adw_toolbar_view_add_top_bar (ADW_TOOLBAR_VIEW (view), header);

@@ -641,6 +641,47 @@ def main():
         ok = any('diagname OK' in (lab.name or '') for lab in labels)
         check("Diagram name follows load/save (Untitled -> filename)", ok)
 
+    # 3at. Menu bar: the classic top-level menus are present as a menu bar, and
+    #      the new Tools/Layers GActions (driven by the menu) work.
+    menubar = (find(app, name='main-menu-bar')
+               or find(app, roleName='menu bar'))
+    check("Menu bar present (classic File/Edit/View/… bar)", menubar)
+    for label in ('File', 'Objects', 'Layers', 'Layout', 'Tools'):
+        soft("Menu bar exposes the %r menu" % label,
+             find(app, name=label, roleName='menu') is not None)
+    mn = find(app, name='uitest-menu', roleName='push button')
+    check("DIA_UITEST menu trigger present", mn)
+    if mn:
+        do_click(mn)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('menu OK' in (lab.name or '') for lab in labels)
+        check("Tools + Layers menu actions work", ok)
+
+    # 3at2. Every menu-bar item is wired to a real action (except the ones shown
+    #       greyed out on purpose) — walks the whole GMenuModel and resolves each.
+    mw = find(app, name='uitest-menuwired', roleName='push button')
+    check("DIA_UITEST menuwired trigger present", mw)
+    if mw:
+        do_click(mw)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        status = next((lab.name for lab in labels
+                       if lab.name and 'menuwired' in lab.name), '')
+        print("   ", status)
+        check("Every menu item is wired to a registered action",
+              'menuwired OK' in status)
+
+    # 3au. Layout menu: Grow spreads the selection apart, Shrink restores it.
+    lo = find(app, name='uitest-layout', roleName='push button')
+    check("DIA_UITEST layout trigger present", lo)
+    if lo:
+        do_click(lo)
+        time.sleep(0.4)
+        labels = app.findChildren(predicate.GenericPredicate(roleName='label'))
+        ok = any('layout OK' in (lab.name or '') for lab in labels)
+        check("Layout Grow/Shrink resizes object spacing", ok)
+
     # 3ah. The New Text dialog actually presents (GtkFontDialogButton path).
     nt = find(app, name='uitest-newtext', roleName='push button')
     check("DIA_UITEST newtext trigger present", nt)

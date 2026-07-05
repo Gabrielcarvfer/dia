@@ -81,11 +81,27 @@ static const GActionEntry app_actions[] = {
   { "quit",  on_quit_action,  NULL, NULL, NULL },
 };
 
+/* Set the classic menu bar. Done in "startup" (not main) because
+ * gtk_application_set_menubar requires the application to be registered first.
+ * On macOS GTK exports this to the native global menu bar (which otherwise only
+ * shows Dia/Edit/Window); on Linux/Windows the shell also builds an in-window
+ * GtkPopoverMenuBar from the same model. */
+static void
+on_startup (GApplication *app,
+            gpointer      user_data)
+{
+  GMenuModel *menubar = dia_shell_build_menubar_model ();
+
+  gtk_application_set_menubar (GTK_APPLICATION (app), menubar);
+  g_object_unref (menubar);
+}
+
 static void
 on_activate (GApplication *app,
              gpointer      user_data)
 {
   GtkWidget *window;
+  GtkWidget *content;
 
   /* Use our app icon (looked up by name in the icon theme) for every window —
    * without this GTK shows no icon in the titlebar/taskbar/dock. The icon
@@ -105,8 +121,12 @@ on_activate (GApplication *app,
   gtk_window_set_default_size (GTK_WINDOW (window), 1100, 720);
   gtk_window_maximize (GTK_WINDOW (window));
 
-  adw_application_window_set_content (ADW_APPLICATION_WINDOW (window),
-                                      dia_shell_new ());
+  content = dia_shell_new ();
+  adw_application_window_set_content (ADW_APPLICATION_WINDOW (window), content);
+  /* Make the shell's dia.* actions resolvable at window scope so the menu bar
+   * (in-window on Linux/Windows, global on macOS) finds them regardless of
+   * which widget holds focus. */
+  dia_shell_attach_to_window (content, GTK_WINDOW (window));
 
   gtk_window_present (GTK_WINDOW (window));
 }
@@ -202,10 +222,40 @@ main (int argc, char *argv[])
                                    app_actions,
                                    G_N_ELEMENTS (app_actions),
                                    app);
-  gtk_application_set_accels_for_action (GTK_APPLICATION (app),
-                                         "app.quit",
-                                         (const char *[]) { "<primary>q", NULL });
 
+  /* Keyboard accelerators for the menu items (also shown next to them). */
+  {
+    const struct { const char *action, *accel; } accels[] = {
+      { "dia.new",        "<primary>n" },
+      { "dia.open",       "<primary>o" },
+      { "dia.save",       "<primary>s" },
+      { "dia.save-as",    "<primary><shift>s" },
+      { "dia.print",      "<primary>p" },
+      { "dia.export",     "<primary><shift>e" },
+      { "dia.undo",       "<primary>z" },
+      { "dia.redo",       "<primary><shift>z" },
+      { "dia.cut",        "<primary>x" },
+      { "dia.copy",       "<primary>c" },
+      { "dia.paste",      "<primary>v" },
+      { "dia.delete",     "Delete" },
+      { "dia.select-all", "<primary>a" },
+      { "dia.group",      "<primary>g" },
+      { "dia.ungroup",    "<primary><shift>g" },
+      { "dia.zoom-in",    "<primary>plus" },
+      { "dia.zoom-out",   "<primary>minus" },
+      { "dia.zoom-reset", "<primary>0" },
+      { "dia.fullscreen", "F11" },
+      { "app.quit",       "<primary>q" },
+    };
+
+    for (gsize i = 0; i < G_N_ELEMENTS (accels); i++) {
+      gtk_application_set_accels_for_action (
+          GTK_APPLICATION (app), accels[i].action,
+          (const char *[]) { accels[i].accel, NULL });
+    }
+  }
+
+  g_signal_connect (app, "startup", G_CALLBACK (on_startup), NULL);
   g_signal_connect (app, "activate", G_CALLBACK (on_activate), NULL);
 
   status = g_application_run (G_APPLICATION (app), argc, argv);
