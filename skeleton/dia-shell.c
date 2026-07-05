@@ -76,8 +76,12 @@ typedef struct {
   GtkWidget *layers_toggle;  /* header toggle for the layers panel (Dialogs menu sync) */
   gpointer   style_mgr;      /* AdwStyleManager (borrowed): notify::dark watch */
   gboolean   skip_layer_select;  /* a group row was clicked; don't select the whole layer */
-  GtkWidget *font_btn;       /* top-bar text font+size (GtkFontDialogButton) */
-  gulong     font_btn_handler;   /* notify::font-desc, blocked during sync */
+  GtkWidget *font_btn;       /* top-bar text font+size: family dropdown + size spin */
+  GtkWidget *font_family_dd; /* GtkDropDown of font families (fast, no previews) */
+  GtkWidget *font_size_spin; /* point size */
+  gulong     font_family_handler; /* blocked during sync */
+  gulong     font_size_handler;   /* blocked during sync */
+  PangoFontDescription *font_desc_cache; /* returned by shell_font_desc (borrowed) */
   double     cursor_x, cursor_y;  /* pointer position over the canvas (px) */
   gboolean   cursor_valid;
   double     zoom;        /* 1.0 == 100% */
@@ -1447,15 +1451,51 @@ apply_font_desc_to_object (DiaObject *obj, PangoFontDescription *desc)
   prop_list_free (props);
 }
 
-/* The current top-bar font description (family + size), or NULL. */
+/* The current top-bar font description (family + size), or NULL.
+ * The returned description is owned by the shell (borrowed by the caller). */
 static PangoFontDescription *
 shell_font_desc (DiaShell *self)
 {
-  if (!self->font_btn) {
+  GtkStringObject *item;
+  const char *family = "Sans";
+  double pts;
+
+  if (!self->font_family_dd) {
     return NULL;
   }
-  return gtk_font_dialog_button_get_font_desc (
-           GTK_FONT_DIALOG_BUTTON (self->font_btn));
+
+  item = gtk_drop_down_get_selected_item (GTK_DROP_DOWN (self->font_family_dd));
+  if (item) {
+    family = gtk_string_object_get_string (item);
+  }
+  pts = gtk_spin_button_get_value (GTK_SPIN_BUTTON (self->font_size_spin));
+
+  if (!self->font_desc_cache) {
+    self->font_desc_cache = pango_font_description_new ();
+  }
+  pango_font_description_set_family (self->font_desc_cache, family);
+  pango_font_description_set_size (self->font_desc_cache, (int) (pts * PANGO_SCALE));
+
+  return self->font_desc_cache;
+}
+
+/* Select @family in the family dropdown (case-insensitive; appended if the
+ * list doesn't contain it). */
+static void
+shell_font_dd_set_family (DiaShell *self, const char *family)
+{
+  GListModel *model = gtk_drop_down_get_model (GTK_DROP_DOWN (self->font_family_dd));
+  guint n = g_list_model_get_n_items (model);
+
+  for (guint i = 0; i < n; i++) {
+    const char *s = gtk_string_list_get_string (GTK_STRING_LIST (model), i);
+    if (g_ascii_strcasecmp (s, family) == 0) {
+      gtk_drop_down_set_selected (GTK_DROP_DOWN (self->font_family_dd), i);
+      return;
+    }
+  }
+  gtk_string_list_append (GTK_STRING_LIST (model), family);
+  gtk_drop_down_set_selected (GTK_DROP_DOWN (self->font_family_dd), n);
 }
 
 /* Top-bar font/size changed → restyle every selected (text) object. */
@@ -1472,6 +1512,22 @@ on_font_desc_changed (GObject *btn, GParamSpec *ps, DiaShell *self)
   }
   gtk_widget_queue_draw (self->canvas);
   refresh_layers_list (self);
+}
+
+/* GtkSpinButton::value-changed has no GParamSpec arg; forward to the shared
+ * handler (which ignores the object/pspec). */
+static void
+on_font_size_changed (GtkSpinButton *spin, DiaShell *self)
+{
+  on_font_desc_changed (G_OBJECT (spin), NULL, self);
+}
+
+static int
+shell_cmp_families (const void *p1, const void *p2)
+{
+  return g_ascii_strcasecmp (
+    pango_font_family_get_name (PANGO_FONT_FAMILY (*(void **) p1)),
+    pango_font_family_get_name (PANGO_FONT_FAMILY (*(void **) p2)));
 }
 
 /* Reflect the primary selection's text font/size in the top-bar control (so it
@@ -1494,21 +1550,19 @@ sync_font_button_to_selection (DiaShell *self)
   fp = g_ptr_array_index (props, 0);
   hp = g_ptr_array_index (props, 1);
   if (fp->font_data) {
-    PangoFontDescription *desc = pango_font_description_new ();
     const char *fam = dia_font_get_family (fp->font_data);
 
+    g_signal_handler_block (self->font_family_dd, self->font_family_handler);
+    g_signal_handler_block (self->font_size_spin, self->font_size_handler);
     if (fam) {
-      pango_font_description_set_family (desc, fam);
+      shell_font_dd_set_family (self, fam);
     }
     if (hp->fontsize_data > 0.05) {
-      pango_font_description_set_size (
-        desc, (int) (hp->fontsize_data * 72.0 / 2.54 * PANGO_SCALE));
+      gtk_spin_button_set_value (GTK_SPIN_BUTTON (self->font_size_spin),
+                                 hp->fontsize_data * 72.0 / 2.54);   /* cm -> pt */
     }
-    g_signal_handler_block (self->font_btn, self->font_btn_handler);
-    gtk_font_dialog_button_set_font_desc (
-      GTK_FONT_DIALOG_BUTTON (self->font_btn), desc);
-    g_signal_handler_unblock (self->font_btn, self->font_btn_handler);
-    pango_font_description_free (desc);
+    g_signal_handler_unblock (self->font_family_dd, self->font_family_handler);
+    g_signal_handler_unblock (self->font_size_spin, self->font_size_handler);
   }
   prop_list_free (props);
 }
@@ -7764,19 +7818,46 @@ build_action_toolbar (DiaShell *self)
   /* Text font + size: sets new text's style, restyles a selected text object,
    * and mirrors the selected object's font. */
   {
-    GtkFontDialog *fd = gtk_font_dialog_new ();
-    PangoFontDescription *desc = pango_font_description_from_string ("Sans 18");
+    /* A lightweight family dropdown + point-size spinner. Unlike GtkFontDialog
+     * this never renders per-font previews, so it stays instant even under
+     * software rendering. */
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+    GtkStringList *families = gtk_string_list_new (NULL);
+    PangoFontFamily **fams = NULL;
+    int n_fams = 0;
+    GtkExpression *expr;
 
-    self->font_btn = gtk_font_dialog_button_new (fd);   /* takes ownership */
-    gtk_font_dialog_button_set_font_desc (GTK_FONT_DIALOG_BUTTON (self->font_btn),
-                                          desc);
-    pango_font_description_free (desc);
-    gtk_widget_set_tooltip_text (self->font_btn, _("Text font and size"));
-    set_a11y_label (self->font_btn, "text-font");
-    self->font_btn_handler = g_signal_connect (self->font_btn,
-                                               "notify::font-desc",
-                                               G_CALLBACK (on_font_desc_changed),
-                                               self);
+    pango_context_list_families (dia_font_get_context (), &fams, &n_fams);
+    qsort (fams, n_fams, sizeof (PangoFontFamily *), shell_cmp_families);
+    for (int i = 0; i < n_fams; i++) {
+      gtk_string_list_append (families, pango_font_family_get_name (fams[i]));
+    }
+    g_free (fams);
+
+    expr = gtk_property_expression_new (GTK_TYPE_STRING_OBJECT, NULL, "string");
+    self->font_family_dd = gtk_drop_down_new (G_LIST_MODEL (families), expr);
+    gtk_drop_down_set_enable_search (GTK_DROP_DOWN (self->font_family_dd), TRUE);
+    gtk_widget_set_tooltip_text (self->font_family_dd, _("Text font"));
+    set_a11y_label (self->font_family_dd, "text-font");
+
+    self->font_size_spin = gtk_spin_button_new_with_range (1, 999, 1);
+    gtk_spin_button_set_value (GTK_SPIN_BUTTON (self->font_size_spin), 18);
+    gtk_widget_set_tooltip_text (self->font_size_spin, _("Text size (points)"));
+    set_a11y_label (self->font_size_spin, "text-size");
+
+    shell_font_dd_set_family (self, "Sans");
+
+    self->font_family_handler =
+      g_signal_connect (self->font_family_dd, "notify::selected",
+                        G_CALLBACK (on_font_desc_changed), self);
+    self->font_size_handler =
+      g_signal_connect (self->font_size_spin, "value-changed",
+                        G_CALLBACK (on_font_size_changed), self);
+
+    gtk_box_append (GTK_BOX (box), self->font_family_dd);
+    gtk_box_append (GTK_BOX (box), self->font_size_spin);
+    self->font_btn = box;
+
     gtk_box_append (GTK_BOX (bar), gtk_separator_new (GTK_ORIENTATION_VERTICAL));
     gtk_box_append (GTK_BOX (bar), self->font_btn);
   }
